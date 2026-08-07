@@ -1,0 +1,92 @@
+# ============================================================
+# Root .gitignore — applies repo-wide as a safety net on top of
+# backend/.gitignore and frontend/.gitignore, which own the more
+# specific rules for their own package.
+# ============================================================
+
+# ---- Operating system ----
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---- Editors / IDEs ----
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- Environment files (never commit real values) ----
+.env
+.env.local
+.env.*.local
+.env.development
+.env.development.local
+.env.test
+.env.test.local
+.env.production
+.env.production.local
+!.env.example
+
+# ---- Secrets / keys ----
+**/keys/
+*.pem
+*.key
+*.crt
+*.p12
+
+# ---- Logs ----
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- Python ----
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/*.egg-info/
+**/.eggs/
+**/.venv/
+**/venv/
+**/env/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/htmlcov/
+**/.coverage
+**/.coverage.*
+**/coverage.xml
+
+# ---- Node / Next.js ----
+**/node_modules/
+**/.next/
+**/out/
+**/.turbo/
+**/*.tsbuildinfo
+**/next-env.d.ts
+
+# ---- Generic build / dist output ----
+**/dist/
+**/build/
+**/coverage/
+
+# ---- Databases / generated data files ----
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+
+# ---- Temporary files ----
+*.tmp
+*.temp
+tmp/
+temp/

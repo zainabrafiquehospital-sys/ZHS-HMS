@@ -1,0 +1,1 @@
+PERMISSION_SEARCH_READ = "search:read"

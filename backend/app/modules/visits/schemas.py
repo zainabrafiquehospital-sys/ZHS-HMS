@@ -1,0 +1,67 @@
+"""Pydantic request/response schemas for the Visit module — see
+app/modules/patients/schemas.py's identical module docstring for
+conventions. There is deliberately no `UpdateVisitRequest` — Visit has
+no freely-editable fields; every change to it after creation is one of
+VisitService's named `mark_*` status transitions, called by the module
+whose business action caused it (Vitals, Consultation, Billing), never
+a generic PATCH a client could use to set an arbitrary status."""
+
+from datetime import datetime
+from decimal import Decimal
+from enum import Enum as PyEnum
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
+
+from app.modules.visits.models import Visit, VisitStatus
+
+
+class VisitSortField(str, PyEnum):
+    CREATED_AT = "created_at"
+    STATUS = "status"
+
+
+class VisitOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    queue_token: str
+    patient_id: UUID
+    # None means "unclaimed" — no online doctor was available at
+    # registration time; any doctor may claim it by starting the
+    # consultation (see consultation/service.py's `start_consultation`).
+    doctor_user_id: UUID | None
+    procedure: str
+    amount: Decimal
+    vitals_required: bool
+    status: VisitStatus
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_visit(cls, visit: Visit) -> "VisitOut":
+        return cls(
+            id=visit.id,
+            queue_token=visit.queue_token,
+            patient_id=visit.patient_id,
+            doctor_user_id=visit.doctor_user_id,
+            procedure=visit.procedure,
+            amount=visit.amount,
+            vitals_required=visit.vitals_required,
+            status=visit.status,
+            created_at=visit.created_at,
+            updated_at=visit.updated_at,
+        )
+
+
+class VisitSummary(BaseModel):
+    """The minimal projection embedded anywhere another module's response
+    references "which visit" without embedding a full VisitOut — mirrors
+    app/modules/patients/schemas.py's PatientSummary precedent exactly.
+    Used by the not-yet-built Queue/Consultation/Billing modules."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    queue_token: str
+    status: VisitStatus

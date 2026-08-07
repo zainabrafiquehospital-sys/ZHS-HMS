@@ -1,0 +1,2 @@
+PERMISSION_VITALS_READ = "vitals:read"
+PERMISSION_VITALS_RECORD = "vitals:record"

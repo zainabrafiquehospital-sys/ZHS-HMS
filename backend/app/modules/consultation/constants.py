@@ -1,0 +1,3 @@
+PERMISSION_CONSULTATION_READ = "consultation:read"
+PERMISSION_CONSULTATION_START = "consultation:start"
+PERMISSION_CONSULTATION_MANAGE = "consultation:manage"

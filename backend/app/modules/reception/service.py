@@ -1,0 +1,151 @@
+"""Reception business logic — the composite "register a visit" action
+(Phase 6 architecture §6). Reception owns no table of its own (see
+app/modules/reception/__init__.py and the architecture's module-
+ownership table, §3): this service purely orchestrates calls into
+PatientService, VisitService, and QueueService, each of which already
+owns and commits its own unit of work.
+
+Atomicity note: this orchestration is *not* a single database
+transaction spanning Patient + Visit + QueueEntry — each of the three
+services this composes commits internally (the same established pattern
+already used throughout this codebase; see PatientService/VisitService/
+QueueService's own module docstrings), and Patient, Visit, and
+QueueEntry are three separate aggregates, not one. A failure partway
+through (e.g. Visit creation succeeds but the QueueEntry insert fails on
+an infrastructure error) can in principle leave a Visit without an
+active queue entry — there is no plausible *business-rule* rejection
+that would cause this for a brand-new Visit (a fresh QueueEntry has no
+prior active leg to close and cannot violate the one-active-entry
+constraint), so the realistic failure mode is limited to genuine
+infrastructure faults, not validation failures. No compensating-
+transaction/saga logic is implemented for that narrow case — an
+explicit, documented scope decision for this build, not an oversight."""
+
+from decimal import Decimal
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.modules.auth.models import User
+from app.modules.patients.models import Patient
+from app.modules.patients.service import PatientService
+from app.modules.queue.models import QueueDestination, QueueEntry
+from app.modules.queue.service import QueueService
+from app.modules.reception.repository import ReceptionRepository
+from app.modules.visits.models import Visit
+from app.modules.visits.service import VisitService
+from app.shared.audit.repository import AuditLogRepository
+
+
+class ReceptionService:
+    def __init__(
+        self,
+        session: AsyncSession,
+        patient_service: PatientService,
+        visit_service: VisitService,
+        queue_service: QueueService,
+        audit_repository: AuditLogRepository,
+        reception_repository: ReceptionRepository,
+    ) -> None:
+        """`session` here must be the exact same `AsyncSession` instance
+        `audit_repository` was built with (see dependencies.py) — this
+        service only ever uses it to commit its own audit-log write; the
+        Patient/Visit/Queue writes above are already durably committed
+        by the services that made them by the time this service ever
+        touches `session` (see this module's docstring for why that's a
+        deliberate, documented scope decision rather than a single
+        cross-aggregate transaction)."""
+        self._session = session
+        self._patient_service = patient_service
+        self._visit_service = visit_service
+        self._queue_service = queue_service
+        self._audit_repo = audit_repository
+        self._reception_repo = reception_repository
+
+    async def register_visit(
+        self,
+        *,
+        actor: User,
+        patient_id: UUID | None,
+        new_patient: dict[str, Any] | None,
+        doctor_user_id: UUID | None,
+        procedure: str,
+        amount: Decimal,
+        vitals_required: bool,
+    ) -> tuple[Patient, Visit, QueueEntry]:
+        """`patient_id` XOR `new_patient` is enforced at the schema layer
+        (RegisterVisitRequest) before this is ever called — this method
+        trusts that precondition rather than re-validating it, matching
+        this codebase's convention that request-shape validation belongs
+        at the API boundary, not duplicated in the service layer.
+
+        `doctor_user_id=None` means the caller (Reception's fast-
+        registration UI) never asks staff to pick a doctor at all —
+        doctor selection is always automatic. This method auto-assigns
+        the least-busy currently-online doctor (see
+        ReceptionRepository.find_least_busy_available_doctor's
+        docstring for what "online" means) when one exists; if none is
+        available, registration proceeds with the Visit unassigned
+        rather than blocking (Phase 6 fast-registration §4) — any doctor
+        claims it the moment they start its consultation (see
+        consultation/service.py's `start_consultation`)."""
+        if patient_id is not None:
+            patient = await self._patient_service.get_patient(patient_id)
+        else:
+            patient = await self._patient_service.register_patient(actor=actor, **new_patient)
+
+        if doctor_user_id is None:
+            available_doctor = await self._reception_repo.find_least_busy_available_doctor()
+            doctor_user_id = available_doctor.id if available_doctor is not None else None
+
+        visit = await self._visit_service.register_visit(
+            actor=actor,
+            patient_id=patient.id,
+            doctor_user_id=doctor_user_id,
+            procedure=procedure,
+            amount=amount,
+            vitals_required=vitals_required,
+        )
+
+        destination = QueueDestination.VITALS if vitals_required else QueueDestination.DOCTOR
+        queue_entry = await self._queue_service.route_to(
+            actor=actor, visit_id=visit.id, destination=destination, reason="initial_registration"
+        )
+
+        await self._audit_repo.record(
+            module="reception",
+            action="reception.visit_registered",
+            entity_type="visit",
+            entity_id=visit.id,
+            actor_user_id=actor.id,
+            metadata={
+                "patient_id": str(patient.id),
+                "queue_token": visit.queue_token,
+                "destination": destination.value,
+            },
+        )
+        await self._session.commit()
+        return patient, visit, queue_entry
+
+    async def cancel_visit(self, *, actor: User, visit_id: UUID, reason: str | None) -> Visit:
+        """Reception may cancel a Visit at any non-terminal point (Phase
+        6 §4.1 — `CANCELLED` is reachable from every non-terminal
+        status). Closes the active queue entry, if any, before
+        cancelling the Visit itself — a cancelled Visit should never be
+        left appearing active in a worklist."""
+        active_entry = await self._queue_service.get_active_for_visit(visit_id)
+        if active_entry is not None:
+            await self._queue_service.cancel_current(actor=actor, visit_id=visit_id)
+
+        visit = await self._visit_service.cancel_visit(actor=actor, visit_id=visit_id)
+        await self._audit_repo.record(
+            module="reception",
+            action="reception.visit_cancelled",
+            entity_type="visit",
+            entity_id=visit.id,
+            actor_user_id=actor.id,
+            metadata={"reason": reason},
+        )
+        await self._session.commit()
+        return visit

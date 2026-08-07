@@ -1,0 +1,29 @@
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+# B008 otherwise flags FastAPI's own canonical `Depends(...)` default-value
+# dependency-injection pattern as a dangerous function-call default. It
+# isn't one here: FastAPI calls these itself per-request rather than once
+# at function-definition time. This is the standard, documented way to
+# tell bugbear about specific callables that are safe as defaults.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "app.modules.auth.dependencies.require_permission",
+    "app.modules.auth.dependencies.require_role",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py313"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

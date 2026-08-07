@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Next.js build output
+.next/
+out/
+.turbo/
+
+# Production build output
+build/
+dist/
+
+# Testing / coverage
+coverage/
+
+# Environment files — never commit real values
+.env
+.env.local
+.env.*.local
+.env.development.local
+.env.test.local
+.env.production
+.env.production.local
+!.env.example
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Vercel
+.vercel
+
+# TypeScript build info (harmless to keep even in a JS-only project —
+# generated automatically if a tsconfig.json is ever added)
+*.tsbuildinfo
+next-env.d.ts
+
+# Keys / certs (defense in depth — this package should never hold any)
+*.pem
+*.key
+
+# OS
+.DS_Store
+Thumbs.db
