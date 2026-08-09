@@ -35,6 +35,15 @@ class VisitOut(BaseModel):
     amount: Decimal
     vitals_required: bool
     status: VisitStatus
+    # Who registered this Visit — BaseEntity's own audit-on-write column
+    # (see shared/base_entity.py), already populated correctly by
+    # VisitService.register_visit for every Visit; simply never surfaced
+    # in this response shape until the Admin overview needed to show
+    # "which receptionist booked this" (see features/admin's own
+    # "Booked By" column). Nullable only because BaseEntity's FK is
+    # `ON DELETE SET NULL` — a hard-deleted user leaves existing Visits
+    # with no actor on record rather than failing to load them.
+    created_by: UUID | None
     created_at: datetime
     updated_at: datetime
 
@@ -49,6 +58,7 @@ class VisitOut(BaseModel):
             amount=visit.amount,
             vitals_required=visit.vitals_required,
             status=visit.status,
+            created_by=visit.created_by,
             created_at=visit.created_at,
             updated_at=visit.updated_at,
         )
