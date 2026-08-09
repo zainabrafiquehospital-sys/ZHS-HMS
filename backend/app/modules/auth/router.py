@@ -1,9 +1,20 @@
-"""HTTP endpoints for the Authentication module — exactly the six named in
-the Authentication APIs scope: login, refresh, logout, logout-all,
-change-password, me. `AuthService.register` exists and is fully tested
-(see service.py and tests/) but deliberately has no endpoint here — no
-email-verification flow exists yet, and exposing it wasn't part of this
-step's endpoint list.
+"""HTTP endpoints for the Authentication module — the original six named
+in the Authentication APIs scope (login, refresh, logout, logout-all,
+change-password, me) plus the self-service signup/verification/forgot-
+password endpoints added for self-service staff registration (Receptionist
+and Vitals staff — see models.SignupRole).
+`AuthService.register` still exists, still fully tested, and still has
+no endpoint of its own — it predates this feature and sets `status=
+ACTIVE` directly (see its own docstring); self-service signup now goes
+through `SignupService.signup` instead, which is the real, login-blocked-
+until-verified-and-approved path this module needed.
+
+Signup/verify-email/resend-otp/forgot-password all enforce
+`enforce_otp_request_rate_limit`; verify-email and (from Stage 5)
+password-reset verification enforce `enforce_otp_verify_rate_limit` —
+both per-source-IP, same shape as `login`'s own rate limit, see
+app/modules/auth/dependencies.py for why each exists as an independent
+layer alongside the OTP row's own `attempts` counter.
 
 Refresh tokens travel as an httpOnly, `SameSite=Strict` cookie (never in a
 JSON body), per the architecture document's §2 — the access token, sent as
@@ -24,14 +35,29 @@ from fastapi import APIRouter, Depends, Request, Response
 from app.core.config import Settings, get_settings
 from app.modules.auth.dependencies import (
     enforce_login_rate_limit,
+    enforce_otp_request_rate_limit,
+    enforce_otp_verify_rate_limit,
     get_auth_service,
     get_current_active_user,
     get_current_user_and_jti,
+    get_signup_service,
 )
 from app.modules.auth.exceptions import TokenInvalidError
-from app.modules.auth.models import User
+from app.modules.auth.models import SignupRole, User
 from app.modules.auth.schemas import ChangePasswordRequest, LoginRequest, TokenResponse, UserOut
 from app.modules.auth.service import AuthService, LoginResult, RefreshResult
+from app.modules.auth.signup_schemas import (
+    ForgotPasswordRequest,
+    GenericOtpMessageResponse,
+    ResendSignupOtpRequest,
+    ResetPasswordRequest,
+    SignupRequest,
+    SignupResponse,
+    VerifyResetOtpRequest,
+    VerifySignupOtpRequest,
+    VerifySignupOtpResponse,
+)
+from app.modules.auth.signup_service import SignupService
 from app.shared.envelope import success_envelope
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -184,5 +210,111 @@ async def get_me(
         user,
         auth_service.effective_role_names(user),
         sorted(auth_service.effective_permission_codes(user)),
+    )
+    return success_envelope(body.model_dump(mode="json"))
+
+
+# ------------------------------------------------------------------
+# Self-service signup / email verification (Receptionist or Vitals staff)
+# ------------------------------------------------------------------
+
+
+@router.post("/signup", status_code=201)
+async def signup(
+    payload: SignupRequest,
+    signup_service: SignupService = Depends(get_signup_service),
+    _rate_limit: None = Depends(enforce_otp_request_rate_limit),
+) -> dict:
+    user = await signup_service.signup(
+        full_name=payload.full_name,
+        email=payload.email,
+        phone_number=payload.phone_number,
+        password=payload.password,
+        shift=payload.shift,
+        # `payload.role` is signup_schemas.SignupRole (a str-Enum) — its
+        # `.value` matches models.SignupRole's own values exactly (kept
+        # in lockstep deliberately, see that enum's docstring), so this
+        # is a plain, unambiguous conversion between the request-schema
+        # enum and the persisted-column enum, not a lossy mapping.
+        signup_role=SignupRole(payload.role.value),
+    )
+    body = SignupResponse(
+        message="Account created. We've sent a verification code to your email.",
+        email=user.email,
+    )
+    return success_envelope(body.model_dump(mode="json"))
+
+
+@router.post("/verify-email")
+async def verify_email(
+    payload: VerifySignupOtpRequest,
+    signup_service: SignupService = Depends(get_signup_service),
+    _rate_limit: None = Depends(enforce_otp_verify_rate_limit),
+) -> dict:
+    await signup_service.verify_signup_otp(email=payload.email, code=payload.code)
+    body = VerifySignupOtpResponse(
+        message="Email verified. Your account is now awaiting admin approval.",
+        status="pending_admin_approval",
+    )
+    return success_envelope(body.model_dump(mode="json"))
+
+
+@router.post("/resend-otp")
+async def resend_signup_otp(
+    payload: ResendSignupOtpRequest,
+    signup_service: SignupService = Depends(get_signup_service),
+    _rate_limit: None = Depends(enforce_otp_request_rate_limit),
+) -> dict:
+    await signup_service.resend_signup_otp(email=payload.email)
+    body = GenericOtpMessageResponse(message="A new verification code has been sent to your email.")
+    return success_envelope(body.model_dump(mode="json"))
+
+
+# ------------------------------------------------------------------
+# Forgot password (self-service, OTP-based)
+# ------------------------------------------------------------------
+
+
+@router.post("/forgot-password")
+async def forgot_password(
+    payload: ForgotPasswordRequest,
+    auth_service: AuthService = Depends(get_auth_service),
+    _rate_limit: None = Depends(enforce_otp_request_rate_limit),
+) -> dict:
+    """Always the same generic response regardless of whether `email`
+    matches an account — see AuthService.request_password_reset's
+    docstring. Also this flow's own "resend": re-submitting this same
+    request reissues a fresh code once the cooldown elapses, so there is
+    no separate PASSWORD_RESET-purpose resend endpoint (see
+    ResendSignupOtpRequest's docstring)."""
+    await auth_service.request_password_reset(email=payload.email)
+    body = GenericOtpMessageResponse(
+        message="If an account exists for this email, a reset code has been sent."
+    )
+    return success_envelope(body.model_dump(mode="json"))
+
+
+@router.post("/verify-reset-otp")
+async def verify_reset_otp(
+    payload: VerifyResetOtpRequest,
+    auth_service: AuthService = Depends(get_auth_service),
+    _rate_limit: None = Depends(enforce_otp_verify_rate_limit),
+) -> dict:
+    await auth_service.verify_reset_otp(email=payload.email, code=payload.code)
+    body = GenericOtpMessageResponse(message="Code verified. You can now set a new password.")
+    return success_envelope(body.model_dump(mode="json"))
+
+
+@router.post("/reset-password")
+async def reset_password(
+    payload: ResetPasswordRequest,
+    auth_service: AuthService = Depends(get_auth_service),
+    _rate_limit: None = Depends(enforce_otp_verify_rate_limit),
+) -> dict:
+    await auth_service.reset_password(
+        email=payload.email, code=payload.code, new_password=payload.new_password
+    )
+    body = GenericOtpMessageResponse(
+        message="Password reset. Please sign in with your new password."
     )
     return success_envelope(body.model_dump(mode="json"))

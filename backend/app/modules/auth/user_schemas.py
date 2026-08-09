@@ -29,7 +29,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from app.modules.auth.models import User, UserStatus
+from app.modules.auth.models import Shift, SignupRole, User, UserStatus
 from app.modules.auth.validators import normalize_email
 from app.shared.schema_types import LaxUUID, RoleSummary
 
@@ -163,6 +163,16 @@ class UserAdminOut(BaseModel):
     full_name: str
     phone_number: str | None
     status: UserStatus
+    # Nullable — see Shift's own model docstring: only ever set by
+    # self-service signup, so an admin-provisioned account (User
+    # Management's Create User) has none.
+    shift: Shift | None
+    # Same nullability reasoning as `shift`. Surfaced specifically so
+    # the admin's Pending Approvals list can show what a still-pending
+    # signup requested — once approved, `roles` (below) already reflects
+    # the real assignment, so this field matters most exactly while
+    # `status == PENDING_ADMIN_APPROVAL`.
+    signup_role: SignupRole | None
     is_email_verified: bool
     mfa_enabled: bool
     must_change_password: bool
@@ -200,6 +210,8 @@ class UserAdminOut(BaseModel):
             full_name=user.full_name,
             phone_number=user.phone_number,
             status=user.status,
+            shift=user.shift,
+            signup_role=user.signup_role,
             is_email_verified=user.is_email_verified,
             mfa_enabled=user.mfa_enabled,
             must_change_password=user.must_change_password,

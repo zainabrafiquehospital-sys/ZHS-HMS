@@ -22,6 +22,15 @@ class Settings(BaseSettings):
 
     cors_allowed_origins: str = "http://localhost:3000"
 
+    # The frontend's own login page — linked from the signup-approval
+    # confirmation email (see app/modules/auth/user_service.py's
+    # `approve_signup`). Deliberately a separate, explicit setting rather
+    # than derived from `cors_allowed_origins` (a comma-separated
+    # allowlist with no defined "primary" entry) — this is specifically
+    # where a human should land after clicking the email, not just any
+    # origin permitted to call the API.
+    frontend_login_url: str = "http://localhost:3000/login"
+
     database_url: str
     database_sync_url: str
 
@@ -71,6 +80,38 @@ class Settings(BaseSettings):
     # actually blunts credential-stuffing sweeps across many accounts.
     login_rate_limit_attempts: int = Field(default=10, ge=1, le=1000)
     login_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
+
+    # Self-service signup / forgot-password OTP — see
+    # app/modules/auth/otp_service.py and OtpCode's own model docstring.
+    # A short expiry plus a bounded per-code attempt count are the two
+    # things that actually defend a 6-digit (10^6-value) code against
+    # brute-forcing; the request-level rate limits below are the second,
+    # independent layer (bounds how often a *new* code can even be
+    # requested/verified from one source), mirroring how
+    # account_lockout_threshold and login_rate_limit_* are two
+    # independent layers for login itself.
+    otp_expire_minutes: int = Field(default=10, ge=1, le=60)
+    otp_max_attempts: int = Field(default=5, ge=1, le=20)
+    otp_resend_cooldown_seconds: int = Field(default=60, ge=10, le=600)
+    otp_request_rate_limit_attempts: int = Field(default=5, ge=1, le=100)
+    otp_request_rate_limit_window_seconds: int = Field(default=3600, ge=60, le=86400)
+    otp_verify_rate_limit_attempts: int = Field(default=10, ge=1, le=100)
+    otp_verify_rate_limit_window_seconds: int = Field(default=3600, ge=60, le=86400)
+
+    # Outbound transactional email (OTP codes, approval confirmations) —
+    # see app/shared/email/service.py. `smtp_host` unset (the default) is
+    # a deliberate, documented dev fallback: EmailService logs the
+    # email's content instead of sending, so the rest of the signup/OTP/
+    # reset flows are fully buildable and testable before real SMTP
+    # credentials (a Gmail App Password, not the account password —
+    # Gmail requires this for third-party SMTP access) are provisioned.
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_use_tls: bool = True
+    smtp_from_email: str = "zainabrafiquehospital@gmail.com"
+    smtp_from_name: str = "Zainab Rafique Hospital"
 
     log_level: str = "INFO"
 

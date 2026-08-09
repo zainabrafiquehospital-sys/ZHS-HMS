@@ -12,6 +12,13 @@
 import { ROUTES } from '@/core/constants/routes';
 
 export const MODULE_ACCESS = [
+  // Checked first: an account holding users:read (i.e. an actual admin —
+  // see features/admin/hooks/useAdminOverview.js's docstring on why that
+  // permission specifically gates this route) lands on the admin overview
+  // rather than an OPD module it may also incidentally hold permissions
+  // for, since the full permission catalog grants admin literally every
+  // code that exists.
+  { route: ROUTES.ADMIN, permission: 'users:read', label: 'Admin' },
   { route: ROUTES.RECEPTION, permission: 'reception:register_visit', label: 'Reception' },
   { route: ROUTES.DOCTOR_QUEUE, permission: 'consultation:start', label: 'Doctor Queue' },
   { route: ROUTES.VITALS, permission: 'vitals:read', label: 'Vitals' },

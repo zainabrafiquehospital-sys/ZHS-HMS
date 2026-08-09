@@ -32,6 +32,8 @@ from app.modules.auth.models import (
     AuditLog,
     LoginSession,
     LoginSessionLogoutReason,
+    OtpCode,
+    OtpPurpose,
     PasswordHistory,
     Permission,
     RefreshToken,
@@ -395,6 +397,47 @@ class PasswordHistoryRepository(BaseRepository[PasswordHistory]):
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+
+class OtpCodeRepository(BaseRepository[OtpCode]):
+    model = OtpCode
+
+    async def get_active_for_user(self, user_id: UUID, purpose: OtpPurpose) -> OtpCode | None:
+        """The one currently-unconsumed code for `(user_id, purpose)` —
+        at most one can ever exist, enforced by the partial unique index
+        on `(user_id, purpose) WHERE consumed_at IS NULL` (see models.py).
+        Deliberately does not filter on `expires_at`: an expired-but-
+        unconsumed row still occupies that unique-index slot, so callers
+        issuing a fresh code must invalidate this one first regardless of
+        whether it's expired — same "close the current one before opening
+        a new one" discipline as QueueEntryRepository.get_active_for_visit."""
+        stmt = select(OtpCode).where(
+            OtpCode.user_id == user_id, OtpCode.purpose == purpose, OtpCode.consumed_at.is_(None)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def invalidate_active_for_user(
+        self, user_id: UUID, purpose: OtpPurpose, consumed_at: datetime
+    ) -> None:
+        stmt = (
+            update(OtpCode)
+            .where(
+                OtpCode.user_id == user_id,
+                OtpCode.purpose == purpose,
+                OtpCode.consumed_at.is_(None),
+            )
+            .values(consumed_at=consumed_at)
+        )
+        await self.session.execute(stmt)
+
+    async def consume(self, otp: OtpCode, consumed_at: datetime) -> OtpCode:
+        otp.consumed_at = consumed_at
+        return await self.add(otp)
+
+    async def record_failed_attempt(self, otp: OtpCode) -> OtpCode:
+        otp.attempts += 1
+        return await self.add(otp)
 
 
 class AuditRepository(BaseRepository[AuditLog]):

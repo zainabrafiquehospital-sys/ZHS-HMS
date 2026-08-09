@@ -43,11 +43,13 @@ from app.core.jwt_keys import JWTKeyRegistry, get_jwt_key_registry
 from app.core.rate_limit import RateLimiter
 from app.modules.auth.exceptions import AccountSuspendedError, TokenInvalidError
 from app.modules.auth.models import User, UserStatus
+from app.modules.auth.otp_service import OtpService
 from app.modules.auth.password_service import PasswordService
 from app.modules.auth.permission_service import PermissionService
 from app.modules.auth.repository import (
     AuditRepository,
     LoginSessionRepository,
+    OtpCodeRepository,
     PasswordHistoryRepository,
     PermissionRepository,
     RefreshTokenRepository,
@@ -58,9 +60,12 @@ from app.modules.auth.repository import (
 )
 from app.modules.auth.role_service import RoleService
 from app.modules.auth.service import AuthService
+from app.modules.auth.signup_service import SignupService
 from app.modules.auth.token_service import TokenService
 from app.modules.auth.user_service import UserService
 from app.redis.client import get_redis_client
+from app.shared.email.dependencies import get_email_service
+from app.shared.email.service import EmailService
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -109,6 +114,10 @@ def get_audit_repository(db: AsyncSession = Depends(get_db)) -> AuditRepository:
     return AuditRepository(db)
 
 
+def get_otp_code_repository(db: AsyncSession = Depends(get_db)) -> OtpCodeRepository:
+    return OtpCodeRepository(db)
+
+
 # ----------------------------------------------------------------------
 # Services (crypto services are process-lifetime singletons; AuthService
 # is request-scoped since it owns the request's transaction boundary)
@@ -118,6 +127,16 @@ def get_audit_repository(db: AsyncSession = Depends(get_db)) -> AuditRepository:
 @lru_cache
 def get_password_service() -> PasswordService:
     return PasswordService()
+
+
+@lru_cache
+def get_otp_service() -> OtpService:
+    """`@lru_cache`d like `get_password_service`, not because OTP
+    hashing is expensive (see OtpCode's own model docstring — it's
+    deliberately fast, unlike Argon2id) but because it's equally
+    stateless with respect to any single request; building a fresh
+    instance per call would just be pointless allocation."""
+    return OtpService()
 
 
 def get_token_service(
@@ -146,6 +165,9 @@ def get_auth_service(
     audit_repository: AuditRepository = Depends(get_audit_repository),
     password_service: PasswordService = Depends(get_password_service),
     token_service: TokenService = Depends(get_token_service),
+    otp_code_repository: OtpCodeRepository = Depends(get_otp_code_repository),
+    otp_service: OtpService = Depends(get_otp_service),
+    email_service: EmailService = Depends(get_email_service),
 ) -> AuthService:
     return AuthService(
         session=db,
@@ -157,6 +179,31 @@ def get_auth_service(
         audit_repository=audit_repository,
         password_service=password_service,
         token_service=token_service,
+        otp_code_repository=otp_code_repository,
+        otp_service=otp_service,
+        email_service=email_service,
+    )
+
+
+def get_signup_service(
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    user_repository: UserRepository = Depends(get_user_repository),
+    otp_code_repository: OtpCodeRepository = Depends(get_otp_code_repository),
+    audit_repository: AuditRepository = Depends(get_audit_repository),
+    password_service: PasswordService = Depends(get_password_service),
+    otp_service: OtpService = Depends(get_otp_service),
+    email_service: EmailService = Depends(get_email_service),
+) -> SignupService:
+    return SignupService(
+        session=db,
+        settings=settings,
+        user_repository=user_repository,
+        otp_code_repository=otp_code_repository,
+        audit_repository=audit_repository,
+        password_service=password_service,
+        otp_service=otp_service,
+        email_service=email_service,
     )
 
 
@@ -253,6 +300,45 @@ async def enforce_login_rate_limit(
         key=f"login:{ip}",
         limit=settings.login_rate_limit_attempts,
         window_seconds=settings.login_rate_limit_window_seconds,
+    )
+
+
+async def enforce_otp_request_rate_limit(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    limiter: RateLimiter = Depends(get_rate_limiter),
+) -> None:
+    """Bounds how often *new* OTP codes can be requested from one source —
+    signup, resend, and forgot-password all funnel through this, same
+    per-IP-bucket shape as `enforce_login_rate_limit` (see that
+    function's docstring for the "unknown" bucket fallback rationale).
+    Independent of `otp_resend_cooldown_seconds` (the OtpCode-row-level
+    cooldown SignupService/AuthService enforce for one specific account)
+    the same way `login_rate_limit_*` is independent of
+    `account_lockout_threshold` — this bounds overall request volume
+    from one source, that bounds repeated requests against one account."""
+    ip = request.client.host if request.client else "unknown"
+    await limiter.enforce(
+        key=f"otp-request:{ip}",
+        limit=settings.otp_request_rate_limit_attempts,
+        window_seconds=settings.otp_request_rate_limit_window_seconds,
+    )
+
+
+async def enforce_otp_verify_rate_limit(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    limiter: RateLimiter = Depends(get_rate_limiter),
+) -> None:
+    """Bounds OTP verification attempts per source IP — the second,
+    independent layer defending the 6-digit code against brute-forcing,
+    alongside the per-code `attempts`/`otp_max_attempts` counter OtpCode
+    itself tracks (see that model's docstring)."""
+    ip = request.client.host if request.client else "unknown"
+    await limiter.enforce(
+        key=f"otp-verify:{ip}",
+        limit=settings.otp_verify_rate_limit_attempts,
+        window_seconds=settings.otp_verify_rate_limit_window_seconds,
     )
 
 

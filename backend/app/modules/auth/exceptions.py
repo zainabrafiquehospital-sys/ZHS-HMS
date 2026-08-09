@@ -40,6 +40,24 @@ class AccountSuspendedError(AuthenticationError):
         super().__init__("This account cannot sign in.")
 
 
+class AccountPendingEmailVerificationError(AuthenticationError):
+    code = "ACCOUNT_PENDING_EMAIL_VERIFICATION"
+    status_code = 403
+
+    def __init__(self) -> None:
+        super().__init__("Please verify your email before signing in.")
+
+
+class AccountPendingApprovalError(AuthenticationError):
+    code = "ACCOUNT_PENDING_APPROVAL"
+    status_code = 403
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Your account is awaiting admin approval. You'll receive an email once it's approved."
+        )
+
+
 class TokenInvalidError(AuthenticationError):
     code = "TOKEN_INVALID"
 
@@ -182,3 +200,27 @@ class PermissionInUseError(ConflictError):
         super().__init__(
             "This permission is currently granted to one or more roles and cannot be deleted."
         )
+
+
+# ---------------------------------------------------------------------
+# Self-Service Signup / OTP
+# ---------------------------------------------------------------------
+
+
+class OtpInvalidError(AuthenticationError):
+    """Deliberately the one error for wrong code, expired code, and
+    too-many-attempts alike — same "don't leak which reason" philosophy
+    this module's own docstring states for InvalidCredentialsError, now
+    applied to a second low-entropy secret."""
+
+    code = "OTP_INVALID"
+
+    def __init__(self) -> None:
+        super().__init__("This code is invalid or has expired. Request a new one.")
+
+
+class SignupNotPendingApprovalError(ValidationError):
+    code = "SIGNUP_NOT_PENDING_APPROVAL"
+
+    def __init__(self) -> None:
+        super().__init__("This account is not awaiting approval.")
