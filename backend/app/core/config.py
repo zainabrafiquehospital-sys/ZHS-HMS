@@ -99,19 +99,25 @@ class Settings(BaseSettings):
     otp_verify_rate_limit_window_seconds: int = Field(default=3600, ge=60, le=86400)
 
     # Outbound transactional email (OTP codes, approval confirmations) —
-    # see app/shared/email/service.py. `smtp_host` unset (the default) is
-    # a deliberate, documented dev fallback: EmailService logs the
-    # email's content instead of sending, so the rest of the signup/OTP/
-    # reset flows are fully buildable and testable before real SMTP
-    # credentials (a Gmail App Password, not the account password —
-    # Gmail requires this for third-party SMTP access) are provisioned.
-    smtp_host: str | None = None
-    smtp_port: int = Field(default=587, ge=1, le=65535)
-    smtp_username: str | None = None
-    smtp_password: str | None = None
-    smtp_use_tls: bool = True
-    smtp_from_email: str = "zainabrafiquehospital@gmail.com"
-    smtp_from_name: str = "Zainab Rafique Hospital"
+    # see app/shared/email/service.py. Sent via the Resend HTTP API, not
+    # SMTP: Railway blocks outbound SMTP (ports 587/465) from this
+    # service's shared/dynamic egress IP, which made the previous
+    # SMTP-based sender unusable in production (every send died with
+    # `OSError: [Errno 101] Network is unreachable`) — an HTTP POST to
+    # api.resend.com rides over port 443 like everything else that
+    # already works. `resend_api_key` unset (the default) is a
+    # deliberate, documented dev fallback: EmailService logs the email's
+    # content instead of sending, so the rest of the signup/OTP/reset
+    # flows are fully buildable and testable before a real Resend API
+    # key is provisioned. `email_from_email` must be an address at a
+    # domain verified with Resend (see resend.com/docs/dashboard/domains/introduction)
+    # — unlike SMTP, an HTTP email API cannot send arbitrary-domain
+    # "From" addresses (e.g. a plain @gmail.com one) at production
+    # volume; Resend's unverified-domain sandbox sender can only deliver
+    # to the Resend account's own signup address, not real recipients.
+    resend_api_key: str | None = None
+    email_from_email: str = "noreply@zainabrafiquehospital.com"
+    email_from_name: str = "Zainab Rafique Hospital"
 
     log_level: str = "INFO"
 

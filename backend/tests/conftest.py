@@ -526,7 +526,7 @@ def auth_service(real_session, auth_settings, token_service, password_service) -
         token_service=token_service,
         otp_code_repository=OtpCodeRepository(real_session),
         otp_service=OtpService(),
-        # auth_settings.smtp_host is unset, so this exercises the
+        # auth_settings.resend_api_key is unset, so this exercises the
         # documented console-fallback path — no test ever sends a real
         # email (see EmailService.send's docstring).
         email_service=EmailService(auth_settings),

@@ -1,7 +1,8 @@
 -r requirements.txt
 pytest==8.3.4
 pytest-asyncio==0.25.0
-httpx==0.28.1
+# httpx moved to requirements.txt — it's a real runtime dependency now
+# (EmailService's Resend HTTP client), not dev-only.
 ruff==0.8.4
 black==24.10.0
 fakeredis==2.37.0

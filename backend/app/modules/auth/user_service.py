@@ -526,16 +526,20 @@ class UserService:
         Deliberately does NOT send the approval confirmation email
         itself (see this class's earlier revision's own docstring,
         which said the opposite — corrected after a live production
-        incident): `EmailService.send`'s real-SMTP path is genuine,
-        `asyncio.to_thread`-wrapped multi-second network I/O, and empirically,
-        regardless of exactly where in this method it ran relative to
-        the session's own work, its mere presence anywhere in this
-        call's lifecycle left the async DB session unable to service a
-        later ORM attribute access in *this same request* — reproduced
-        live as `sqlalchemy.exc.MissingGreenlet` at the router's own
-        `UserAdminOut.from_user(user)` call, every time, only with real
-        SMTP (never with the console-fallback path this was originally,
-        and insufficiently, verified against). The actual DB work
+        incident): `EmailService.send`'s real-delivery path is genuine
+        network I/O (originally a blocking, `asyncio.to_thread`-wrapped
+        SMTP call; now a native async HTTP POST to the Resend API — see
+        shared/email/service.py), and empirically, regardless of exactly
+        where in this method it ran relative to the session's own work,
+        its mere presence anywhere in this call's lifecycle left the
+        async DB session unable to service a later ORM attribute access
+        in *this same request* — reproduced live as
+        `sqlalchemy.exc.MissingGreenlet` at the router's own
+        `UserAdminOut.from_user(user)` call, every time, only with a real
+        send attempted (never with the console-fallback path this was
+        originally, and insufficiently, verified against). The switch
+        away from SMTP doesn't change this — it's still a real network
+        call. The actual DB work
         (commit, role grant, status change) always completed
         successfully regardless — only the HTTP response after it broke.
         The robust fix is architectural, not a reordering: decouple the

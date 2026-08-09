@@ -200,12 +200,15 @@ async def _send_approval_email(
     arguments captured before that response was built, never touching
     an ORM object or the request's now-closed DB session. See
     `UserService.approve_signup`'s docstring for the live incident that
-    made this necessary: calling `EmailService.send`'s real-SMTP path
-    (genuine, multi-second, `asyncio.to_thread`-wrapped network I/O)
-    from inside the same request/session lifecycle as a later ORM
-    attribute access reliably broke that later access with
-    `sqlalchemy.exc.MissingGreenlet` — reproduced live, fixed by full
-    decoupling rather than reordering."""
+    made this necessary: calling `EmailService.send`'s real-delivery
+    path (genuine network I/O — originally a blocking, `asyncio.to_thread`-
+    wrapped SMTP call; now a native async HTTP POST to the Resend API,
+    see shared/email/service.py) from inside the same request/session
+    lifecycle as a later ORM attribute access reliably broke that later
+    access with `sqlalchemy.exc.MissingGreenlet` — reproduced live,
+    fixed by full decoupling rather than reordering. The switch away
+    from SMTP doesn't remove the need for this: it's still a real
+    network call with real latency, just no longer thread-offloaded."""
     html_body = render_signup_approved_email(
         hospital_name=settings.app_name,
         recipient_name=recipient_name,

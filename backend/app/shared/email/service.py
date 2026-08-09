@@ -1,6 +1,6 @@
-"""Outbound transactional email — SMTP send plus the plain-HTML templates
-this build's self-service signup/approval/password-reset flows need.
-Lives in `app/shared`, not inside the `auth` module, mirroring
+"""Outbound transactional email — Resend HTTP API send plus the plain-HTML
+templates this build's self-service signup/approval/password-reset flows
+need. Lives in `app/shared`, not inside the `auth` module, mirroring
 `app/shared/printing/service.py`'s exact rationale: this is cross-cutting
 infrastructure a later module could equally need (appointment reminders,
 etc.), not an auth-specific concern — auth is simply its first caller.
@@ -10,21 +10,27 @@ decides nothing about *whether* an email should be sent (that's each
 caller's business logic) or *what* it says beyond rendering — it only
 ever turns already-decided content into a sent message.
 
-No third-party email SDK — the stdlib `smtplib`/`email.message` is
-sufficient for sending a handful of transactional emails via Gmail SMTP
-and avoids adding a new dependency for it. `smtplib` is blocking I/O, so
-`EmailService.send` offloads it via `asyncio.to_thread`, the same pattern
-`PasswordService` already uses for Argon2id (see that module's docstring)."""
+Sent via the Resend HTTP API (a plain `httpx` POST, no SDK — one
+transactional-email vendor doesn't justify a new heavy dependency),
+not SMTP: Railway blocks outbound SMTP (ports 587/465) from this
+service's shared/dynamic egress IP, so the previous `smtplib`-based
+sender died on every send in production with `OSError: [Errno 101]
+Network is unreachable`. An HTTPS POST to api.resend.com rides over
+port 443 like every other outbound call this app already makes
+successfully. Genuinely async (`httpx.AsyncClient`) rather than the
+previous `asyncio.to_thread`-wrapped blocking `smtplib` call — no
+thread offload needed for a real async HTTP client."""
 
-import asyncio
 import html
-import smtplib
-from email.message import EmailMessage
+
+import httpx
 
 from app.core.config import Settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+_RESEND_API_URL = "https://api.resend.com/emails"
 
 
 def _escape(value: str) -> str:
@@ -119,32 +125,32 @@ class EmailService:
         self._settings = settings
 
     async def send(self, *, to: str, subject: str, html_body: str) -> None:
-        """Sends via SMTP if `smtp_host` is configured; otherwise logs the
-        email's content at INFO level and returns — the documented dev
-        fallback so the rest of the signup/OTP/reset flows are fully
-        testable before real Gmail App Password credentials exist (see
-        core/config.py's `smtp_host` docstring)."""
-        if not self._settings.smtp_host:
+        """Sends via the Resend API if `resend_api_key` is configured;
+        otherwise logs the email's content at INFO level and returns —
+        the documented dev fallback so the rest of the signup/OTP/reset
+        flows are fully testable before a real Resend API key exists
+        (see core/config.py's `resend_api_key` docstring). Same
+        signature as the previous SMTP-based implementation — every
+        caller (signup_service.py, service.py, user_router.py) is
+        unchanged."""
+        if not self._settings.resend_api_key:
             logger.info(
-                "email_not_sent_smtp_unconfigured",
+                "email_not_sent_resend_unconfigured",
                 to=to,
                 subject=subject,
                 html_body=html_body,
             )
             return
-        await asyncio.to_thread(self._send_sync, to, subject, html_body)
 
-    def _send_sync(self, to: str, subject: str, html_body: str) -> None:
-        message = EmailMessage()
-        message["Subject"] = subject
-        message["From"] = f"{self._settings.smtp_from_name} <{self._settings.smtp_from_email}>"
-        message["To"] = to
-        message.set_content("This email requires an HTML-capable email client to view.")
-        message.add_alternative(html_body, subtype="html")
-
-        with smtplib.SMTP(self._settings.smtp_host, self._settings.smtp_port, timeout=10) as smtp:
-            if self._settings.smtp_use_tls:
-                smtp.starttls()
-            if self._settings.smtp_username and self._settings.smtp_password:
-                smtp.login(self._settings.smtp_username, self._settings.smtp_password)
-            smtp.send_message(message)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                _RESEND_API_URL,
+                headers={"Authorization": f"Bearer {self._settings.resend_api_key}"},
+                json={
+                    "from": f"{self._settings.email_from_name} <{self._settings.email_from_email}>",
+                    "to": [to],
+                    "subject": subject,
+                    "html": html_body,
+                },
+            )
+            response.raise_for_status()
