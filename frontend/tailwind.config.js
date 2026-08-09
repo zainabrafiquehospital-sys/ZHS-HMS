@@ -45,6 +45,14 @@ module.exports = {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-foreground))',
         },
+        // Zainab Rafique Hospital brand tokens (Part 2) — named
+        // separately from `primary`/`destructive` because the sidebar
+        // and toast system need their own fixed brand hooks, not the
+        // theme-aware (light/dark-swapping) `primary`/`destructive`
+        // tokens those two already reserve for buttons/badges.
+        'brand-navy': 'hsl(var(--brand-navy))',
+        'brand-navy-light': 'hsl(var(--brand-navy-light))',
+        'brand-maroon': 'hsl(var(--brand-maroon))',
       },
       borderRadius: {
         lg: 'var(--radius)',

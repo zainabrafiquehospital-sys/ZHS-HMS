@@ -1,26 +1,29 @@
 'use client';
 
-import { useState } from 'react';
 import { CheckCircle2, Printer } from 'lucide-react';
 import { usePrintRegistrationSlip } from '@/features/reception/hooks/useReception';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
+import { useToast } from '@/shared/components/toast/ToastProvider';
 
 export function RegistrationSummary({ result }) {
   const printSlip = usePrintRegistrationSlip();
-  const [printError, setPrintError] = useState(null);
+  const { toast } = useToast();
   if (!result) return null;
   const { patient, visit, queue_entry: queueEntry } = result;
 
   async function handlePrint() {
-    setPrintError(null);
     try {
       await printSlip.mutateAsync(visit.id);
     } catch (error) {
       // A failed/cancelled print never affects the already-successful
       // registration — the receptionist can just click Print Slip again.
-      setPrintError(error.message || 'Unable to print — you can try again.');
+      toast.error({
+        title: 'Unable to print slip',
+        description: error.message,
+        onRetry: handlePrint,
+      });
     }
   }
 
@@ -57,8 +60,6 @@ export function RegistrationSummary({ result }) {
             <Badge variant="warning">Will be assigned upon availability</Badge>
           )}
         </div>
-
-        {printError ? <p className="text-xs text-destructive">{printError}</p> : null}
 
         <Button
           type="button"

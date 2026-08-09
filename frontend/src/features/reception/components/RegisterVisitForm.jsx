@@ -1,6 +1,5 @@
 'use client';
 
-import { useState } from 'react';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { registerVisitSchema } from '@/features/reception/schemas/registerVisitSchema';
@@ -13,6 +12,7 @@ import { Select } from '@/shared/components/ui/Select';
 import { Textarea } from '@/shared/components/ui/Textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { SearchSelect } from '@/shared/components/SearchSelect';
+import { useToast } from '@/shared/components/toast/ToastProvider';
 
 const DEFAULT_VALUES = {
   patientMode: 'new',
@@ -54,7 +54,7 @@ function buildPayload(values) {
 }
 
 export function RegisterVisitForm({ onRegistered }) {
-  const [submitError, setSubmitError] = useState(null);
+  const { toast } = useToast();
   const registerVisit = useRegisterVisit();
   const {
     register,
@@ -73,13 +73,24 @@ export function RegisterVisitForm({ onRegistered }) {
   const existingPatientLabel = watch('existingPatientLabel');
 
   async function onSubmit(values) {
-    setSubmitError(null);
     try {
       const response = await registerVisit.mutateAsync(buildPayload(values));
       reset(DEFAULT_VALUES);
       onRegistered?.(response.data);
+      // RegistrationSummary (rendered by the parent via onRegistered)
+      // stays as the persistent, referenceable receipt-like panel —
+      // this toast is just the transient "it worked" acknowledgment,
+      // the two aren't redundant (Part 1's own inline-vs-toast audit).
+      toast.success({
+        title: 'Visit registered',
+        description: `Queue token ${response.data.visit.queue_token}`,
+      });
     } catch (error) {
-      setSubmitError(error.message || 'Unable to register this visit.');
+      toast.error({
+        title: 'Unable to register this visit',
+        description: error.message,
+        onRetry: () => onSubmit(values),
+      });
     }
   }
 
@@ -241,12 +252,6 @@ export function RegisterVisitForm({ onRegistered }) {
               </label>
             )}
           />
-
-          {submitError ? (
-            <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {submitError}
-            </p>
-          ) : null}
 
           <Button type="submit" disabled={isSubmitting} className="w-full sm:w-auto">
             {isSubmitting ? 'Registering…' : 'Register Visit'}
