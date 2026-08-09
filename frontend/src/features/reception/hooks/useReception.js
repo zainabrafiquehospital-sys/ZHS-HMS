@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { receptionService } from '@/features/reception/api/receptionService';
 import { visitsService } from '@/features/visits/api/visitsService';
 import { displayDayKey, todayDisplayDayKey } from '@/utils/timezone';
+import { openAndPrintHtml } from '@/utils/printWindow';
 
 export { usePatientsForVisits } from '@/features/patients/hooks/usePatientsForVisits';
 
@@ -91,14 +92,7 @@ export function usePrintRegistrationSlip() {
   return useMutation({
     mutationFn: async (visitId) => {
       const html = await receptionService.fetchRegistrationSlipHtml(visitId);
-      const printWindow = window.open('', '_blank');
-      if (!printWindow) {
-        throw new Error('Unable to open print window — check your browser popup settings.');
-      }
-      printWindow.document.write(html);
-      printWindow.document.close();
-      printWindow.focus();
-      printWindow.print();
+      await openAndPrintHtml(html);
     },
   });
 }

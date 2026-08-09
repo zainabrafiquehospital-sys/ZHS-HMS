@@ -3,6 +3,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { billingService } from '@/features/billing/api/billingService';
 import { visitsService } from '@/features/visits/api/visitsService';
+import { openAndPrintHtml } from '@/utils/printWindow';
 
 export { usePatientsForVisits } from '@/features/patients/hooks/usePatientsForVisits';
 
@@ -101,14 +102,7 @@ export function usePrintInvoice() {
   return useMutation({
     mutationFn: async (invoiceId) => {
       const html = await billingService.fetchInvoiceReceiptHtml(invoiceId);
-      const printWindow = window.open('', '_blank');
-      if (!printWindow) {
-        throw new Error('Unable to open print window — check your browser popup settings.');
-      }
-      printWindow.document.write(html);
-      printWindow.document.close();
-      printWindow.focus();
-      printWindow.print();
+      await openAndPrintHtml(html);
     },
   });
 }

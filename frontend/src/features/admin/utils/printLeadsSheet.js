@@ -1,4 +1,5 @@
 import { env } from '@/core/config/env';
+import { openAndPrintHtml } from '@/utils/printWindow';
 
 /** Escapes text for safe interpolation into the print document's HTML —
  * patient names are free-text, user-supplied at registration, so this
@@ -57,15 +58,15 @@ async function getLogoDataUri() {
 
 /** Builds a print-ready, letterhead-style A4 document listing that
  * day's patient leads (name + phone) and sends it through the browser's
- * native print pipeline — the same popup + `document.write` + `.print()`
- * pattern already established by Reception's
- * `usePrintRegistrationSlip` (features/reception/hooks/useReception.js),
- * reused here rather than inventing a second printing mechanism.
- * `async` specifically to fully resolve the logo's data URI (see
- * `getLogoDataUri`) before writing anything to the popup — the caller
- * must `await` this. Degrades to a text-only letterhead (not a thrown
- * error) if the logo genuinely can't be fetched, since a failed logo
- * load is not a reason to block printing the list itself. */
+ * native print pipeline via the shared `openAndPrintHtml` (see
+ * `@/utils/printWindow` — the same popup+print helper Reception's
+ * `usePrintRegistrationSlip` and Billing's `usePrintInvoice` use),
+ * rather than inventing a second printing mechanism. `async` specifically
+ * to fully resolve the logo's data URI (see `getLogoDataUri`) before
+ * writing anything to the popup — the caller must `await` this.
+ * Degrades to a text-only letterhead (not a thrown error) if the logo
+ * genuinely can't be fetched, since a failed logo load is not a reason
+ * to block printing the list itself. */
 export async function printLeadsSheet({ dateLabel, leads }) {
   const logoDataUri = await getLogoDataUri().catch(() => null);
   const rows = leads
@@ -129,12 +130,5 @@ export async function printLeadsSheet({ dateLabel, leads }) {
 </html>
 `;
 
-  const printWindow = window.open('', '_blank');
-  if (!printWindow) {
-    throw new Error('Unable to open print window — check your browser popup settings.');
-  }
-  printWindow.document.write(html);
-  printWindow.document.close();
-  printWindow.focus();
-  printWindow.print();
+  await openAndPrintHtml(html);
 }
