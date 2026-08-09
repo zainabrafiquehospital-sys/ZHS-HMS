@@ -1,0 +1,25 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Overrides the Dockerfile's CMD (which hardcodes port 8000 for local
+# docker-compose) rather than editing it, so local dev is untouched.
+#
+# JWT_KEYS_DIR (default ./keys) is .dockerignore'd — never baked into the
+# image. This writes the production signing key to disk from
+# JWT_SIGNING_KEY_PEM_B64 (base64-encoded PEM, set in Railway's dashboard)
+# at container start, keyed by JWT_ACTIVE_KID, before uvicorn starts. No
+# persistent volume needed — the app stays stateless and this step is
+# idempotent across restarts/redeploys. See app/core/jwt_keys.py's
+# module docstring for the key registry/rotation model this feeds.
+startCommand = "sh -c 'mkdir -p ./keys && echo \"$JWT_SIGNING_KEY_PEM_B64\" | base64 -d > \"./keys/$JWT_ACTIVE_KID.pem\" && uvicorn app.main:app --host 0.0.0.0 --port $PORT'"
+
+# Runs before every deploy. alembic upgrade head is idempotent (no-ops
+# when already at head), so this is safe to run unconditionally rather
+# than only on migration-adding deploys.
+preDeployCommand = "alembic upgrade head"
+
+healthcheckPath = "/api/v1/health"
+healthcheckTimeout = 100
+restartPolicyType = "ON_FAILURE"
