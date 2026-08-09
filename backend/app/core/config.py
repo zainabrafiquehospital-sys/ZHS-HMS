@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # conversion is configured, not a number baked into a template.
     display_timezone: str = "Asia/Karachi"
 
-    cors_allowed_origins: str = "http://localhost:3000"
+    cors_allowed_origins: str = "https://zhs-hms-mu.vercel.app/login"
 
     # The frontend's own login page — linked from the signup-approval
     # confirmation email (see app/modules/auth/user_service.py's
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # allowlist with no defined "primary" entry) — this is specifically
     # where a human should land after clicking the email, not just any
     # origin permitted to call the API.
-    frontend_login_url: str = "http://localhost:3000/login"
+    frontend_login_url: str = "https://zhs-hms-mu.vercel.app/login"
 
     database_url: str
     database_sync_url: str
