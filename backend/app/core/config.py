@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # conversion is configured, not a number baked into a template.
     display_timezone: str = "Asia/Karachi"
 
-    cors_allowed_origins: str = "https://zhs-hms-mu.vercel.app/login"
+    cors_allowed_origins: str = "https://zhs-hms-mu.vercel.app"
 
     # The frontend's own login page — linked from the signup-approval
     # confirmation email (see app/modules/auth/user_service.py's
