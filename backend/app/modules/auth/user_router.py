@@ -25,8 +25,9 @@ lock/unlock must be the only paths that change it."""
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 
+from app.core.config import Settings, get_settings
 from app.modules.auth.constants import (
     PERMISSION_USERS_CREATE,
     PERMISSION_USERS_DELETE,
@@ -54,6 +55,8 @@ from app.modules.auth.user_schemas import (
     UserWithTemporaryPasswordOut,
 )
 from app.modules.auth.user_service import UserService
+from app.shared.email.dependencies import get_email_service
+from app.shared.email.service import EmailService, render_signup_approved_email
 from app.shared.envelope import success_envelope
 from app.shared.pagination import PaginationMeta, SortOrder
 
@@ -186,6 +189,66 @@ async def unlock_user(
     actor: User = Depends(require_permission(PERMISSION_USERS_MANAGE_STATUS)),
 ) -> dict:
     user = await user_service.unlock_user(actor=actor, user_id=user_id)
+    return success_envelope(UserAdminOut.from_user(user).model_dump(mode="json"))
+
+
+async def _send_approval_email(
+    *, email_service: EmailService, settings: Settings, to: str, recipient_name: str
+) -> None:
+    """Scheduled via `BackgroundTasks` from `approve_signup` below — runs
+    only after the HTTP response is already sent, on plain string
+    arguments captured before that response was built, never touching
+    an ORM object or the request's now-closed DB session. See
+    `UserService.approve_signup`'s docstring for the live incident that
+    made this necessary: calling `EmailService.send`'s real-SMTP path
+    (genuine, multi-second, `asyncio.to_thread`-wrapped network I/O)
+    from inside the same request/session lifecycle as a later ORM
+    attribute access reliably broke that later access with
+    `sqlalchemy.exc.MissingGreenlet` — reproduced live, fixed by full
+    decoupling rather than reordering."""
+    html_body = render_signup_approved_email(
+        hospital_name=settings.app_name,
+        recipient_name=recipient_name,
+        login_url=settings.frontend_login_url,
+    )
+    await email_service.send(
+        to=to,
+        subject=f"Your {settings.app_name} account has been approved",
+        html_body=html_body,
+    )
+
+
+@router.post("/{user_id}/approve-signup")
+async def approve_signup(
+    user_id: UUID,
+    background_tasks: BackgroundTasks,
+    user_service: UserService = Depends(get_user_service),
+    email_service: EmailService = Depends(get_email_service),
+    settings: Settings = Depends(get_settings),
+    actor: User = Depends(require_permission(PERMISSION_USERS_MANAGE_STATUS)),
+) -> dict:
+    """Same permission as activate/deactivate/lock/unlock — approving a
+    signup is a status transition on the User record, not a distinct
+    capability (see UserService.approve_signup's docstring)."""
+    user = await user_service.approve_signup(actor=actor, user_id=user_id)
+    body = UserAdminOut.from_user(user)
+    background_tasks.add_task(
+        _send_approval_email,
+        email_service=email_service,
+        settings=settings,
+        to=body.email,
+        recipient_name=body.full_name,
+    )
+    return success_envelope(body.model_dump(mode="json"))
+
+
+@router.post("/{user_id}/reject-signup")
+async def reject_signup(
+    user_id: UUID,
+    user_service: UserService = Depends(get_user_service),
+    actor: User = Depends(require_permission(PERMISSION_USERS_MANAGE_STATUS)),
+) -> dict:
+    user = await user_service.reject_signup(actor=actor, user_id=user_id)
     return success_envelope(UserAdminOut.from_user(user).model_dump(mode="json"))
 
 

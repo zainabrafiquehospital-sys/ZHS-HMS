@@ -10,6 +10,6 @@ function readEnv(key, fallback) {
 export const env = {
   apiBaseUrl: readEnv('NEXT_PUBLIC_API_BASE_URL', 'http://localhost:8000'),
   apiVersion: readEnv('NEXT_PUBLIC_API_VERSION', 'v1'),
-  appName: readEnv('NEXT_PUBLIC_APP_NAME', 'Gynecology HMS'),
+  appName: readEnv('NEXT_PUBLIC_APP_NAME', 'Zainab Rafique Hospital'),
   isProduction: process.env.NODE_ENV === 'production',
 };

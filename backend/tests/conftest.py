@@ -16,11 +16,13 @@ from app.core.config import Settings, get_settings
 from app.core.dependencies import get_db
 from app.core.jwt_keys import JWTKeyRegistry, get_jwt_key_registry
 from app.modules.auth.models import Permission, Role, RolePermission, User, UserRole
+from app.modules.auth.otp_service import OtpService
 from app.modules.auth.password_service import PasswordService
 from app.modules.auth.permission_service import PermissionService
 from app.modules.auth.repository import (
     AuditRepository,
     LoginSessionRepository,
+    OtpCodeRepository,
     PasswordHistoryRepository,
     PermissionRepository,
     RefreshTokenRepository,
@@ -55,6 +57,7 @@ from app.modules.vitals.repository import VitalsRecordRepository
 from app.modules.vitals.service import VitalsService
 from app.redis.client import get_redis_client
 from app.shared.audit.repository import AuditLogRepository
+from app.shared.email.service import EmailService
 
 # Every RBAC test fixture (grant_permission below) names its throwaway
 # Role with this prefix, so teardown can delete it deterministically. The
@@ -345,7 +348,7 @@ async def real_session():
 
 
 @pytest.fixture
-def user_service(real_session) -> UserService:
+def user_service(real_session, auth_settings) -> UserService:
     return UserService(
         session=real_session,
         user_repository=UserRepository(real_session),
@@ -521,6 +524,12 @@ def auth_service(real_session, auth_settings, token_service, password_service) -
         audit_repository=AuditRepository(real_session),
         password_service=password_service,
         token_service=token_service,
+        otp_code_repository=OtpCodeRepository(real_session),
+        otp_service=OtpService(),
+        # auth_settings.smtp_host is unset, so this exercises the
+        # documented console-fallback path — no test ever sends a real
+        # email (see EmailService.send's docstring).
+        email_service=EmailService(auth_settings),
     )
 
 

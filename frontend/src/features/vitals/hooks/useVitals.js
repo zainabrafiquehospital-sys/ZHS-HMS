@@ -37,14 +37,73 @@ export function useVisitsByIds(visitIds) {
   return { visitsById: byId, isLoading };
 }
 
+/** Backs the entry form's previous-reading/trend panel. `enabled`
+ * requires both IDs since the backend endpoint needs the patient to
+ * scope the search and the current visit to exclude from it (see
+ * vitalsService.latestForPatient). Returns `data: null` for a genuine
+ * "no prior vitals" outcome, distinguishable from `isLoading` — the
+ * form must render an honest empty state for the former, not confuse
+ * it with the latter. */
+export function useLatestVitalsForPatient(patientId, excludeVisitId) {
+  return useQuery({
+    queryKey: ['vitals', 'patients', patientId, 'latest', excludeVisitId],
+    queryFn: () =>
+      vitalsService.latestForPatient(patientId, excludeVisitId).then((res) => res.data),
+    enabled: Boolean(patientId) && Boolean(excludeVisitId),
+  });
+}
+
+/** All vitals recorded so far for one visit, ordered oldest-first by
+ * the backend (see VitalsRecordRepository.list_for_visit). Used by the
+ * doctor's Consultation view to display what was actually recorded,
+ * not just that a "Send to Vitals" action exists. */
+export function useVitalsForVisit(visitId) {
+  return useQuery({
+    queryKey: ['vitals', 'visits', visitId],
+    queryFn: () => vitalsService.listForVisit(visitId).then((res) => res.data),
+    enabled: Boolean(visitId),
+  });
+}
+
+/** Same shape as usePatientsForVisits/useReceptionistsForVisits' join
+ * pattern, for the doctor's queue and consultation view — both need
+ * "does this visit have a flagged vital?" without an extra endpoint.
+ * Shares its query key with `useVitalsForVisit` so both hooks read
+ * from (and populate) the same cache entry per visit. */
+export function useVitalsForVisits(visits) {
+  const uniqueVisitIds = [...new Set((visits ?? []).map((visit) => visit.id))];
+  const results = useQueries({
+    queries: uniqueVisitIds.map((visitId) => ({
+      queryKey: ['vitals', 'visits', visitId],
+      queryFn: () => vitalsService.listForVisit(visitId).then((res) => res.data),
+      enabled: Boolean(visitId),
+    })),
+  });
+  const byId = {};
+  uniqueVisitIds.forEach((id, index) => {
+    byId[id] = results[index]?.data;
+  });
+  const isLoading = results.some((result) => result.isLoading);
+  return { vitalsByVisitId: byId, isLoading };
+}
+
 export function useRecordVitals() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (payload) => vitalsService.record(payload),
-    onSuccess: () => {
+    onSuccess: (_data, payload) => {
       queryClient.invalidateQueries({ queryKey: ['queue', 'worklist', 'vitals'] });
       queryClient.invalidateQueries({ queryKey: ['visits', 'doctor'] });
+      queryClient.invalidateQueries({ queryKey: ['visits', 'unassigned'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['vitals', 'visits', payload.visit_id] });
+      // Covers the mid-consultation detour case: recording vitals here
+      // flips the visit's active Consultation back from AWAITING_VITALS
+      // to IN_PROGRESS server-side (ConsultationService.resume_from_vitals)
+      // — invalidate so the doctor's "Vitals Pending" badge
+      // (useVitalsPendingForDoctor) clears immediately rather than
+      // waiting on the next poll.
+      queryClient.invalidateQueries({ queryKey: ['consultations', 'active'] });
     },
   });
 }

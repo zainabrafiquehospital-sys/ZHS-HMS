@@ -34,11 +34,13 @@ from app.modules.auth.exceptions import (
     RoleNameAlreadyExistsError,
 )
 from app.modules.auth.models import Role
+from app.modules.auth.otp_service import OtpService
 from app.modules.auth.password_service import PasswordService
 from app.modules.auth.permission_service import PermissionService
 from app.modules.auth.repository import (
     AuditRepository,
     LoginSessionRepository,
+    OtpCodeRepository,
     PasswordHistoryRepository,
     PermissionRepository,
     RefreshTokenRepository,
@@ -51,6 +53,7 @@ from app.modules.auth.role_service import RoleService
 from app.modules.auth.service import AuthService
 from app.modules.auth.token_service import TokenService
 from app.modules.auth.user_service import UserService
+from app.shared.email.service import EmailService
 from tests.conftest import TEST_PERMISSION_GROUP_PREFIX, TEST_ROLE_PREFIX, make_test_email
 
 _PASSWORD = "Str0ng!Passw0rd#2026"
@@ -122,6 +125,9 @@ def _auth_service_for(session: AsyncSession, jwt_key_registry, fake_redis) -> Au
         audit_repository=AuditRepository(session),
         password_service=PasswordService(),
         token_service=token_service,
+        otp_code_repository=OtpCodeRepository(session),
+        otp_service=OtpService(),
+        email_service=EmailService(settings),
     )
 
 

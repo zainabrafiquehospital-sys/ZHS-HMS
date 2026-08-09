@@ -25,4 +25,42 @@ export const authService = {
   me() {
     return httpClient.get('/auth/me');
   },
+
+  // Self-service signup (Receptionist or Vitals staff — see backend/
+  // app/modules/auth/signup_schemas.py's SignupRole) — email/OTP/
+  // approval flow, same for both roles.
+  signup({ fullName, email, phoneNumber, password, shift, role }) {
+    return httpClient.post('/auth/signup', {
+      full_name: fullName,
+      email,
+      phone_number: phoneNumber,
+      password,
+      shift,
+      role,
+    });
+  },
+
+  verifyEmail({ email, code }) {
+    return httpClient.post('/auth/verify-email', { email, code });
+  },
+
+  resendSignupOtp({ email }) {
+    return httpClient.post('/auth/resend-otp', { email });
+  },
+
+  forgotPassword({ email }) {
+    return httpClient.post('/auth/forgot-password', { email });
+  },
+
+  verifyResetOtp({ email, code }) {
+    return httpClient.post('/auth/verify-reset-otp', { email, code });
+  },
+
+  resetPassword({ email, code, newPassword }) {
+    return httpClient.post('/auth/reset-password', {
+      email,
+      code,
+      new_password: newPassword,
+    });
+  },
 };

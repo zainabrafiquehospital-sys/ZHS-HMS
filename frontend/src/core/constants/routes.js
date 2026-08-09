@@ -9,9 +9,13 @@ export const ROUTE_GROUPS = {
 
 export const ROUTES = {
   LOGIN: '/login',
+  SIGNUP: '/signup',
+  VERIFY_EMAIL: '/verify-email',
+  FORGOT_PASSWORD: '/forgot-password',
   DASHBOARD: '/',
   RECEPTION: '/reception',
   DOCTOR_QUEUE: '/doctor',
   VITALS: '/vitals',
   BILLING: '/billing',
+  ADMIN: '/admin',
 };

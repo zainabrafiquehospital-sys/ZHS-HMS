@@ -1,6 +1,6 @@
 'use client';
 
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { consultationService } from '@/features/consultation/api/consultationService';
 import { visitsService } from '@/features/visits/api/visitsService';
 
@@ -36,6 +36,86 @@ export function useActiveConsultation(visitId) {
   });
 }
 
+/** Same cached-lookup-per-unique-id join pattern as usePatientsForVisits/
+ * useVitalsForVisits, for a set of visits at once — used by
+ * useVitalsPendingForDoctor below to find which of a doctor's own
+ * `IN_CONSULTATION` visits currently have an `AWAITING_VITALS`
+ * consultation (the doctor-requested mid-consult vitals detour — see
+ * ConsultationService.send_to_vitals' docstring: the Visit's own status
+ * deliberately never changes for this case, only the Consultation's
+ * does, so this is the only way to detect it). Shares its query key
+ * with `useActiveConsultation` so both hooks read/populate the same
+ * cache entry per visit. */
+function useActiveConsultationsForVisits(visits) {
+  const uniqueVisitIds = [...new Set((visits ?? []).map((visit) => visit.id))];
+  const results = useQueries({
+    queries: uniqueVisitIds.map((visitId) => ({
+      queryKey: ['consultations', 'active', visitId],
+      queryFn: () => consultationService.getActiveForVisit(visitId).then((res) => res.data),
+      enabled: Boolean(visitId),
+    })),
+  });
+  const byId = {};
+  uniqueVisitIds.forEach((id, index) => {
+    byId[id] = results[index]?.data;
+  });
+  const isLoading = results.some((result) => result.isLoading);
+  return { consultationsByVisitId: byId, isLoading };
+}
+
+/** Every visit currently "with the vitals nurse" that a doctor should
+ * still be able to see — not silently absent from their queue just
+ * because it isn't `WAITING_DOCTOR` right now. Covers both cases:
+ *   - Workflow-A intake: Visit.status === WAITING_VITALS (Reception
+ *     routed straight to vitals before any doctor touch) — both the
+ *     doctor's own assigned ones and unclaimed ones, same "mine +
+ *     unassigned" split `waiting_doctor` already gets.
+ *   - The mid-consultation detour: Visit.status stays IN_CONSULTATION
+ *     (see ConsultationService.send_to_vitals), only the active
+ *     Consultation's own status flips to AWAITING_VITALS — these are
+ *     always already assigned to this doctor (a consultation must have
+ *     been started for the detour to exist at all), so only "mine" is
+ *     relevant here, never "unassigned".
+ * Merges both into one list, each tagged with `reason` so the caller
+ * can label them appropriately without re-deriving which case a given
+ * visit is. */
+export function useVitalsPendingForDoctor(doctorUserId) {
+  const { data: myWaitingVitals, isLoading: isLoadingMyWaitingVitals } = useMyQueue(
+    doctorUserId,
+    'waiting_vitals',
+  );
+  const { data: unassignedWaitingVitals, isLoading: isLoadingUnassignedWaitingVitals } =
+    useUnassignedQueue('waiting_vitals');
+  const { data: myInConsultation, isLoading: isLoadingMyInConsultation } = useMyQueue(
+    doctorUserId,
+    'in_consultation',
+  );
+  const { consultationsByVisitId, isLoading: isLoadingConsultations } =
+    useActiveConsultationsForVisits(myInConsultation ?? []);
+
+  const detourVisits = (myInConsultation ?? []).filter(
+    (visit) => consultationsByVisitId[visit.id]?.status === 'awaiting_vitals',
+  );
+
+  const visits = [
+    ...(myWaitingVitals ?? []).map((visit) => ({ visit, reason: 'intake' })),
+    ...(unassignedWaitingVitals ?? []).map((visit) => ({ visit, reason: 'intake' })),
+    ...detourVisits.map((visit) => ({ visit, reason: 'detour' })),
+  ];
+
+  return {
+    visits,
+    isLoading:
+      isLoadingMyWaitingVitals ||
+      isLoadingUnassignedWaitingVitals ||
+      isLoadingMyInConsultation ||
+      // Only meaningful once myInConsultation has resolved — before
+      // that, useActiveConsultationsForVisits has nothing to query yet
+      // and would otherwise report a misleadingly-settled isLoading.
+      (Boolean(myInConsultation?.length) && isLoadingConsultations),
+  };
+}
+
 export function useConsultationById(consultationId) {
   return useQuery({
     queryKey: ['consultations', consultationId],
@@ -63,6 +143,14 @@ export function useSendToVitals() {
       consultationService.sendToVitals(consultationId, reason),
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['consultations', variables.consultationId] });
+      // The Visit's own status never changes for this detour (see
+      // ConsultationService.send_to_vitals' docstring), so the
+      // `['visits', 'doctor', ...]` query backing `useVitalsPendingForDoctor`
+      // wouldn't otherwise know to re-check this visit's now-AWAITING_VITALS
+      // consultation until its next 15s poll — invalidate eagerly so the
+      // doctor's queue view picks up the "Vitals Pending" badge immediately.
+      queryClient.invalidateQueries({ queryKey: ['visits', 'doctor'] });
+      queryClient.invalidateQueries({ queryKey: ['consultations', 'active'] });
     },
   });
 }

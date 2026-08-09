@@ -73,7 +73,61 @@ class UserStatus(PyEnum):
     INACTIVE = "inactive"
     SUSPENDED = "suspended"
     LOCKED = "locked"
+    # Reserved before this feature existed (see AuthService.register's and
+    # UserService.create_user's docstrings) but deliberately NOT reused for
+    # self-service signup: PENDING_VERIFICATION is treated as loggable
+    # everywhere it's checked (_LOGGABLE_STATUSES in service.py,
+    # get_current_active_user in dependencies.py) — the opposite of what a
+    # not-yet-verified signup needs. The two states below are the actual
+    # self-service-signup states, both deliberately login-blocking.
     PENDING_VERIFICATION = "pending_verification"
+    # Signup submitted, OTP not yet confirmed — cannot log in.
+    PENDING_EMAIL_VERIFICATION = "pending_email_verification"
+    # OTP confirmed, awaiting an admin's approve/reject decision — cannot
+    # log in. Approval assigns a role and moves the account to ACTIVE.
+    PENDING_ADMIN_APPROVAL = "pending_admin_approval"
+    # An admin rejected a pending signup — cannot log in. Distinct from
+    # INACTIVE (which means "was ACTIVE, later deactivated") so the audit
+    # trail can always tell "never approved" apart from "approved, then
+    # deactivated" — the same fine-grained-status philosophy this enum
+    # already applies to LOCKED vs SUSPENDED vs INACTIVE.
+    REJECTED = "rejected"
+
+
+class Shift(PyEnum):
+    """Which of the hospital's two operating shifts a staff account
+    belongs to — collected at self-service signup (Receptionist and
+    Vitals staff both use the same signup flow, see SignupService)
+    since front-desk/nursing staffing is shift-based. Nullable on User:
+    most accounts (admin, doctors, staff created via the
+    admin-provisioned User Management flow) have no shift concept, so
+    this is deliberately not required at the database level."""
+
+    MORNING = "morning"
+    NIGHT = "night"
+
+
+class SignupRole(PyEnum):
+    """Which role a self-service signup requested — mirrors
+    signup_schemas.SignupRole exactly (this is the persisted-column
+    twin of that request-schema enum, not a duplicate concept; kept as
+    a separate enum here rather than importing the Pydantic one because
+    this module must not depend on signup_schemas.py, the same
+    layering direction every other model-vs-schema enum in this file
+    already follows).
+
+    Recorded at signup time (`SignupService.signup`) and read back by
+    `UserService.approve_signup` to decide which Role to actually grant
+    — before this field existed, `approve_signup` had no way to know
+    which role a pending account had requested at all, and silently
+    granted `Receptionist` unconditionally regardless of what the
+    signup form said (see this codebase's own investigation history
+    for the incident this field fixes). Nullable because admin-created
+    accounts (User Management's Create User) never go through signup at
+    all and have no requested role to record."""
+
+    RECEPTIONIST = "receptionist"
+    VITALS = "vitals"
 
 
 class User(BaseEntity):
@@ -121,6 +175,31 @@ class User(BaseEntity):
     last_login_ip: Mapped[IPv4Address | IPv6Address | None] = mapped_column(INET)
     password_changed_at: Mapped[datetime | None] = mapped_column()
     mfa_enabled: Mapped[bool] = mapped_column(default=False)
+    # See Shift's own docstring for why this is nullable and who sets it
+    # (self-service signup only, for now).
+    shift: Mapped[Shift | None] = mapped_column(
+        Enum(
+            Shift,
+            name="user_shift",
+            native_enum=False,
+            length=10,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+            create_constraint=True,
+        ),
+    )
+    # See SignupRole's own docstring for why this exists and who reads
+    # it (UserService.approve_signup). Nullable for the same reason
+    # `shift` is — admin-provisioned accounts never signed up at all.
+    signup_role: Mapped[SignupRole | None] = mapped_column(
+        Enum(
+            SignupRole,
+            name="user_signup_role",
+            native_enum=False,
+            length=20,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+            create_constraint=True,
+        ),
+    )
 
     # UserRole also has `assigned_by`, a second FK to `user.id` — without
     # `foreign_keys` here, SQLAlchemy can't tell which of the two columns
@@ -147,6 +226,12 @@ class User(BaseEntity):
         lazy="selectin",
     )
     password_history: Mapped[list["PasswordHistory"]] = relationship(
+        back_populates="user",
+        cascade="save-update, merge",
+        passive_deletes="all",
+        lazy="selectin",
+    )
+    otp_codes: Mapped[list["OtpCode"]] = relationship(
         back_populates="user",
         cascade="save-update, merge",
         passive_deletes="all",
@@ -463,6 +548,76 @@ class PasswordHistory(TimestampedEntity):
     user: Mapped["User"] = relationship(back_populates="password_history", lazy="selectin")
 
 
+class OtpPurpose(PyEnum):
+    """One generic OTP mechanism serves both flows that need a short-lived
+    email-delivered code — self-service signup email verification, and
+    forgot-password — per the explicit decision to reuse rather than build
+    a second, parallel OTP system. `purpose` is what keeps a code issued
+    for one flow from being usable in the other, even for the same user."""
+
+    EMAIL_VERIFICATION = "email_verification"
+    PASSWORD_RESET = "password_reset"
+
+
+class OtpCode(TimestampedEntity):
+    """A one-time verification code, delivered by email. Uses
+    TimestampedEntity, not BaseEntity, for the same reasons as
+    RefreshToken (see that model's docstring): never soft-deleted (a
+    future retention job purges expired rows, same as RefreshToken's own
+    documented out-of-scope follow-up), and it belongs to exactly one
+    user with no independent audit-actor concept.
+
+    Never stores the raw code, only its SHA-256 hash — mirrors
+    RefreshToken.token_hash exactly (see TokenService.hash_refresh_token):
+    a 6-digit code is low-entropy by nature, so the actual defense against
+    brute-forcing is `attempts` (this row invalidates itself after too
+    many wrong tries, mirroring User.failed_login_attempts/locked_until)
+    plus request-level rate limiting (see core/rate_limit.py) — not making
+    the hash itself expensive to compute the way Argon2id does for
+    passwords, which would add real cost without closing a 10^6-value
+    search space any attacker with the hash could already brute-force
+    offline regardless of hash speed.
+
+    At most one *unconsumed* OTP per (user, purpose) at a time — enforced
+    at the database level (partial unique index below), mirroring
+    QueueEntry/Consultation/Invoice's identical single-active-row pattern
+    elsewhere in this codebase: requesting a new code (signup resend, or a
+    fresh forgot-password request) must close out any prior unconsumed one
+    first, the same "close the current one before opening a new one"
+    discipline QueueService.route_to already establishes."""
+
+    __tablename__ = "otp_code"
+    __table_args__ = (
+        Index(
+            "ix_otp_code_user_id_purpose_active",
+            "user_id",
+            "purpose",
+            unique=True,
+            postgresql_where=text("consumed_at IS NULL"),
+        ),
+        Index("ix_otp_code_expires_at", "expires_at"),
+    )
+
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("user.id", ondelete="CASCADE"), nullable=False)
+    purpose: Mapped[OtpPurpose] = mapped_column(
+        Enum(
+            OtpPurpose,
+            name="otp_purpose",
+            native_enum=False,
+            length=20,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+            create_constraint=True,
+        ),
+        nullable=False,
+    )
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column()
+    attempts: Mapped[int] = mapped_column(SmallInteger, default=0)
+
+    user: Mapped["User"] = relationship(back_populates="otp_codes", lazy="selectin")
+
+
 class AuditEventType(PyEnum):
     LOGIN_SUCCESS = "login_success"
     LOGIN_FAILED = "login_failed"
@@ -509,6 +664,16 @@ class AuditEventType(PyEnum):
     # are about the Permission record itself, not who holds it.
     PERMISSION_GRANTED = "permission_granted"
     PERMISSION_REVOKED = "permission_revoked"
+    # Self-Service Signup — SignupService's own lifecycle events. Distinct
+    # from USER_CREATED (an admin provisioning an account directly) —
+    # this is the applicant's own action. PASSWORD_RESET_REQUESTED/
+    # PASSWORD_RESET_COMPLETED below were already reserved for the
+    # self-service forgot-password flow (present, unused, before this
+    # feature) and are reused as-is rather than duplicated.
+    USER_SIGNED_UP = "user_signed_up"
+    EMAIL_VERIFIED = "email_verified"
+    SIGNUP_APPROVED = "signup_approved"
+    SIGNUP_REJECTED = "signup_rejected"
 
 
 class AuditEventStatus(PyEnum):

@@ -4,44 +4,75 @@
 
 @layer base {
   :root {
+    /* Zainab Rafique Hospital brand palette (Part 2). Every value here
+       is hand-converted from the hospital's actual hex brand colors
+       (navy #1E3A5F/#22456E, maroon #8E1B2E/#A61C2E, silver #F2F2F2/
+       #C9C9C9) into this project's existing HSL-CSS-variable token
+       system — not new colors invented for this pass, and not a
+       parallel color system: Button/Badge/Card already consume
+       --primary/--destructive/--accent, so changing these values is
+       what makes the rebrand propagate everywhere automatically.
+       `success`/`warning` deliberately stay as Badge.jsx's existing
+       literal `emerald-600`/`amber-500` classes, not new variables —
+       that green already reads correctly, nothing to fix there. */
     --background: 0 0% 100%;
-    --foreground: 240 10% 4%;
+    --foreground: 214 30% 14%;
     --card: 0 0% 100%;
-    --card-foreground: 240 10% 4%;
-    --primary: 240 6% 10%;
+    --card-foreground: 214 30% 14%;
+    /* Navy #1E3A5F — primary buttons/accents, active nav state. */
+    --primary: 214 52% 25%;
     --primary-foreground: 0 0% 98%;
-    --secondary: 240 5% 96%;
-    --secondary-foreground: 240 6% 10%;
-    --muted: 240 5% 96%;
-    --muted-foreground: 240 4% 46%;
-    --accent: 240 5% 96%;
-    --accent-foreground: 240 6% 10%;
-    --destructive: 0 72% 51%;
+    /* Silver #F2F2F2 — secondary surfaces/buttons. */
+    --secondary: 0 0% 95%;
+    --secondary-foreground: 214 52% 25%;
+    --muted: 0 0% 95%;
+    --muted-foreground: 214 10% 40%;
+    /* Silver #C9C9C9-toned accent surface, navy text on it. */
+    --accent: 0 0% 91%;
+    --accent-foreground: 214 52% 25%;
+    /* Maroon #A61C2E — destructive/critical/urgent states, used
+       exactly where the app already reaches for `destructive`
+       (cancel, critical vitals, errors) — sparing by construction,
+       since that variant is never the default button style. */
+    --destructive: 352 71% 38%;
     --destructive-foreground: 0 0% 98%;
-    --border: 240 6% 90%;
-    --input: 240 6% 90%;
-    --ring: 240 6% 10%;
+    --border: 214 15% 88%;
+    --input: 214 15% 88%;
+    --ring: 214 52% 25%;
     --radius: 0.5rem;
+
+    /* Brand-specific variables beyond the shadcn base set — the
+       sidebar's navy needs a *darker* shade than --primary for
+       sufficient contrast against white sidebar text/icons, and the
+       toast system (Part 4) needs its own named hooks rather than
+       overloading --primary/--destructive with a second meaning. */
+    --brand-navy: 214 52% 22%;
+    --brand-navy-light: 211 49% 34%;
+    --brand-maroon: 350 68% 33%;
   }
 
   .dark {
-    --background: 240 10% 4%;
+    --background: 214 30% 7%;
     --foreground: 0 0% 98%;
-    --card: 240 8% 7%;
+    --card: 214 25% 11%;
     --card-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 240 6% 10%;
-    --secondary: 240 4% 16%;
+    --primary: 211 55% 62%;
+    --primary-foreground: 214 40% 12%;
+    --secondary: 214 20% 18%;
     --secondary-foreground: 0 0% 98%;
-    --muted: 240 4% 16%;
-    --muted-foreground: 240 5% 65%;
-    --accent: 240 4% 16%;
+    --muted: 214 20% 18%;
+    --muted-foreground: 214 10% 65%;
+    --accent: 214 20% 18%;
     --accent-foreground: 0 0% 98%;
-    --destructive: 0 63% 31%;
+    --destructive: 352 60% 45%;
     --destructive-foreground: 0 0% 98%;
-    --border: 240 4% 16%;
-    --input: 240 4% 16%;
-    --ring: 240 5% 84%;
+    --border: 214 20% 18%;
+    --input: 214 20% 18%;
+    --ring: 211 55% 62%;
+
+    --brand-navy: 214 40% 12%;
+    --brand-navy-light: 211 45% 26%;
+    --brand-maroon: 352 60% 45%;
   }
 
   * {

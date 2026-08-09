@@ -48,6 +48,7 @@ from app.modules.auth.exceptions import (
     RoleInactiveError,
     RoleNotFoundError,
     SelfActionNotAllowedError,
+    SignupNotPendingApprovalError,
     UserNotFoundError,
 )
 from app.modules.auth.models import (
@@ -57,6 +58,7 @@ from app.modules.auth.models import (
     PasswordHistory,
     RefreshTokenRevokedReason,
     Role,
+    SignupRole,
     User,
     UserRole,
     UserStatus,
@@ -80,6 +82,16 @@ from app.shared.db_errors import unique_violation_constraint_name
 # race-condition rationale.
 _USER_EMAIL_CONSTRAINT = "ix_user_email_active"
 _USER_PHONE_CONSTRAINT = "ix_user_phone_number_active"
+
+# The exact Role.name `scripts/seed_launch_bootstrap.py` creates for each
+# self-service signup role — see approve_signup's docstring. Keys are
+# models.SignupRole members (what a pending User.signup_role actually
+# holds), not the schema-side enum — this dict is the one place that
+# translates "what a signup requested" into "which Role gets granted".
+_SIGNUP_ROLE_TO_ROLE_NAME: dict[SignupRole, str] = {
+    SignupRole.RECEPTIONIST: "Receptionist",
+    SignupRole.VITALS: "Vitals",
+}
 
 
 class UserService:
@@ -165,23 +177,57 @@ class UserService:
         return role
 
     async def _reload_with_fresh_roles(self, user: User) -> User:
-        """Used by assign_roles/remove_roles/replace_roles instead of a
-        plain `UserRepository.get_by_id` re-fetch. Within the *same*
-        session, re-fetching by primary key returns the identical
-        Python object already in the session's identity map — and
-        because that object's `user_roles` was already populated by the
-        `get_user()` call at the start of the method, SQLAlchemy
+        """Used by assign_roles/remove_roles/replace_roles/approve_signup
+        instead of a plain `UserRepository.get_by_id` re-fetch. Within
+        the *same* session, re-fetching by primary key returns the
+        identical Python object already in the session's identity map —
+        and because that object's `user_roles` was already populated by
+        the `get_user()` call at the start of the method, SQLAlchemy
         considers the relationship "already loaded" and will not
         re-issue the `selectin` query, even though `UserRole` rows were
         just added/soft-deleted underneath it.
+        `session.refresh(user, attribute_names=[...])` forces exactly
+        the named attributes to reload. A bare `session.expire(user)` is
+        deliberately avoided — it expires *every* attribute including
+        `id`, and the very next line needing `user.id` would trigger an
+        implicit synchronous reload outside an active await, raising
+        `MissingGreenlet`.
 
-        `session.refresh(user, attribute_names=["user_roles"])` forces
-        exactly that one relationship to reload. Only that attribute is
-        named deliberately — a bare `session.expire(user)` expires
-        *every* attribute including `id`, and the very next line needing
-        `user.id` would then trigger an implicit synchronous reload
-        outside an active await, raising `MissingGreenlet`."""
-        await self._session.refresh(user, attribute_names=["user_roles"])
+        `updated_at` is named here for a second, less obvious reason
+        (root-caused after a live incident where `approve_signup`, the
+        one caller of this method that also mutates the user's own
+        columns — `status`/`updated_by` — before calling it, crashed
+        with `MissingGreenlet` on `user.updated_at` access downstream in
+        `UserAdminOut.from_user`): `updated_at` uses
+        `onupdate=func.now()`, a server-evaluated default. The UPDATE
+        flush emits `updated_at=now()` in the SQL but this project's
+        mapper configuration does not fetch the computed value back via
+        `RETURNING`, so SQLAlchemy marks `updated_at` expired in memory
+        after that flush. A *scoped* refresh naming only `user_roles`
+        does not touch or un-expire it, so it stays expired. The next
+        bare attribute access to it (a plain Python `__get__`, not
+        routed through any of SQLAlchemy's async entrypoints) cannot
+        bridge into the greenlet context needed to lazily reload an
+        expired column under `AsyncSession`, and raises the same
+        `MissingGreenlet` error.
+
+        `activate_user`/`deactivate_user`/`lock_user`/`unlock_user`/
+        `update_user` mutate `status`/other columns the same way but
+        never hit this: they end with a fresh
+        `self._user_repo.get_by_id(user.id)` re-fetch (a real SELECT,
+        not a scoped refresh), which happens to reload every scalar
+        column as a side effect and so never leaves `updated_at`
+        expired. `assign_roles`/`remove_roles`/`replace_roles` never hit
+        it either, for the opposite reason: they never mutate `user`'s
+        own columns before calling this method, so `updated_at` is never
+        expired in the first place. `approve_signup` is the only caller
+        that does both — mutates `user`'s own columns *and* relies on
+        this scoped refresh — which is why naming `updated_at`
+        explicitly alongside `user_roles` here, rather than leaving it
+        to whichever caller happens to need it, is the fix: it makes
+        this helper safe for any future caller with the same
+        mutate-then-refresh shape, not just the one that surfaced it."""
+        await self._session.refresh(user, attribute_names=["user_roles", "updated_at"])
         return user
 
     async def _apply_email_and_phone_updates(
@@ -449,6 +495,106 @@ class UserService:
         await self._user_repo.add(user)
         await self._audit_repo.record(
             event_type=AuditEventType.ACCOUNT_UNLOCKED,
+            status=AuditEventStatus.SUCCESS,
+            actor_user_id=actor.id,
+            target_user_id=user.id,
+        )
+        await self._session.commit()
+        return await self._user_repo.get_by_id(user.id)
+
+    # ------------------------------------------------------------------
+    # Self-Service Signup Approval
+    # ------------------------------------------------------------------
+
+    async def approve_signup(self, *, actor: User, user_id: UUID) -> User:
+        """Assigns whichever role `user.signup_role` recorded at signup
+        time (via `_SIGNUP_ROLE_TO_ROLE_NAME`) and moves the account to
+        ACTIVE. Role assignment reuses the exact same association-row/
+        audit pattern as `assign_roles` rather than a bespoke insert, and
+        the status transition mirrors `activate_user` — this method is
+        really "assign_roles + activate_user" for whichever one role a
+        signup resolves to.
+
+        `signup_role` being `None` (only possible for a handful of
+        accounts that signed up before this column existed — every
+        current signup path always sets it) falls back to
+        `RECEPTIONIST`: that was the only role self-service signup could
+        ever produce before this field existed, so treating an absent
+        value as "was a receptionist signup" is the historically correct
+        reading, not a guess.
+
+        Deliberately does NOT send the approval confirmation email
+        itself (see this class's earlier revision's own docstring,
+        which said the opposite — corrected after a live production
+        incident): `EmailService.send`'s real-SMTP path is genuine,
+        `asyncio.to_thread`-wrapped multi-second network I/O, and empirically,
+        regardless of exactly where in this method it ran relative to
+        the session's own work, its mere presence anywhere in this
+        call's lifecycle left the async DB session unable to service a
+        later ORM attribute access in *this same request* — reproduced
+        live as `sqlalchemy.exc.MissingGreenlet` at the router's own
+        `UserAdminOut.from_user(user)` call, every time, only with real
+        SMTP (never with the console-fallback path this was originally,
+        and insufficiently, verified against). The actual DB work
+        (commit, role grant, status change) always completed
+        successfully regardless — only the HTTP response after it broke.
+        The robust fix is architectural, not a reordering: decouple the
+        slow email send from this request/session lifecycle entirely,
+        via `BackgroundTasks` in the router, scheduled to run only after
+        the response (and this session) are already done. See
+        user_router.py's `approve_signup` endpoint."""
+        user = await self.get_user(user_id)
+        if user.status != UserStatus.PENDING_ADMIN_APPROVAL:
+            raise SignupNotPendingApprovalError
+
+        signup_role = user.signup_role or SignupRole.RECEPTIONIST
+        role_name = _SIGNUP_ROLE_TO_ROLE_NAME[signup_role]
+        role = await self._role_repo.get_by_name(role_name)
+        if role is None or not role.is_active:
+            raise RoleNotFoundError(role_name)
+
+        if role.id not in self._active_role_ids(user):
+            await self._user_role_repo.add(
+                UserRole(user_id=user.id, role_id=role.id, assigned_by=actor.id)
+            )
+            await self._audit_repo.record(
+                event_type=AuditEventType.ROLE_ASSIGNED,
+                status=AuditEventStatus.SUCCESS,
+                actor_user_id=actor.id,
+                target_user_id=user.id,
+                metadata={"role_id": str(role.id), "role_name": role.name},
+            )
+
+        user.status = UserStatus.ACTIVE
+        user.updated_by = actor.id
+        await self._user_repo.add(user)
+        await self._audit_repo.record(
+            event_type=AuditEventType.SIGNUP_APPROVED,
+            status=AuditEventStatus.SUCCESS,
+            actor_user_id=actor.id,
+            target_user_id=user.id,
+        )
+        await self._session.commit()
+        return await self._reload_with_fresh_roles(user)
+
+    async def reject_signup(self, *, actor: User, user_id: UUID) -> User:
+        """Moves the account to REJECTED — permanently login-blocked,
+        distinct from INACTIVE (see UserStatus's own docstring for why).
+        No confirmation email: checked against every existing status-
+        transition method in this module (activate/deactivate/lock/
+        unlock), none of them sends one either — email-on-status-change
+        is an approve-specific addition (the applicant is actively
+        waiting to hear back), not an established convention this method
+        should invent a first exception to."""
+        user = await self.get_user(user_id)
+        if user.status != UserStatus.PENDING_ADMIN_APPROVAL:
+            raise SignupNotPendingApprovalError
+
+        user.status = UserStatus.REJECTED
+        user.updated_by = actor.id
+        await self._user_repo.add(user)
+        await self._audit_repo.record(
+            event_type=AuditEventType.SIGNUP_REJECTED,
             status=AuditEventStatus.SUCCESS,
             actor_user_id=actor.id,
             target_user_id=user.id,

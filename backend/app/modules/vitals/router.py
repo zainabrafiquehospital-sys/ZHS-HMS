@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from app.modules.auth.dependencies import require_permission
 from app.modules.auth.models import User
@@ -44,4 +44,26 @@ async def list_for_visit(
 ) -> dict:
     records = await vitals_service.list_for_visit(visit_id)
     body = [VitalsRecordOut.from_record(record).model_dump(mode="json") for record in records]
+    return success_envelope(body)
+
+
+@router.get("/patients/{patient_id}/latest")
+async def get_latest_for_patient(
+    patient_id: UUID,
+    exclude_visit_id: UUID = Query(
+        ...,
+        description="The in-progress visit to exclude — this endpoint answers "
+        "'what were this patient's vitals on a previous visit', not this one.",
+    ),
+    vitals_service: VitalsService = Depends(get_vitals_service),
+    _actor: User = Depends(require_permission(PERMISSION_VITALS_READ)),
+) -> dict:
+    """Backs the vitals-entry screen's previous-reading/trend panel.
+    Returns `data: null` (not a 404) when the patient genuinely has no
+    prior vitals — an absent record is a normal, expected outcome here,
+    not an error condition."""
+    record = await vitals_service.get_latest_for_patient(
+        patient_id=patient_id, exclude_visit_id=exclude_visit_id
+    )
+    body = VitalsRecordOut.from_record(record).model_dump(mode="json") if record else None
     return success_envelope(body)

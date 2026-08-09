@@ -15,6 +15,7 @@ file covers backend-specific structure and conventions only.
 - `app/modules` — feature modules: `auth`, `patients`, `visits`, `queue`, `reception`, `consultation`, `vitals`, `billing`, `search`, `dashboard`. Each owns its own `router.py`, `schemas.py`, `service.py`, `repository.py`, `models.py`, and `exceptions.py`.
 - `app/shared` — generic, entity-agnostic repository/service base classes, the shared audit log, pagination helpers, and the Central Print Service (`app/shared/printing/`).
 - `tests` — pytest suite: repository-, service-, and endpoint-level tests per module, plus a full OPD integration suite (`test_opd_integration.py`) covering the end-to-end workflow under real concurrent load.
+- `scripts` — one-time operational scripts, not part of the application itself (e.g. `seed_launch_bootstrap.py` — see below).
 
 ## Getting Started
 
@@ -23,11 +24,28 @@ cp .env.example .env
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 alembic upgrade head
+python scripts/seed_launch_bootstrap.py   # first time only — see below
 uvicorn app.main:app --reload
 ```
 
 The API runs at http://localhost:8000, with the health check at
 `GET /api/v1/health` and interactive docs at `/docs`.
+
+### First-time bootstrap
+
+A freshly migrated database has zero Permission/Role/User rows —
+Role/Permission CRUD is only reachable through the Users/Roles/
+Permissions API itself, which nobody can call before a first admin
+account exists. `scripts/seed_launch_bootstrap.py` is the one-time
+fix: it creates the full Permission catalog, an `admin` role holding
+every permission, a `Receptionist` role scoped to exactly the
+reception-slip-generation workflow, one initial admin user, and one
+receptionist account — printing both accounts' randomly generated
+passwords to stdout exactly once. It's idempotent (safe to re-run
+against a partially-seeded database) and fully documented in its own
+module docstring, including exactly which permissions the
+`Receptionist` role gets and why. Change both printed passwords
+immediately after first login.
 
 ## Conventions
 

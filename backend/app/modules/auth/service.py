@@ -27,9 +27,12 @@ from app.core.config import Settings
 from app.core.token_rotation import ReuseVerdict, RotatedTokenState, classify_reuse
 from app.modules.auth.exceptions import (
     AccountLockedError,
+    AccountPendingApprovalError,
+    AccountPendingEmailVerificationError,
     AccountSuspendedError,
     EmailAlreadyRegisteredError,
     InvalidCredentialsError,
+    OtpInvalidError,
     PhoneNumberAlreadyRegisteredError,
     TokenInvalidError,
 )
@@ -38,6 +41,8 @@ from app.modules.auth.models import (
     AuditEventType,
     LoginSession,
     LoginSessionLogoutReason,
+    OtpCode,
+    OtpPurpose,
     PasswordHistory,
     RefreshToken,
     RefreshTokenRevokedReason,
@@ -45,10 +50,12 @@ from app.modules.auth.models import (
     User,
     UserStatus,
 )
+from app.modules.auth.otp_service import OtpService
 from app.modules.auth.password_service import PasswordService
 from app.modules.auth.repository import (
     AuditRepository,
     LoginSessionRepository,
+    OtpCodeRepository,
     PasswordHistoryRepository,
     RefreshTokenRepository,
     UserRepository,
@@ -56,6 +63,7 @@ from app.modules.auth.repository import (
 from app.modules.auth.token_service import TokenService
 from app.modules.auth.validators import normalize_email
 from app.shared.db_errors import unique_violation_constraint_name
+from app.shared.email.service import EmailService, render_otp_email
 
 # The unique-while-active indexes backing User.email/phone_number — see
 # app/modules/auth/models.py and app/shared/db_errors.py for the full
@@ -96,6 +104,9 @@ class AuthService:
         audit_repository: AuditRepository,
         password_service: PasswordService,
         token_service: TokenService,
+        otp_code_repository: OtpCodeRepository,
+        otp_service: OtpService,
+        email_service: EmailService,
     ) -> None:
         self._session = session
         self._settings = settings
@@ -106,6 +117,9 @@ class AuthService:
         self._audit_repo = audit_repository
         self._password_service = password_service
         self._token_service = token_service
+        self._otp_repo = otp_code_repository
+        self._otp_service = otp_service
+        self._email_service = email_service
 
     # ------------------------------------------------------------------
     # Role / permission loading
@@ -259,8 +273,18 @@ class AuthService:
             user.locked_until is not None and user.locked_until > now
         ):
             raise AccountLockedError
-        if user.status in (UserStatus.SUSPENDED, UserStatus.INACTIVE):
+        if user.status in (UserStatus.SUSPENDED, UserStatus.INACTIVE, UserStatus.REJECTED):
             raise AccountSuspendedError
+        # Both checked before password verification, same as every status
+        # branch above — a self-service-signup account genuinely cannot
+        # log in yet regardless of whether the password it types is
+        # correct, so there's no reason to pay the Argon2id cost first
+        # (see UserStatus's own docstring for what each of these two
+        # states means and how an account moves past them).
+        if user.status == UserStatus.PENDING_EMAIL_VERIFICATION:
+            raise AccountPendingEmailVerificationError
+        if user.status == UserStatus.PENDING_ADMIN_APPROVAL:
+            raise AccountPendingApprovalError
 
         if not await self._password_service.verify(user.password_hash, password):
             user.failed_login_attempts += 1
@@ -538,6 +562,154 @@ class AuthService:
 
         await self._audit_repo.record(
             event_type=AuditEventType.PASSWORD_CHANGED,
+            status=AuditEventStatus.SUCCESS,
+            actor_user_id=user.id,
+            target_user_id=user.id,
+        )
+        await self._session.commit()
+
+    # ------------------------------------------------------------------
+    # Forgot password (self-service, OTP-based — reuses the exact same
+    # OtpCode mechanism SignupService built for email verification, per
+    # the explicit "don't build a second, parallel OTP system" decision)
+    # ------------------------------------------------------------------
+
+    async def request_password_reset(self, *, email: str) -> None:
+        """Always returns without raising, whether or not `email` matches
+        an active account — the standard "don't reveal whether an email
+        is registered" principle this codebase already applies to login's
+        own `InvalidCredentialsError` (see exceptions.py's module
+        docstring), now applied here too. Only ACTIVE accounts get a code
+        — a PENDING_*/LOCKED/SUSPENDED/REJECTED account resetting its
+        password would not gain the ability to log in anyway (login's own
+        status checks run first regardless), so silently no-op-ing for
+        those avoids a confusing "you got a code but it didn't help"
+        outcome without leaking which status a matched email is in (the
+        caller-visible behavior — a generic acknowledgement — is
+        identical to the no-such-email case either way)."""
+        normalized_email = normalize_email(email)
+        user = await self._user_repo.get_by_email(normalized_email)
+        if user is None or user.status != UserStatus.ACTIVE:
+            return
+
+        now = datetime.now(UTC)
+        existing = await self._otp_repo.get_active_for_user(user.id, OtpPurpose.PASSWORD_RESET)
+        if existing is not None:
+            elapsed = (now - existing.created_at).total_seconds()
+            if elapsed < self._settings.otp_resend_cooldown_seconds:
+                # Silently no-ops rather than raising — a caller hammering
+                # "forgot password" for someone else's email must see the
+                # exact same generic outcome whether or not a code was
+                # actually (re)sent, or the timing/response difference
+                # itself would leak account existence.
+                return
+        await self._otp_repo.invalidate_active_for_user(user.id, OtpPurpose.PASSWORD_RESET, now)
+
+        raw_code = self._otp_service.generate_code()
+        otp = OtpCode(
+            user_id=user.id,
+            purpose=OtpPurpose.PASSWORD_RESET,
+            code_hash=self._otp_service.hash_code(raw_code),
+            expires_at=now + timedelta(minutes=self._settings.otp_expire_minutes),
+        )
+        await self._otp_repo.add(otp)
+        await self._audit_repo.record(
+            event_type=AuditEventType.PASSWORD_RESET_REQUESTED,
+            status=AuditEventStatus.SUCCESS,
+            actor_user_id=user.id,
+            target_user_id=user.id,
+        )
+        await self._session.commit()
+
+        html_body = render_otp_email(
+            hospital_name=self._settings.app_name,
+            recipient_name=user.full_name,
+            code=raw_code,
+            purpose_label="reset your password",
+            expires_in_minutes=self._settings.otp_expire_minutes,
+        )
+        await self._email_service.send(
+            to=user.email,
+            subject=f"Your {self._settings.app_name} password reset code",
+            html_body=html_body,
+        )
+
+    async def verify_reset_otp(self, *, email: str, code: str) -> None:
+        """A non-consuming check — "is this currently a valid code for
+        this account's pending password reset". Deliberately does not
+        mark the code consumed on success, unlike SignupService.
+        verify_signup_otp: the frontend's "Set new password" screen still
+        needs to present this same code to `reset_password` to actually
+        change anything, and forcing the user to re-request a fresh code
+        between "verify" and "set password" would serve no security
+        purpose (the attempt-count/rate-limit defenses already apply
+        identically to both calls) while adding real friction. Wrong
+        attempts still count against `attempts` either way."""
+        now = datetime.now(UTC)
+        user = await self._user_repo.get_by_email(email)
+        if user is None:
+            raise OtpInvalidError
+
+        otp = await self._otp_repo.get_active_for_user(user.id, OtpPurpose.PASSWORD_RESET)
+        if otp is None or otp.expires_at <= now or otp.attempts >= self._settings.otp_max_attempts:
+            raise OtpInvalidError
+
+        if not self._otp_service.verify_code(otp.code_hash, code):
+            await self._otp_repo.record_failed_attempt(otp)
+            await self._session.commit()
+            raise OtpInvalidError
+        # Correct verification does not reset `attempts` and does not
+        # commit anything — nothing changed; this call is safely
+        # repeatable.
+
+    async def reset_password(self, *, email: str, code: str, new_password: str) -> None:
+        """The terminal action of the forgot-password flow — re-verifies
+        `code` one final time (see verify_reset_otp's docstring for why
+        it wasn't consumed there), then sets the new password and revokes
+        every existing session/refresh token for the account, exactly
+        like `change_password` does (see that method's docstring) — a
+        password reset that left old sessions alive would defeat its own
+        purpose."""
+        now = datetime.now(UTC)
+        user = await self._user_repo.get_by_email(email)
+        if user is None:
+            raise OtpInvalidError
+
+        otp = await self._otp_repo.get_active_for_user(user.id, OtpPurpose.PASSWORD_RESET)
+        if otp is None or otp.expires_at <= now or otp.attempts >= self._settings.otp_max_attempts:
+            raise OtpInvalidError
+        if not self._otp_service.verify_code(otp.code_hash, code):
+            await self._otp_repo.record_failed_attempt(otp)
+            await self._session.commit()
+            raise OtpInvalidError
+
+        self._password_service.validate_policy(new_password)
+        history = await self._password_history_repo.list_recent(
+            user.id, self._settings.password_history_depth
+        )
+        await self._password_service.check_not_reused(
+            new_password, [entry.password_hash for entry in history]
+        )
+
+        new_hash = await self._password_service.hash(new_password)
+        user.password_hash = new_hash
+        user.password_changed_at = now
+        user.must_change_password = False
+        await self._user_repo.add(user)
+        await self._password_history_repo.add(
+            PasswordHistory(user_id=user.id, password_hash=new_hash)
+        )
+        await self._otp_repo.consume(otp, now)
+
+        await self._refresh_token_repo.revoke_all_for_user(
+            user.id, RefreshTokenRevokedReason.PASSWORD_CHANGED, now
+        )
+        await self._login_session_repo.revoke_all_for_user(
+            user.id, LoginSessionLogoutReason.REVOKED, now
+        )
+
+        await self._audit_repo.record(
+            event_type=AuditEventType.PASSWORD_RESET_COMPLETED,
             status=AuditEventStatus.SUCCESS,
             actor_user_id=user.id,
             target_user_id=user.id,
