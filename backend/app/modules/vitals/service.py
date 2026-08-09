@@ -114,3 +114,38 @@ class VitalsService:
 
     async def list_for_visit(self, visit_id: UUID) -> list[VitalsRecord]:
         return await self._vitals_repo.list_for_visit(visit_id)
+
+    async def get_latest_for_patient(
+        self, *, patient_id: UUID, exclude_visit_id: UUID
+    ) -> VitalsRecord | None:
+        """Supports the vitals-entry screen's "previous reading" panel —
+        the most recent vitals recorded for this patient on any *other*
+        visit, or None if this patient genuinely has no prior vitals on
+        file (the caller must render an honest empty state, never invent
+        a placeholder reading).
+
+        Deliberately goes through VisitService.list_visits rather than a
+        cross-table join in VitalsRecordRepository — Vitals already
+        depends on Visits (see this module's service.py's own module
+        docstring on orchestrating VisitService), and that's the allowed
+        direction; the reverse (Visits depending on Vitals, or Vitals
+        directly querying the `visit` table) would violate the
+        one-directional module dependency graph (§12) that
+        `VitalsRecord.visit_id` being a plain FK column, never a
+        `relationship()`, already documents. `page_size=50` is a
+        generous cap on how many of the patient's most recent visits get
+        checked for a vitals record before giving up — comfortably above
+        what any real patient's visit history looks like for this
+        lookup to matter in practice."""
+        visits, _total = await self._visit_service.list_visits(
+            patient_id=patient_id,
+            doctor_user_id=None,
+            unassigned_only=False,
+            status=None,
+            sort_by="created_at",
+            sort_desc=True,
+            page=1,
+            page_size=50,
+        )
+        other_visit_ids = [visit.id for visit in visits if visit.id != exclude_visit_id]
+        return await self._vitals_repo.get_latest_for_visit_ids(other_visit_ids)

@@ -1,18 +1,49 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { ClipboardCheck } from 'lucide-react';
+import { ClipboardCheck, CheckCircle2, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import { recordVitalsSchema } from '@/features/vitals/schemas/recordVitalsSchema';
-import { useRecordVitals, usePatientsForVisits, useVisitsByIds } from '@/features/vitals/hooks/useVitals';
+import {
+  useRecordVitals,
+  usePatientsForVisits,
+  useVisitsByIds,
+  useLatestVitalsForPatient,
+} from '@/features/vitals/hooks/useVitals';
+import {
+  ALL_VITALS_FIELDS,
+  VITALS_FIELDS_WITH_SEVERITY,
+  VITAL_FIELD_LABELS,
+  VITAL_FIELD_UNITS,
+  SEVERITY_BADGE_VARIANT,
+  SEVERITY_LABEL,
+  getVitalSeverity,
+  summarizeVitalsSeverity,
+  describeSeverityEntry,
+  getTrend,
+} from '@/features/vitals/utils/vitalsSeverity';
 import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
 import { Label } from '@/shared/components/ui/Label';
 import { Textarea } from '@/shared/components/ui/Textarea';
+import { Badge } from '@/shared/components/ui/Badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
+import { ConfirmDialog } from '@/shared/components/ui/ConfirmDialog';
 import { PageLoader } from '@/shared/components/PageLoader';
+import { formatDisplayDate, formatDisplayTime, displayDayKey } from '@/utils/timezone';
+import { useToast } from '@/shared/components/toast/ToastProvider';
+
+const FIELD_STEP = {
+  systolic_bp: '1',
+  diastolic_bp: '1',
+  pulse_rate: '1',
+  temperature_celsius: '0.1',
+  weight_kg: '0.1',
+  height_cm: '0.1',
+  spo2_percent: '1',
+};
 
 const DEFAULT_VALUES = {
   systolic_bp: '',
@@ -40,121 +71,270 @@ function toPayload(visitId, values) {
   };
 }
 
+const TREND_ICON = { up: TrendingUp, down: TrendingDown, stable: Minus };
+
+function TrendIndicator({ trend }) {
+  if (!trend) return null;
+  const Icon = TREND_ICON[trend];
+  const label = trend === 'up' ? 'higher than previous' : trend === 'down' ? 'lower than previous' : 'about the same as previous';
+  return (
+    <span className="inline-flex items-center text-muted-foreground" title={label} aria-label={label}>
+      <Icon className="h-3.5 w-3.5" />
+    </span>
+  );
+}
+
+/** One vitals field: label, live severity badge (for the 5 fields with
+ * an established reference range), trend vs. the patient's previous
+ * reading (for every numeric field), and the input itself. Sized for
+ * bedside/tablet use — `h-11` (44px) and `text-base` rather than the
+ * shared Input's default `h-9`/`text-sm`, a large-enough tap target
+ * for a nurse using a tablet standing at the patient, without changing
+ * the shared Input component's default everywhere else it's used. */
+function VitalField({ field, register, errors, watchedValue, ageYears, previousValue }) {
+  const label = VITAL_FIELD_LABELS[field];
+  const unit = VITAL_FIELD_UNITS[field];
+  const hasSeverity = VITALS_FIELDS_WITH_SEVERITY.includes(field);
+  const numericValue = watchedValue === '' || watchedValue === undefined ? null : Number(watchedValue);
+  const severity = hasSeverity ? getVitalSeverity(field, numericValue, { ageYears }) : { level: null };
+  const trend = getTrend(field, watchedValue, previousValue);
+  const fieldError = errors[field];
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+        <Label htmlFor={field}>
+          {label} <span className="text-muted-foreground">({unit})</span>
+        </Label>
+        <div className="flex items-center gap-1.5">
+          <TrendIndicator trend={trend} />
+          {severity.level ? (
+            <Badge variant={SEVERITY_BADGE_VARIANT[severity.level]} className="text-[10px]">
+              {SEVERITY_LABEL[severity.level]}
+            </Badge>
+          ) : null}
+        </div>
+      </div>
+      <Input
+        id={field}
+        type="number"
+        step={FIELD_STEP[field]}
+        className="h-11 text-base"
+        {...register(field)}
+      />
+      {previousValue !== null && previousValue !== undefined ? (
+        <p className="text-xs text-muted-foreground">
+          Previous: {previousValue} {unit}
+        </p>
+      ) : null}
+      {fieldError ? <p className="text-xs text-destructive">{fieldError.message}</p> : null}
+    </div>
+  );
+}
+
+/** Static reference card shown above the entry fields — the patient's
+ * most recent recorded vitals from an earlier visit (never this one),
+ * with the same severity badges the entry fields use, plus when it was
+ * recorded. Renders an honest empty state when the patient genuinely
+ * has no prior record, rather than showing blank/zero values. */
+function PreviousVitalsCard({ isLoading, record, ageYears }) {
+  return (
+    <Card className="border-dashed">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Previous Vitals
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="pt-0">
+        {isLoading ? (
+          <p className="text-sm text-muted-foreground">Loading previous vitals…</p>
+        ) : !record ? (
+          <p className="text-sm text-muted-foreground">No previous vitals recorded for this patient.</p>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <p className="text-xs text-muted-foreground">
+              Recorded {formatDisplayDate(displayDayKey(record.created_at))} at{' '}
+              {formatDisplayTime(record.created_at)}
+            </p>
+            <div className="flex flex-wrap gap-x-5 gap-y-2">
+              {ALL_VITALS_FIELDS.filter((field) => record[field] !== null && record[field] !== undefined).map(
+                (field) => {
+                  const severity = VITALS_FIELDS_WITH_SEVERITY.includes(field)
+                    ? getVitalSeverity(field, record[field], { ageYears })
+                    : { level: null };
+                  return (
+                    <div key={field} className="flex items-center gap-1.5 text-sm">
+                      <span className="text-muted-foreground">{VITAL_FIELD_LABELS[field]}:</span>
+                      <span className="font-medium text-foreground">
+                        {record[field]} {VITAL_FIELD_UNITS[field]}
+                      </span>
+                      {severity.level && severity.level !== 'normal' ? (
+                        <Badge variant={SEVERITY_BADGE_VARIANT[severity.level]} className="text-[10px]">
+                          {SEVERITY_LABEL[severity.level]}
+                        </Badge>
+                      ) : null}
+                    </div>
+                  );
+                },
+              )}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function RecordVitalsForm({ visitId }) {
   const router = useRouter();
-  const [submitError, setSubmitError] = useState(null);
+  const { toast } = useToast();
+  const [pendingPayload, setPendingPayload] = useState(null);
   const { visitsById, isLoading: isLoadingVisit } = useVisitsByIds([visitId]);
   const visit = visitsById[visitId];
   const patientsById = usePatientsForVisits(visit ? [visit] : []);
   const patient = visit ? patientsById[visit.patient_id] : undefined;
+  const ageYears = patient?.age_years;
+
+  const { data: previousVitals, isLoading: isLoadingPrevious } = useLatestVitalsForPatient(
+    patient?.id,
+    visitId,
+  );
 
   const recordVitals = useRecordVitals();
   const {
     register,
     handleSubmit,
+    watch,
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(recordVitalsSchema),
     defaultValues: DEFAULT_VALUES,
   });
 
-  async function onSubmit(values) {
-    setSubmitError(null);
+  const watchedValues = watch();
+  const severitySummary = useMemo(
+    () => summarizeVitalsSeverity(watchedValues, { ageYears }),
+    [watchedValues, ageYears],
+  );
+
+  async function submitPayload(payload, { wasCritical } = {}) {
     try {
-      await recordVitals.mutateAsync(toPayload(visitId, values));
+      await recordVitals.mutateAsync(payload);
+      toast.success({
+        title: wasCritical ? 'Critical vitals recorded and flagged' : 'Vitals recorded',
+        description: wasCritical
+          ? 'The doctor has been flagged for immediate attention.'
+          : 'Saved and routed back to the queue.',
+      });
       router.push('/vitals');
     } catch (error) {
-      setSubmitError(error.message || 'Unable to record vitals.');
+      toast.error({
+        title: 'Unable to record vitals',
+        description: error.message,
+        onRetry: () => submitPayload(payload, { wasCritical }),
+      });
     }
+  }
+
+  async function onSubmit(values) {
+    const payload = toPayload(visitId, values);
+    const summary = summarizeVitalsSeverity(values, { ageYears });
+    if (summary.hasCritical) {
+      // Real patient-safety moment, not a cosmetic badge — block on an
+      // explicit confirmation naming exactly which entered value(s)
+      // are critical, built from the real values the nurse just typed.
+      setPendingPayload(payload);
+      return;
+    }
+    await submitPayload(payload);
+  }
+
+  async function handleConfirmCritical() {
+    const payload = pendingPayload;
+    setPendingPayload(null);
+    if (payload) await submitPayload(payload, { wasCritical: true });
   }
 
   if (isLoadingVisit) return <PageLoader label="Loading visit" />;
 
+  const criticalDescription = severitySummary.criticalEntries
+    .map((entry) => `${describeSeverityEntry(entry)}.`)
+    .join('\n');
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>
-          Record Vitals
-          {patient ? ` — ${patient.full_name} (${patient.mr_number})` : ''}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-5">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="systolic_bp">Systolic BP (mmHg)</Label>
-              <Input id="systolic_bp" type="number" {...register('systolic_bp')} />
-              {errors.systolic_bp ? (
-                <p className="text-xs text-destructive">{errors.systolic_bp.message}</p>
-              ) : null}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="diastolic_bp">Diastolic BP (mmHg)</Label>
-              <Input id="diastolic_bp" type="number" {...register('diastolic_bp')} />
-              {errors.diastolic_bp ? (
-                <p className="text-xs text-destructive">{errors.diastolic_bp.message}</p>
-              ) : null}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="pulse_rate">Pulse Rate (bpm)</Label>
-              <Input id="pulse_rate" type="number" {...register('pulse_rate')} />
-              {errors.pulse_rate ? (
-                <p className="text-xs text-destructive">{errors.pulse_rate.message}</p>
-              ) : null}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="temperature_celsius">Temperature (°C)</Label>
-              <Input
-                id="temperature_celsius"
-                type="number"
-                step="0.1"
-                {...register('temperature_celsius')}
-              />
-              {errors.temperature_celsius ? (
-                <p className="text-xs text-destructive">{errors.temperature_celsius.message}</p>
-              ) : null}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="weight_kg">Weight (kg)</Label>
-              <Input id="weight_kg" type="number" step="0.1" {...register('weight_kg')} />
-              {errors.weight_kg ? (
-                <p className="text-xs text-destructive">{errors.weight_kg.message}</p>
-              ) : null}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="height_cm">Height (cm)</Label>
-              <Input id="height_cm" type="number" step="0.1" {...register('height_cm')} />
-              {errors.height_cm ? (
-                <p className="text-xs text-destructive">{errors.height_cm.message}</p>
-              ) : null}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="spo2_percent">SpO2 (%)</Label>
-              <Input id="spo2_percent" type="number" {...register('spo2_percent')} />
-              {errors.spo2_percent ? (
-                <p className="text-xs text-destructive">{errors.spo2_percent.message}</p>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="notes">Notes</Label>
-            <Textarea id="notes" rows={3} {...register('notes')} />
-            {errors.notes ? <p className="text-xs text-destructive">{errors.notes.message}</p> : null}
-          </div>
-
-          {submitError ? (
-            <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {submitError}
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle>
+            Record Vitals
+            {patient ? ` — ${patient.full_name} (${patient.mr_number})` : ''}
+          </CardTitle>
+          {patient ? (
+            <p className="text-sm text-muted-foreground">
+              {patient.age_years} years
+              {patient.gender ? ` · ${patient.gender[0].toUpperCase()}${patient.gender.slice(1)}` : ''}
             </p>
           ) : null}
+        </CardHeader>
+        <CardContent className="flex flex-col gap-5">
+          <PreviousVitalsCard isLoading={isLoadingPrevious} record={previousVitals} ageYears={ageYears} />
 
-          <Button type="submit" disabled={isSubmitting} className="w-full sm:w-auto">
-            <ClipboardCheck className="h-4 w-4" />
-            {isSubmitting ? 'Saving…' : 'Save Vitals & Return to Queue'}
-          </Button>
-        </form>
-      </CardContent>
-    </Card>
+          <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-5">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {ALL_VITALS_FIELDS.map((field) => (
+                <VitalField
+                  key={field}
+                  field={field}
+                  register={register}
+                  errors={errors}
+                  watchedValue={watchedValues[field]}
+                  ageYears={ageYears}
+                  previousValue={previousVitals ? previousVitals[field] : undefined}
+                />
+              ))}
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="notes">Notes</Label>
+              <Textarea id="notes" rows={3} className="text-base" {...register('notes')} />
+              {errors.notes ? <p className="text-xs text-destructive">{errors.notes.message}</p> : null}
+            </div>
+
+            {severitySummary.allNormal ? (
+              <p className="flex items-center gap-2 rounded-md bg-emerald-600/10 px-3 py-2 text-sm text-emerald-700">
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                All entered values are within normal range.
+              </p>
+            ) : null}
+
+            <Button
+              type="submit"
+              disabled={isSubmitting}
+              size="lg"
+              className="h-12 w-full text-base sm:w-auto"
+              variant={severitySummary.hasCritical ? 'destructive' : 'default'}
+            >
+              <ClipboardCheck className="h-4 w-4" />
+              {isSubmitting
+                ? 'Saving…'
+                : severitySummary.allNormal
+                  ? 'Confirm Normal & Save Vitals'
+                  : 'Save Vitals & Return to Queue'}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+
+      <ConfirmDialog
+        open={pendingPayload !== null}
+        variant="destructive"
+        title="Critical vitals entered"
+        description={`${criticalDescription}\n\nConfirm these values are correct and flag this patient for immediate doctor attention?`}
+        confirmLabel="Confirm & Flag for Doctor"
+        cancelLabel="Go Back and Review"
+        onConfirm={handleConfirmCritical}
+        onCancel={() => setPendingPayload(null)}
+      />
+    </>
   );
 }

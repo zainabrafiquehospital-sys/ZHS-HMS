@@ -9,7 +9,18 @@ import {
   useConsultationById,
   useSendToVitals,
   useCompleteConsultation,
+  usePatientsForVisits,
 } from '@/features/consultation/hooks/useConsultation';
+import { useVisitsByIds, useVitalsForVisit } from '@/features/vitals/hooks/useVitals';
+import {
+  ALL_VITALS_FIELDS,
+  VITAL_FIELD_LABELS,
+  VITAL_FIELD_UNITS,
+  VITALS_FIELDS_WITH_SEVERITY,
+  SEVERITY_BADGE_VARIANT,
+  SEVERITY_LABEL,
+  getVitalSeverity,
+} from '@/features/vitals/utils/vitalsSeverity';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
@@ -17,12 +28,72 @@ import { Label } from '@/shared/components/ui/Label';
 import { Textarea } from '@/shared/components/ui/Textarea';
 import { Badge } from '@/shared/components/ui/Badge';
 import { PageLoader } from '@/shared/components/PageLoader';
+import { formatDisplayDate, formatDisplayTime, displayDayKey } from '@/utils/timezone';
+
+/** Read-only display of everything recorded for this visit — the same
+ * severity badges the nurse saw while recording (see
+ * RecordVitalsForm.jsx's `VitalField`), so the doctor gets the exact
+ * same signal, not a re-derived or simplified one. Shows every
+ * recorded reading (not just the latest) since a doctor-requested
+ * detour (see VitalsService.record_vitals' docstring on the
+ * "doctor-requested detour" scope) can add a second, later reading to
+ * the same visit — both are clinically relevant, not just the last. */
+function RecordedVitals({ visitId, ageYears }) {
+  const { data: records, isLoading } = useVitalsForVisit(visitId);
+
+  if (isLoading) return <p className="text-sm text-muted-foreground">Loading vitals…</p>;
+  if (!records || records.length === 0) {
+    return <p className="text-sm text-muted-foreground">No vitals recorded for this visit yet.</p>;
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {records.map((record) => (
+        <div key={record.id} className="rounded-md border border-border p-3">
+          <p className="mb-2 text-xs text-muted-foreground">
+            Recorded {formatDisplayDate(displayDayKey(record.created_at))} at{' '}
+            {formatDisplayTime(record.created_at)}
+          </p>
+          <div className="flex flex-wrap gap-x-5 gap-y-2">
+            {ALL_VITALS_FIELDS.filter(
+              (field) => record[field] !== null && record[field] !== undefined,
+            ).map((field) => {
+              const severity = VITALS_FIELDS_WITH_SEVERITY.includes(field)
+                ? getVitalSeverity(field, record[field], { ageYears })
+                : { level: null };
+              return (
+                <div key={field} className="flex items-center gap-1.5 text-sm">
+                  <span className="text-muted-foreground">{VITAL_FIELD_LABELS[field]}:</span>
+                  <span className="font-medium text-foreground">
+                    {record[field]} {VITAL_FIELD_UNITS[field]}
+                  </span>
+                  {severity.level && severity.level !== 'normal' ? (
+                    <Badge variant={SEVERITY_BADGE_VARIANT[severity.level]} className="text-[10px]">
+                      {SEVERITY_LABEL[severity.level]}
+                    </Badge>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+          {record.notes ? (
+            <p className="mt-2 text-sm text-muted-foreground">Notes: {record.notes}</p>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export function ConsultationPanel({ visitId }) {
   const router = useRouter();
   const { data: activeSummary, isLoading: isLoadingActive } = useActiveConsultation(visitId);
   const consultationId = activeSummary?.id;
   const { data: consultation } = useConsultationById(consultationId);
+  const { visitsById } = useVisitsByIds([visitId]);
+  const visit = visitsById[visitId];
+  const patientsById = usePatientsForVisits(visit ? [visit] : []);
+  const patient = visit ? patientsById[visit.patient_id] : undefined;
 
   const [vitalsReason, setVitalsReason] = useState('');
   const sendToVitals = useSendToVitals();
@@ -83,6 +154,13 @@ export function ConsultationPanel({ visitId }) {
             complete the request.
           </div>
         ) : null}
+
+        <div className="flex flex-col gap-2">
+          <Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Vitals
+          </Label>
+          <RecordedVitals visitId={visitId} ageYears={patient?.age_years} />
+        </div>
 
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="notes">Clinical Notes</Label>
