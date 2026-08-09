@@ -92,8 +92,13 @@ export function ForgotPasswordForm() {
     setStepError(null);
     try {
       await forgotPassword.mutateAsync({ email });
+      // Reported to OtpCodeInput so it only starts its resend cooldown
+      // once a code has actually gone out — see OtpCodeInput.jsx and
+      // SignupOtpForm.jsx's identical handleResend.
+      return true;
     } catch (error) {
       setStepError(error.message || 'Unable to resend a code right now.');
+      return false;
     }
   }
 

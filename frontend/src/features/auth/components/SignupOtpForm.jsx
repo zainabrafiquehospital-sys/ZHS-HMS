@@ -49,12 +49,16 @@ export function SignupOtpForm({ email }) {
     try {
       await resendOtp.mutateAsync({ email });
       toast.success({ title: 'Code resent', description: `Sent a new code to ${email}.` });
+      // Reported to OtpCodeInput so it only starts its resend cooldown
+      // once a code has actually gone out — see OtpCodeInput.jsx.
+      return true;
     } catch (error) {
       toast.error({
         title: 'Unable to resend a code',
         description: error.message,
         onRetry: handleResend,
       });
+      return false;
     }
   }
 

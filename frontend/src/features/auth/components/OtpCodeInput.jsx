@@ -33,8 +33,14 @@ export function OtpCodeInput({
   }, [cooldown]);
 
   async function handleResend() {
-    await onResend();
-    setCooldown(resendCooldownSeconds);
+    // `onResend` (SignupOtpForm / ForgotPasswordForm) already catches its
+    // own request failure to show a toast/inline error and never rethrows
+    // — so `await` alone can't tell success from failure here. Without
+    // checking the returned boolean, a failed resend would still start
+    // this 60s cooldown as if a new code had actually been sent, locking
+    // the user out of the resend button for a code that never arrived.
+    const didSend = await onResend();
+    if (didSend) setCooldown(resendCooldownSeconds);
   }
 
   return (
