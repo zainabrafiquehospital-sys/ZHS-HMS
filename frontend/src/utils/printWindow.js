@@ -102,7 +102,7 @@ export function openAndPrintHtml(html) {
       iframe.onload = triggerPrint;
       iframe.src = blobUrl;
       document.body.appendChild(iframe);
-    } catch (e) {
+    } catch {
       // Fallback for environments where Blob URL is restricted
       document.body.appendChild(iframe);
       const frameDocument = iframe.contentDocument ?? iframe.contentWindow.document;
