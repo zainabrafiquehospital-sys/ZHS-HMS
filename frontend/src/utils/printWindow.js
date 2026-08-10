@@ -42,41 +42,46 @@
 export function openAndPrintHtml(html) {
   return new Promise((resolve, reject) => {
     const iframe = document.createElement('iframe');
-    // Visually hidden but NOT display:none — some browsers skip
-    // painting (and therefore printing) a display:none iframe's
-    // content, or never fire its load event reliably. Zero-sized and
-    // off-screen achieves the same "invisible to the user" result
-    // without that risk.
+
+    // Use full viewport dimensions with opacity 0 so Chrome's print engine
+    // calculates proper layout bounds, while keeping it invisible to the user.
     iframe.style.position = 'fixed';
-    iframe.style.right = '0';
-    iframe.style.bottom = '0';
-    iframe.style.width = '0';
-    iframe.style.height = '0';
+    iframe.style.top = '0';
+    iframe.style.left = '0';
+    iframe.style.width = '100%';
+    iframe.style.height = '100%';
     iframe.style.border = '0';
+    iframe.style.opacity = '0';
+    iframe.style.pointerEvents = 'none';
+    iframe.style.zIndex = '-9999';
     iframe.setAttribute('aria-hidden', 'true');
 
     let settled = false;
+    let blobUrl = null;
 
     function cleanup() {
-      // Delayed, not immediate: `.print()` returns synchronously from
-      // JS's perspective, but the browser's print pipeline can still be
-      // reading from the frame asynchronously after that call returns —
-      // removing the iframe too eagerly has been known to cancel an
-      // in-flight print job in some browsers.
       setTimeout(() => {
+        if (blobUrl) {
+          URL.revokeObjectURL(blobUrl);
+        }
         iframe.parentNode?.removeChild(iframe);
-      }, 1000);
+      }, 1500);
     }
 
-    iframe.onload = () => {
-      if (settled) return; // guards against a stray second load event
+    const triggerPrint = () => {
+      if (settled) return;
+      settled = true;
+
       const win = iframe.contentWindow;
-      // Same double-rAF margin as the previous window.open()-based
-      // version, for the same reason — `load` firing doesn't guarantee
-      // a paint has actually been committed yet in every browser.
+      if (!win) {
+        reject(new Error('Print iframe window not accessible'));
+        cleanup();
+        return;
+      }
+
+      // Allow two animation frames for complete DOM paint and asset rendering
       win.requestAnimationFrame(() => {
         win.requestAnimationFrame(() => {
-          settled = true;
           try {
             win.focus();
             win.print();
@@ -90,10 +95,27 @@ export function openAndPrintHtml(html) {
       });
     };
 
-    document.body.appendChild(iframe);
-    const frameDocument = iframe.contentDocument ?? iframe.contentWindow.document;
-    frameDocument.open();
-    frameDocument.write(html);
-    frameDocument.close();
+    // Use Blob URL approach for clean, isolated loading without about:blank race conditions
+    try {
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      blobUrl = URL.createObjectURL(blob);
+      iframe.onload = triggerPrint;
+      iframe.src = blobUrl;
+      document.body.appendChild(iframe);
+    } catch (e) {
+      // Fallback for environments where Blob URL is restricted
+      document.body.appendChild(iframe);
+      const frameDocument = iframe.contentDocument ?? iframe.contentWindow.document;
+      frameDocument.open();
+      frameDocument.write(html);
+      frameDocument.close();
+
+      if (frameDocument.readyState === 'complete') {
+        triggerPrint();
+      } else {
+        iframe.onload = triggerPrint;
+      }
+    }
   });
 }
+

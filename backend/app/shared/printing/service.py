@@ -385,24 +385,29 @@ def render_registration_slip(
   /* ---------- Print ---------- */
   @page {{ size: A4; margin: 14mm; }}
   @media print {{
-    /* Defensive, not the fix for a blank page: this document is already
-       dark-ink-on-white throughout (no light text sitting on a colored
-       background — see this function's own docstring), so there's no
-       content that actually depends on a background surviving print.
-       Kept anyway in case a future revision adds a filled color block,
-       so that class of bug can't silently reappear here. */
-    * {{ print-color-adjust: exact; -webkit-print-color-adjust: exact; }}
-    html, body {{ background: #ffffff; padding: 0; color: #000000; }}
-    body {{ display: block; }}
+    * {{ 
+      print-color-adjust: exact !important; 
+      -webkit-print-color-adjust: exact !important; 
+      color: #000000 !important;
+    }}
+    html, body {{ 
+      background: #ffffff !important; 
+      padding: 0 !important; 
+      color: #000000 !important; 
+    }}
+    body {{ display: block !important; }}
     .sheet {{
-      max-width: none;
-      width: 100%;
-      border: none;
-      box-shadow: none;
-      padding: 0;
+      max-width: none !important;
+      width: 100% !important;
+      border: none !important;
+      box-shadow: none !important;
+      padding: 0 !important;
+      color: #000000 !important;
+      background: #ffffff !important;
+      page-break-inside: avoid; 
+      break-inside: avoid;
     }}
     .logo {{ filter: grayscale(1); }}
-    .sheet {{ page-break-inside: avoid; break-inside: avoid; }}
   }}
 </style>
 </head>
