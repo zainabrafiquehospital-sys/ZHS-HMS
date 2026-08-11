@@ -10,6 +10,8 @@ import {
   HeartPulse,
   Receipt,
   ShieldCheck,
+  Pill,
+  PackageSearch,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { ROUTES } from '@/core/constants/routes';
@@ -32,10 +34,23 @@ const NAV_ITEMS = [
   },
   { href: ROUTES.VITALS, label: 'Vitals', icon: HeartPulse, permission: 'vitals:read' },
   { href: ROUTES.BILLING, label: 'Billing', icon: Receipt, permission: 'billing:read' },
+  { href: ROUTES.PHARMACY, label: 'Pharmacy', icon: Pill, permission: 'pharmacy:bill' },
   // Gated on users:read, not a module-specific permission — see
   // core/constants/access.js's identical MODULE_ACCESS entry for why
   // that code specifically (only the admin role holds it).
   { href: ROUTES.ADMIN, label: 'Admin', icon: ShieldCheck, permission: 'users:read' },
+  // Its own top-level entry rather than nested Admin sub-navigation —
+  // there is no existing "sub-nav within Admin" pattern in this codebase
+  // (Admin itself is a single flat page; see features/admin/), so this
+  // mirrors how Admin's own link works: gated purely on a permission
+  // (pharmacy:manage) only the admin role is ever granted (see
+  // scripts/seed_launch_bootstrap.py), not on the URL being under /admin.
+  {
+    href: ROUTES.ADMIN_MEDICINES,
+    label: 'Medicines',
+    icon: PackageSearch,
+    permission: 'pharmacy:manage',
+  },
 ];
 
 /**
@@ -65,9 +80,7 @@ export function AppSidebar() {
         <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-white p-1 shadow-sm">
           <Image src="/images/logo.png" alt={env.appName} width={40} height={40} priority />
         </div>
-        <div className="min-w-0 text-sm font-semibold leading-tight text-white">
-          {env.appName}
-        </div>
+        <div className="min-w-0 text-sm font-semibold leading-tight text-white">{env.appName}</div>
       </div>
       {visibleItems.map(({ href, label, icon: Icon }) => {
         const isActive = href === '/' ? pathname === href : pathname.startsWith(href);

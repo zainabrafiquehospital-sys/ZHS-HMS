@@ -1,0 +1,236 @@
+'use client';
+
+import { useState } from 'react';
+import { Plus, Printer, Trash2, PackagePlus } from 'lucide-react';
+import { pharmacyService } from '@/features/pharmacy/api/pharmacyService';
+import { useCreateMedicineBill, usePrintMedicineBill } from '@/features/pharmacy/hooks/usePharmacy';
+import { billLineItemSchema } from '@/features/pharmacy/schemas/pharmacySchemas';
+import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
+import { Button } from '@/shared/components/ui/Button';
+import { Input } from '@/shared/components/ui/Input';
+import { Label } from '@/shared/components/ui/Label';
+import { SearchSelect } from '@/shared/components/SearchSelect';
+import { useToast } from '@/shared/components/toast/ToastProvider';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/shared/components/ui/Table';
+
+function money(amount) {
+  return `Rs. ${Number(amount).toFixed(2)}`;
+}
+
+/** The receptionist's medicine-sale counter: search the active price
+ * list, add one or more line items to a running local bill, then
+ * finalize (posts the whole bill in one call — see
+ * app/modules/pharmacy/service.py's `create_bill`) and print the slip.
+ *
+ * A standalone walk-in sale — this screen never links a bill to a
+ * registered Visit (the backend's `visit_id` stays null here). The API
+ * itself accepts an optional `visit_id` for a future screen that starts
+ * from an existing visit; this workspace deliberately keeps to the
+ * simpler, more common at-counter flow. */
+export function MedicineBillingWorkspace() {
+  const { toast } = useToast();
+  const [selectedMedicine, setSelectedMedicine] = useState(null);
+  const [quantity, setQuantity] = useState('1');
+  const [quantityError, setQuantityError] = useState(null);
+  const [items, setItems] = useState([]);
+  const [finalizeError, setFinalizeError] = useState(null);
+
+  const createBill = useCreateMedicineBill();
+  const printBill = usePrintMedicineBill();
+
+  const grandTotal = items.reduce((sum, item) => sum + Number(item.unit_price) * item.quantity, 0);
+
+  function handleAddLine() {
+    setQuantityError(null);
+    if (!selectedMedicine) return;
+    const parsed = billLineItemSchema.safeParse({ quantity });
+    if (!parsed.success) {
+      setQuantityError(parsed.error.issues[0]?.message ?? 'Invalid quantity');
+      return;
+    }
+
+    setItems((current) => {
+      const existingIndex = current.findIndex((item) => item.medicine_id === selectedMedicine.id);
+      if (existingIndex >= 0) {
+        const next = [...current];
+        next[existingIndex] = {
+          ...next[existingIndex],
+          quantity: next[existingIndex].quantity + parsed.data.quantity,
+        };
+        return next;
+      }
+      return [
+        ...current,
+        {
+          medicine_id: selectedMedicine.id,
+          name: selectedMedicine.name,
+          category: selectedMedicine.category,
+          unit_price: selectedMedicine.unit_price,
+          quantity: parsed.data.quantity,
+        },
+      ];
+    });
+    setSelectedMedicine(null);
+    setQuantity('1');
+  }
+
+  function handleRemoveLine(medicineId) {
+    setItems((current) => current.filter((item) => item.medicine_id !== medicineId));
+  }
+
+  async function handleFinalize() {
+    setFinalizeError(null);
+    try {
+      const response = await createBill.mutateAsync({
+        visit_id: null,
+        items: items.map((item) => ({ medicine_id: item.medicine_id, quantity: item.quantity })),
+      });
+      const billId = response.data.id;
+      setItems([]);
+      toast.success({
+        title: 'Medicine bill finalized',
+        description: `Total ${money(response.data.total_amount)}`,
+      });
+      await printBill.mutateAsync(billId);
+    } catch (error) {
+      setFinalizeError(error.message || 'Unable to finalize this bill.');
+      toast.error({
+        title: 'Unable to finalize this bill',
+        description: error.message,
+      });
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-1">
+        <h1 className="text-lg font-semibold text-foreground">Medicine Billing</h1>
+        <p className="text-sm text-muted-foreground">
+          Search the price list, build a bill, then finalize and print the slip.
+        </p>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Add Medicine</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4 sm:flex-row sm:items-end">
+          <div className="flex flex-1 flex-col gap-1.5">
+            <Label>Medicine</Label>
+            <SearchSelect
+              queryKey={['pharmacy', 'medicines', 'search']}
+              queryFn={(term) => pharmacyService.searchMedicines(term).then((res) => res.data)}
+              getLabel={(medicine) => medicine.name}
+              getDescription={(medicine) => `${medicine.category} · ${money(medicine.unit_price)}`}
+              placeholder="Search medicine by name"
+              selectedLabel={selectedMedicine ? `${selectedMedicine.name}` : ''}
+              onSelect={(medicine) => setSelectedMedicine(medicine)}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="quantity">Quantity</Label>
+            <Input
+              id="quantity"
+              type="number"
+              min="1"
+              max="1000"
+              value={quantity}
+              onChange={(event) => setQuantity(event.target.value)}
+              className="w-24"
+            />
+          </div>
+          <Button type="button" onClick={handleAddLine} disabled={!selectedMedicine}>
+            <Plus className="h-4 w-4" />
+            Add Line
+          </Button>
+        </CardContent>
+        {quantityError ? (
+          <p className="px-4 pb-4 text-xs text-destructive">{quantityError}</p>
+        ) : null}
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Current Bill</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          {items.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No medicines added yet.</p>
+          ) : (
+            <>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Medicine</TableHead>
+                    <TableHead>Category</TableHead>
+                    <TableHead className="text-right">Qty</TableHead>
+                    <TableHead className="text-right">Unit Price</TableHead>
+                    <TableHead className="text-right">Line Total</TableHead>
+                    <TableHead />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {items.map((item) => (
+                    <TableRow key={item.medicine_id}>
+                      <TableCell className="font-medium text-foreground">{item.name}</TableCell>
+                      <TableCell className="capitalize">{item.category}</TableCell>
+                      <TableCell className="text-right tabular-nums">{item.quantity}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {money(item.unit_price)}
+                      </TableCell>
+                      <TableCell className="text-right font-medium tabular-nums">
+                        {money(Number(item.unit_price) * item.quantity)}
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => handleRemoveLine(item.medicine_id)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              <div className="flex items-center justify-between border-t border-border pt-4">
+                <span className="text-sm font-semibold text-foreground">Grand Total</span>
+                <span className="text-lg font-bold tabular-nums text-foreground">
+                  {money(grandTotal)}
+                </span>
+              </div>
+              <Button
+                type="button"
+                size="lg"
+                onClick={handleFinalize}
+                disabled={createBill.isPending || printBill.isPending}
+                className="w-full sm:w-auto sm:self-end"
+              >
+                {createBill.isPending || printBill.isPending ? (
+                  <>
+                    <PackagePlus className="h-4 w-4" />
+                    Finalizing…
+                  </>
+                ) : (
+                  <>
+                    <Printer className="h-4 w-4" />
+                    Finalize &amp; Print
+                  </>
+                )}
+              </Button>
+              {finalizeError ? <p className="text-sm text-destructive">{finalizeError}</p> : null}
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

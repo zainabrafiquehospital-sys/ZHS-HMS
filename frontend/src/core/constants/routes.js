@@ -18,4 +18,6 @@ export const ROUTES = {
   VITALS: '/vitals',
   BILLING: '/billing',
   ADMIN: '/admin',
+  PHARMACY: '/pharmacy',
+  ADMIN_MEDICINES: '/admin/medicines',
 };

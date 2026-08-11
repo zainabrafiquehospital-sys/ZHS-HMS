@@ -1,19 +1,26 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { ClipboardList, Receipt, Search } from 'lucide-react';
+import { ClipboardList, Pill, Printer, Receipt, Search } from 'lucide-react';
 import {
   useAdminVisitsForDay,
   usePatientsForVisits,
   useReceptionistsForVisits,
 } from '@/features/admin/hooks/useAdminOverview';
+import {
+  useMedicineBillsForDay,
+  usePrintMedicineBill,
+  useUsersForMedicineBills,
+  useVisitsForMedicineBills,
+} from '@/features/pharmacy/hooks/usePharmacy';
 import { PendingApprovals } from '@/features/admin/components/PendingApprovals';
 import { DateNavigator } from '@/features/admin/components/DateNavigator';
 import { LeadsSection } from '@/features/admin/components/LeadsSection';
-import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
+import { Card, CardContent, CardHeader } from '@/shared/components/ui/Card';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
+import { Tabs } from '@/shared/components/ui/Tabs';
 import { PageLoader } from '@/shared/components/PageLoader';
 import { PageError } from '@/shared/components/PageError';
 import {
@@ -27,6 +34,11 @@ import {
 import { useDebouncedValue } from '@/shared/hooks/useDebouncedValue';
 import { formatDisplayDate, formatDisplayTime, todayDisplayDayKey } from '@/utils/timezone';
 import { VISIT_STATUS_BADGE_VARIANT } from '@/shared/constants/visitStatus';
+
+const OVERVIEW_TABS = [
+  { value: 'visits', label: 'Visits' },
+  { value: 'medicine_bills', label: 'Medicine Bills' },
+];
 
 const PAGE_SIZE = 15;
 
@@ -62,10 +74,111 @@ function SummaryTile({ icon: Icon, label, value }) {
   );
 }
 
+/** The Medicine Bills tab — mirrors the Visits tab's own day-scoped,
+ * read-only shape (same `selectedDate`, same "view/reprint" action
+ * pattern as Billing's own `usePrintInvoice`), but reads `GET
+ * /pharmacy/bills?date=` directly rather than reusing `GET /visits`
+ * (see app/modules/pharmacy/router.py's `list_bills_for_day`) — a
+ * medicine bill is its own entity, not a Visit. */
+function MedicineBillsPanel({ selectedDate }) {
+  const { data: bills, isLoading, isError, error, refetch } = useMedicineBillsForDay(selectedDate);
+  const visitsById = useVisitsForMedicineBills(bills);
+  const patientsById = usePatientsForVisits(Object.values(visitsById).filter(Boolean));
+  const usersById = useUsersForMedicineBills(bills);
+  const printBill = usePrintMedicineBill();
+  const [printError, setPrintError] = useState(null);
+
+  const totalRevenue = useMemo(
+    () => (bills ?? []).reduce((sum, bill) => sum + Number(bill.total_amount), 0),
+    [bills],
+  );
+
+  async function handlePrint(billId) {
+    setPrintError(null);
+    try {
+      await printBill.mutateAsync(billId);
+    } catch (err) {
+      setPrintError(err.message || 'Unable to print this bill.');
+    }
+  }
+
+  if (isLoading) return <PageLoader label="Loading medicine bills" />;
+  if (isError) {
+    return <PageError error={error} reset={refetch} message="Couldn't load medicine bills." />;
+  }
+
+  const rows = bills ?? [];
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <SummaryTile icon={Pill} label="Total Bills" value={rows.length} />
+        <SummaryTile icon={Receipt} label="Total Revenue" value={formatPkr(totalRevenue)} />
+      </div>
+
+      {rows.length === 0 ? (
+        <p className="py-10 text-center text-sm text-muted-foreground">
+          No medicine bills were created on {formatDisplayDate(selectedDate)}.
+        </p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Time</TableHead>
+              <TableHead>Patient</TableHead>
+              <TableHead>Billed By</TableHead>
+              <TableHead className="text-right">Items</TableHead>
+              <TableHead className="text-right">Total</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((bill) => {
+              const visit = bill.visit_id ? visitsById[bill.visit_id] : null;
+              const patient = visit ? patientsById[visit.patient_id] : null;
+              const billedBy = bill.created_by ? usersById[bill.created_by] : null;
+              return (
+                <TableRow key={bill.id}>
+                  <TableCell className="whitespace-nowrap">
+                    {formatDisplayTime(bill.created_at)}
+                  </TableCell>
+                  <TableCell className="max-w-[160px] truncate font-medium text-foreground">
+                    {bill.visit_id ? (patient?.full_name ?? '…') : 'Walk-in'}
+                  </TableCell>
+                  <TableCell className="max-w-[140px] truncate">
+                    {bill.created_by ? billedBy?.full_name || '…' : '—'}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">{bill.item_count}</TableCell>
+                  <TableCell className="whitespace-nowrap text-right font-medium tabular-nums">
+                    {formatPkr(bill.total_amount)}
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handlePrint(bill.id)}
+                      disabled={printBill.isPending}
+                    >
+                      <Printer className="h-4 w-4" />
+                      Reprint
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      )}
+      {printError ? <p className="text-sm text-destructive">{printError}</p> : null}
+    </div>
+  );
+}
+
 export function AdminOverview() {
   const [selectedDate, setSelectedDate] = useState(todayDisplayDayKey());
   const [searchTerm, setSearchTerm] = useState('');
   const [page, setPage] = useState(1);
+  const [activeTab, setActiveTab] = useState('visits');
 
   const { visits, isLoading, isError, error, refetch } = useAdminVisitsForDay(selectedDate);
   const patientsById = usePatientsForVisits(visits);
@@ -92,10 +205,7 @@ export function AdminOverview() {
 
   const pageCount = Math.max(1, Math.ceil(filteredVisits.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
-  const pagedVisits = filteredVisits.slice(
-    (currentPage - 1) * PAGE_SIZE,
-    currentPage * PAGE_SIZE,
-  );
+  const pagedVisits = filteredVisits.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   function handleDateChange(nextDate) {
     setSelectedDate(nextDate);
@@ -113,8 +223,7 @@ export function AdminOverview() {
       <div className="flex flex-col gap-1">
         <h1 className="text-lg font-semibold text-foreground">Admin Overview</h1>
         <p className="text-sm text-muted-foreground">
-          Hospital-wide patient and visit activity, read-only — not scoped to any one
-          receptionist.
+          Hospital-wide patient and visit activity, read-only — not scoped to any one receptionist.
         </p>
       </div>
 
@@ -122,11 +231,13 @@ export function AdminOverview() {
 
       <Card>
         <CardHeader className="flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle>Visit Activity</CardTitle>
+          <Tabs value={activeTab} onValueChange={setActiveTab} tabs={OVERVIEW_TABS} />
           <DateNavigator selectedDate={selectedDate} onChange={handleDateChange} />
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
-          {isLoading ? (
+          {activeTab === 'medicine_bills' ? (
+            <MedicineBillsPanel selectedDate={selectedDate} />
+          ) : isLoading ? (
             <PageLoader label="Loading visit activity" />
           ) : isError ? (
             <PageError error={error} reset={refetch} message="Couldn't load visit activity." />
