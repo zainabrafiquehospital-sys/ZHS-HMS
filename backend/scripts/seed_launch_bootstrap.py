@@ -100,6 +100,11 @@ from app.modules.patients.constants import (
     PERMISSION_PATIENTS_READ,
     PERMISSION_PATIENTS_UPDATE,
 )
+from app.modules.pharmacy.constants import (
+    PERMISSION_PHARMACY_BILL,
+    PERMISSION_PHARMACY_MANAGE,
+    PERMISSION_PHARMACY_READ,
+)
 from app.modules.queue.constants import PERMISSION_QUEUE_MANAGE, PERMISSION_QUEUE_READ
 from app.modules.reception.constants import (
     PERMISSION_RECEPTION_CANCEL_VISIT,
@@ -206,6 +211,21 @@ PERMISSION_CATALOG: list[tuple[str, str, str]] = [
     (PERMISSION_VISITS_READ, "View Visits", "View visit records."),
     (PERMISSION_VITALS_READ, "View Vitals", "View recorded vitals."),
     (PERMISSION_VITALS_RECORD, "Record Vitals", "Record a vitals reading for a visit."),
+    (
+        PERMISSION_PHARMACY_READ,
+        "View Pharmacy",
+        "Search the medicine price list and view/print medicine bills.",
+    ),
+    (
+        PERMISSION_PHARMACY_BILL,
+        "Bill Medicines",
+        "Build and finalize a multi-item medicine bill.",
+    ),
+    (
+        PERMISSION_PHARMACY_MANAGE,
+        "Manage Medicine Price List",
+        "Create, edit, and deactivate entries on the medicine price list.",
+    ),
 ]
 
 # ---------------------------------------------------------------------
@@ -230,6 +250,12 @@ RECEPTIONIST_PERMISSION_CODES: list[str] = [
     # every other pre-existing demo role already includes it. Read-only, no
     # write capability granted.
     PERMISSION_DASHBOARD_RECEPTION_READ,
+    # Pharmacy / Medicine Billing (new module) — search the price list and
+    # build/print a medicine bill from the reception counter. Deliberately
+    # NOT PERMISSION_PHARMACY_MANAGE: editing the price list itself is
+    # Admin-only (see app/modules/pharmacy/constants.py's module docstring).
+    PERMISSION_PHARMACY_READ,
+    PERMISSION_PHARMACY_BILL,
 ]
 # Deliberately NOT included, despite being in the originally proposed set —
 # not exercised by any reception UI code path as of this build, so excluded

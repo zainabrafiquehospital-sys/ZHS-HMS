@@ -9,6 +9,7 @@ from app.modules.billing.router import router as billing_router
 from app.modules.consultation.router import router as consultation_router
 from app.modules.dashboard.router import router as dashboard_router
 from app.modules.patients.router import router as patients_router
+from app.modules.pharmacy.router import router as pharmacy_router
 from app.modules.queue.router import router as queue_router
 from app.modules.reception.router import router as reception_router
 from app.modules.search.router import router as search_router
@@ -28,6 +29,7 @@ api_v1_router.include_router(reception_router)
 api_v1_router.include_router(consultation_router)
 api_v1_router.include_router(vitals_router)
 api_v1_router.include_router(billing_router)
+api_v1_router.include_router(pharmacy_router)
 api_v1_router.include_router(search_router)
 api_v1_router.include_router(dashboard_router)
 

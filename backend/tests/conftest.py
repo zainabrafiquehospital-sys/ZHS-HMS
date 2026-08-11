@@ -47,6 +47,12 @@ from app.modules.consultation.service import ConsultationService
 from app.modules.dashboard.service import DashboardService
 from app.modules.patients.repository import PatientRepository
 from app.modules.patients.service import PatientService
+from app.modules.pharmacy.repository import (
+    MedicineBillItemRepository,
+    MedicineBillRepository,
+    MedicineRepository,
+)
+from app.modules.pharmacy.service import PharmacyService
 from app.modules.queue.repository import QueueEntryRepository
 from app.modules.queue.service import QueueService
 from app.modules.reception.repository import ReceptionRepository
@@ -94,6 +100,12 @@ TEST_EMAIL_PREFIX = "auth-test-"
 # docstring), so tests have no way to tag it with a recognizable prefix,
 # but full_name is fully caller-controlled.
 TEST_PATIENT_NAME_PREFIX = "Patient Test "
+
+# Every medicine created through PharmacyService by the Pharmacy module's
+# test suite uses this name prefix, for the identical reason
+# TEST_PATIENT_NAME_PREFIX exists — PharmacyService also commits
+# internally (see app/modules/pharmacy/service.py's module docstring).
+TEST_MEDICINE_NAME_PREFIX = "Medicine Test "
 
 
 @pytest.fixture
@@ -276,6 +288,48 @@ async def real_session():
                 ),
                 cleanup_params,
             )
+            # medicine_bill/medicine_bill_item rows must be deleted before
+            # visit for the same no-ON-DELETE-clause reason as billing
+            # above (see app/modules/pharmacy/models.py) — items first
+            # (they FK to both medicine_bill and medicine). Test medicine
+            # bills are identified by `created_by` (the acting test user),
+            # not by `visit_id`, since a medicine bill's visit link is
+            # optional (a standalone walk-in sale has none) — this single
+            # condition catches both the visit-linked and walk-in cases a
+            # test might create.
+            medicine_bill_owned_by_test_data = (
+                "SELECT id FROM medicine_bill WHERE created_by IN "
+                '(SELECT id FROM "user" WHERE email LIKE :email_pattern)'
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM audit_log WHERE entity_id IN "
+                    "(SELECT id FROM medicine_bill_item WHERE medicine_bill_id IN "
+                    f"({medicine_bill_owned_by_test_data}))"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM medicine_bill_item WHERE medicine_bill_id IN "
+                    f"({medicine_bill_owned_by_test_data})"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM audit_log WHERE entity_id IN "
+                    f"({medicine_bill_owned_by_test_data})"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM medicine_bill WHERE created_by IN "
+                    '(SELECT id FROM "user" WHERE email LIKE :email_pattern)'
+                ),
+                cleanup_params,
+            )
             # vitals_record rows must be deleted before both visit and
             # consultation — same no-ON-DELETE-clause reasoning (see
             # app/modules/vitals/models.py). Deleted first since it FKs
@@ -323,6 +377,24 @@ async def real_session():
             await session.execute(
                 text("DELETE FROM patient WHERE full_name LIKE :pattern"),
                 {"pattern": f"{TEST_PATIENT_NAME_PREFIX}%"},
+            )
+            # medicine rows created directly through the admin CRUD
+            # endpoints (not tied to any visit/bill) — identified by
+            # name prefix instead, the same way TEST_PATIENT_NAME_PREFIX
+            # tags Patient rows (see that constant's docstring). Any
+            # medicine_bill_item still referencing one of these was
+            # already deleted above (it's always tied to a test user's
+            # medicine_bill), so this is safe to delete on its own.
+            await session.execute(
+                text(
+                    "DELETE FROM audit_log WHERE entity_id IN "
+                    "(SELECT id FROM medicine WHERE name LIKE :pattern)"
+                ),
+                {"pattern": f"{TEST_MEDICINE_NAME_PREFIX}%"},
+            )
+            await session.execute(
+                text("DELETE FROM medicine WHERE name LIKE :pattern"),
+                {"pattern": f"{TEST_MEDICINE_NAME_PREFIX}%"},
             )
             await session.execute(
                 text('DELETE FROM "user" WHERE email LIKE :pattern'),
@@ -443,6 +515,18 @@ def billing_service(real_session, visit_service) -> BillingService:
         pending_billing_item_repository=PendingBillingItemRepository(real_session),
         invoice_repository=InvoiceRepository(real_session),
         invoice_line_item_repository=InvoiceLineItemRepository(real_session),
+        visit_service=visit_service,
+        audit_repository=AuditLogRepository(real_session),
+    )
+
+
+@pytest.fixture
+def pharmacy_service(real_session, visit_service) -> PharmacyService:
+    return PharmacyService(
+        session=real_session,
+        medicine_repository=MedicineRepository(real_session),
+        medicine_bill_repository=MedicineBillRepository(real_session),
+        medicine_bill_item_repository=MedicineBillItemRepository(real_session),
         visit_service=visit_service,
         audit_repository=AuditLogRepository(real_session),
     )

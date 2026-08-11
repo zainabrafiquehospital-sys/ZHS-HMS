@@ -461,3 +461,358 @@ def render_registration_slip(
 </body>
 </html>
 """
+
+
+def render_medicine_bill_receipt(
+    *,
+    hospital_name: str,
+    display_timezone: str,
+    bill_id: str,
+    bill_created_at: datetime,
+    visit_queue_token: str | None,
+    patient_full_name: str | None,
+    patient_mr_number: str | None,
+    line_items: list[tuple[str, str, int, Decimal, Decimal]],
+    total_amount: Decimal,
+) -> str:
+    """Renders the Pharmacy module's medicine bill slip — reuses the
+    exact `.sheet`/`.header`/`.title-box`/`.body-grid` grayscale, A4,
+    print-ready structure `render_registration_slip` established (same
+    design language, same reasons: this document also prints on a plain
+    B&W office printer, where layout/typography carries the document,
+    not color — see this module's own docstring on the Central Print
+    Service's grayscale convention).
+
+    `visit_queue_token`/`patient_full_name`/`patient_mr_number` are all
+    `None` for a standalone walk-in sale with no linked Visit (see
+    app/modules/pharmacy/models.py's `MedicineBill.visit_id` docstring)
+    — the patient/visit reference section is simply omitted in that
+    case rather than rendered with placeholder dashes.
+
+    `line_items` is `(medicine_name, category, quantity, unit_price,
+    line_total)` tuples, already snapshotted at billing time (see
+    `MedicineBillItem`'s docstring) — this function renders exactly what
+    was billed, never re-reads the live price list."""
+    billed_on = _to_local_time(bill_created_at, display_timezone).strftime("%d %b %Y, %I:%M %p")
+    short_bill_id = bill_id.split("-")[0].upper()
+
+    logo_data_uri = _logo_data_uri()
+    logo_html = (
+        f'<img class="logo" src="{logo_data_uri}" alt="{_escape(hospital_name)} logo">'
+        if logo_data_uri
+        else ""
+    )
+
+    def _row(label: str, value: str) -> str:
+        return (
+            f'<div class="row"><span class="label">{_escape(label)}</span>'
+            f'<span class="value">{_escape(value)}</span></div>'
+        )
+
+    reference_section = ""
+    if patient_full_name is not None:
+        reference_rows = "".join(
+            [
+                _row("Patient Name", patient_full_name),
+                _row("MR Number", patient_mr_number or "—"),
+                _row("Queue Token", visit_queue_token or "—"),
+                _row("Billed On", billed_on),
+            ]
+        )
+        reference_section = f"""
+    <div class="section-heading">
+      <span class="bar"></span>
+      <span class="text">Patient / Visit Reference</span>
+    </div>
+    {reference_rows}
+"""
+    else:
+        reference_section = f"""
+    <div class="section-heading">
+      <span class="bar"></span>
+      <span class="text">Sale Reference</span>
+    </div>
+    {_row("Sale Type", "Walk-in (no visit on file)")}
+    {_row("Billed On", billed_on)}
+"""
+
+    item_rows = "".join(
+        f"<tr><td>{_escape(name)}</td><td class='category'>{_escape(category.title())}</td>"
+        f"<td class='qty'>{quantity}</td><td class='amount'>{_money(unit_price)}</td>"
+        f"<td class='amount'>{_money(line_total)}</td></tr>"
+        for name, category, quantity, unit_price, line_total in line_items
+    )
+
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Medicine Slip — {_escape(short_bill_id)}</title>
+<style>
+  :root {{
+    --ink: #111111;
+    --ink-soft: #555555;
+    --rule: #d0d0d0;
+    --rule-strong: #111111;
+  }}
+  * {{ box-sizing: border-box; }}
+  html, body {{
+    margin: 0;
+    padding: 0;
+    font-family: 'Inter', -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: #eeeeee;
+  }}
+  body {{
+    padding: 28px 16px;
+    display: flex;
+    justify-content: center;
+  }}
+  .sheet {{
+    width: 100%;
+    max-width: 720px;
+    background: #ffffff;
+    border: 1px solid #dddddd;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    padding: 32px 36px;
+  }}
+
+  /* ---------- Header ---------- */
+  .header {{
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 20px;
+    padding-bottom: 16px;
+  }}
+  .logo {{
+    height: 56px;
+    width: auto;
+    object-fit: contain;
+  }}
+  .identity {{ text-align: center; }}
+  .identity .name {{
+    font-size: 21px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    margin: 0;
+  }}
+  .identity .tagline {{
+    margin-top: 4px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }}
+  .contact-block {{
+    text-align: right;
+    font-size: 9.5px;
+    line-height: 1.5;
+    color: var(--ink-soft);
+    white-space: nowrap;
+  }}
+  .contact-block strong {{ color: var(--ink); font-weight: 600; }}
+  .header-rule {{ border: none; border-top: 2px solid var(--rule-strong); margin: 0 0 18px; }}
+
+  /* ---------- Title box ---------- */
+  .title-box {{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border: 1.5px solid var(--rule-strong);
+    padding: 10px 18px;
+    margin-bottom: 24px;
+  }}
+  .title-box .label {{
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }}
+  .title-box .token {{
+    font-size: 26px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    font-family: 'Courier New', monospace;
+  }}
+
+  /* ---------- Reference section ---------- */
+  .section-heading {{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }}
+  .section-heading .bar {{
+    width: 4px;
+    height: 13px;
+    background: var(--ink);
+    flex-shrink: 0;
+  }}
+  .section-heading .text {{
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }}
+  .row {{
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--rule);
+  }}
+  .row:last-child {{ border-bottom: none; }}
+  .row .label {{
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--ink-soft);
+    white-space: nowrap;
+  }}
+  .row .value {{
+    font-size: 13px;
+    font-weight: 700;
+    text-align: right;
+  }}
+
+  /* ---------- Itemized table ---------- */
+  .items {{ margin-top: 26px; }}
+  table {{ width: 100%; border-collapse: collapse; }}
+  thead th {{
+    text-align: left;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    border-bottom: 1.5px solid var(--rule-strong);
+    padding: 0 0 8px;
+  }}
+  tbody td {{
+    font-size: 13px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--rule);
+  }}
+  th.qty, td.qty {{ text-align: center; width: 60px; }}
+  th.category, td.category {{ width: 110px; }}
+  th.amount, td.amount {{ text-align: right; width: 110px; }}
+  tfoot td {{
+    font-size: 14px;
+    font-weight: 800;
+    padding-top: 12px;
+    border-top: 2px solid var(--rule-strong);
+    border-bottom: none;
+  }}
+  tfoot td.amount {{ text-align: right; }}
+
+  /* ---------- Note ---------- */
+  .note-box {{
+    display: flex;
+    gap: 18px;
+    border: 1px solid var(--rule-strong);
+    padding: 12px 18px;
+    margin-top: 28px;
+  }}
+  .note-box .note-label {{
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }}
+  .note-box .note-text {{
+    font-size: 10.5px;
+    line-height: 1.6;
+    color: var(--ink-soft);
+  }}
+
+  /* ---------- Print ---------- */
+  @page {{ size: A4; margin: 14mm; }}
+  @media print {{
+    * {{
+      print-color-adjust: exact !important;
+      -webkit-print-color-adjust: exact !important;
+      color: #000000 !important;
+    }}
+    html, body {{
+      background: #ffffff !important;
+      padding: 0 !important;
+      color: #000000 !important;
+    }}
+    body {{ display: block !important; }}
+    .sheet {{
+      max-width: none !important;
+      width: 100% !important;
+      border: none !important;
+      box-shadow: none !important;
+      padding: 0 !important;
+      color: #000000 !important;
+      background: #ffffff !important;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }}
+    .logo {{ filter: grayscale(1); }}
+  }}
+</style>
+</head>
+<body>
+  <div class="sheet">
+    <div class="header">
+      {logo_html}
+      <div class="identity">
+        <p class="name">{_escape(hospital_name)}</p>
+        <div class="tagline">Gynecology &bull; Maternity &bull; Women's Care</div>
+      </div>
+      <div class="contact-block">
+        <div>Shalimar Link Road, Lahore</div>
+        <div><strong>International Standard Healthcare</strong></div>
+        <div>Open 24 Hours</div>
+        <div>Contact Us : 0300-0430009</div>
+      </div>
+    </div>
+    <hr class="header-rule">
+
+    <div class="title-box">
+      <span class="label">Medicine Slip</span>
+      <span class="token">MED-{_escape(short_bill_id)}</span>
+    </div>
+
+    {reference_section}
+
+    <div class="items">
+      <table>
+        <thead>
+          <tr>
+            <th>Medicine</th>
+            <th class="category">Category</th>
+            <th class="qty">Qty</th>
+            <th class="amount">Unit Price</th>
+            <th class="amount">Line Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {item_rows}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="4">Total</td>
+            <td class="amount">{_money(total_amount)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+    <div class="note-box">
+      <span class="note-label">Note</span>
+      <span class="note-text">
+        Please retain this medicine slip for your records. Prices reflect the pharmacy
+        price list at the time of this sale and are not affected by any later change.
+      </span>
+    </div>
+  </div>
+</body>
+</html>
+"""
