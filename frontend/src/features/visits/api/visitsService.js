@@ -42,4 +42,20 @@ export const visitsService = {
   getById(visitId) {
     return httpClient.get(`/visits/${visitId}`);
   },
+
+  // Recent visits for one patient, newest first — powers the Medicine
+  // Billing workspace's optional "link to visit" picker (see
+  // features/pharmacy/hooks/usePharmacy.js's useVisitsForPatient), the
+  // one caller of GET /visits' server-side patient_id filter.
+  listForPatient(patientId) {
+    return httpClient.get('/visits', {
+      params: {
+        patient_id: patientId,
+        page: 1,
+        page_size: 20,
+        sort_by: 'created_at',
+        sort_order: 'desc',
+      },
+    });
+  },
 };

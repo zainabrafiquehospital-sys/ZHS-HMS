@@ -113,6 +113,21 @@ export function useUsersForMedicineBills(bills) {
   return byId;
 }
 
+/** Recent visits for one patient, newest first — powers the
+ * receptionist's optional "link to visit" picker in
+ * MedicineBillingWorkspace. No dedicated visit-search endpoint exists;
+ * this composes patientsService.search's result (a patient id) with
+ * `GET /visits?patient_id=`, the same server-side filter
+ * visitsService.listForDoctor already exercises (with a different
+ * column). */
+export function useVisitsForPatient(patientId) {
+  return useQuery({
+    queryKey: ['visits', 'patient', patientId],
+    queryFn: () => visitsService.listForPatient(patientId).then((res) => res.data),
+    enabled: Boolean(patientId),
+  });
+}
+
 /** Fetches the medicine bill slip as an HTML document and opens it in a
  * new tab for printing — see billingService.fetchInvoiceReceiptHtml's
  * docstring for why this can't be a plain <a href>. */
