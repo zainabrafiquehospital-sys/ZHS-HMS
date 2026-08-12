@@ -7,6 +7,8 @@ from app.core.exceptions import ValidationError
 from app.modules.auth.models import User, UserStatus
 from app.modules.auth.repository import UserRepository
 from app.modules.billing.exceptions import (
+    DiscountExceedsSubtotalError,
+    DiscountReasonRequiredError,
     InvoiceAlreadyOpenError,
     InvoiceNotFoundError,
     InvoiceNotPayableError,
@@ -201,6 +203,155 @@ async def test_generate_invoice_twice_raises_already_open(
         )
 
 
+async def test_generate_invoice_with_discount_reduces_total_and_records_reason(
+    real_session, reception_service, consultation_service, billing_service
+):
+    doctor = await _make_doctor(real_session, "discount")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "Discount"
+    )
+    approved = await billing_service.submit_pending_item(
+        actor=doctor, visit_id=visit.id, description="Ultrasound", amount=Decimal("500")
+    )
+    await billing_service.approve_pending_item(actor=doctor, item_id=approved.id)
+
+    invoice = await billing_service.generate_invoice(
+        actor=doctor,
+        visit_id=visit.id,
+        base_description="Consultation Fee",
+        base_amount=Decimal("1000"),
+        discount_amount=Decimal("200"),
+        discount_reason="Staff family discount",
+    )
+
+    # subtotal = 1000 + 500 = 1500; total = 1500 - 200 = 1300.
+    assert invoice.total_amount == Decimal("1300.00")
+    assert invoice.discount_amount == Decimal("200.00")
+    assert invoice.discount_reason == "Staff family discount"
+    # The pre-discount subtotal is always recoverable as total + discount.
+    line_items = await billing_service.get_line_items(invoice.id)
+    assert sum((li.amount for li in line_items), Decimal("0")) == Decimal("1500.00")
+    assert invoice.total_amount + invoice.discount_amount == Decimal("1500.00")
+
+
+async def test_generate_invoice_without_discount_leaves_discount_fields_at_zero_and_none(
+    real_session, reception_service, consultation_service, billing_service
+):
+    doctor = await _make_doctor(real_session, "no-discount")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "NoDiscount"
+    )
+
+    invoice = await billing_service.generate_invoice(
+        actor=doctor, visit_id=visit.id, base_description="Consultation Fee", base_amount=Decimal("1000")
+    )
+
+    assert invoice.discount_amount == Decimal("0.00")
+    assert invoice.discount_reason is None
+    assert invoice.total_amount == Decimal("1000.00")
+
+
+async def test_generate_invoice_discount_without_reason_raises(
+    real_session, reception_service, consultation_service, billing_service
+):
+    doctor = await _make_doctor(real_session, "discount-no-reason")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "DiscountNoReason"
+    )
+
+    with pytest.raises(DiscountReasonRequiredError):
+        await billing_service.generate_invoice(
+            actor=doctor,
+            visit_id=visit.id,
+            base_description="Consultation Fee",
+            base_amount=Decimal("1000"),
+            discount_amount=Decimal("100"),
+        )
+
+
+async def test_generate_invoice_discount_blank_reason_raises(
+    real_session, reception_service, consultation_service, billing_service
+):
+    """A whitespace-only reason is not a real reason."""
+    doctor = await _make_doctor(real_session, "discount-blank-reason")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "DiscountBlankReason"
+    )
+
+    with pytest.raises(DiscountReasonRequiredError):
+        await billing_service.generate_invoice(
+            actor=doctor,
+            visit_id=visit.id,
+            base_description="Consultation Fee",
+            base_amount=Decimal("1000"),
+            discount_amount=Decimal("100"),
+            discount_reason="   ",
+        )
+
+
+async def test_generate_invoice_discount_exceeding_subtotal_raises(
+    real_session, reception_service, consultation_service, billing_service
+):
+    doctor = await _make_doctor(real_session, "discount-overshoot")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "DiscountOvershoot"
+    )
+
+    with pytest.raises(DiscountExceedsSubtotalError):
+        await billing_service.generate_invoice(
+            actor=doctor,
+            visit_id=visit.id,
+            base_description="Consultation Fee",
+            base_amount=Decimal("1000"),
+            discount_amount=Decimal("1000.01"),
+            discount_reason="Too generous",
+        )
+
+
+async def test_generate_invoice_negative_discount_raises_validation_error(
+    real_session, reception_service, consultation_service, billing_service
+):
+    doctor = await _make_doctor(real_session, "discount-negative")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "DiscountNegative"
+    )
+
+    with pytest.raises(ValidationError):
+        await billing_service.generate_invoice(
+            actor=doctor,
+            visit_id=visit.id,
+            base_description="Consultation Fee",
+            base_amount=Decimal("1000"),
+            discount_amount=Decimal("-1"),
+            discount_reason="Nonsensical",
+        )
+
+
+async def test_generate_invoice_discount_equal_to_subtotal_allows_zero_total(
+    real_session, reception_service, consultation_service, billing_service
+):
+    """A full-amount discount (e.g. a genuinely free consultation) is
+    allowed all the way down to zero — the ck_invoice_total_amount_non_
+    negative constraint's floor, not an arbitrary business cap we asked
+    the user about and were told not to add."""
+    doctor = await _make_doctor(real_session, "discount-full")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "DiscountFull"
+    )
+
+    invoice = await billing_service.generate_invoice(
+        actor=doctor,
+        visit_id=visit.id,
+        base_description="Complimentary Consultation",
+        base_amount=Decimal("1000"),
+        discount_amount=Decimal("1000"),
+        discount_reason="Complimentary — hospital board approval",
+    )
+
+    assert invoice.total_amount == Decimal("0.00")
+    assert invoice.status == InvoiceStatus.PENDING_PAYMENT
+
+
 async def test_record_full_payment_marks_paid_and_completes_visit(
     real_session, reception_service, consultation_service, visit_service, billing_service
 ):
@@ -243,6 +394,54 @@ async def test_record_partial_payment_keeps_visit_payment_pending(
     assert partial.amount_paid == Decimal("400.00")
     updated_visit = await visit_service.get_visit(visit.id)
     assert updated_visit.status == VisitStatus.PAYMENT_PENDING
+
+
+async def test_multiple_partial_payments_sum_correctly_and_recorded_as_audit_rows(
+    real_session, reception_service, consultation_service, billing_service
+):
+    """Multiple partials summing correctly, plus the audit-trail
+    itself: each `record_payment` call must add its own
+    `InvoicePayment` row (never overwrite a prior one — same spirit as
+    MedicineBillItem's snapshot convention), and `amount_paid` must
+    always equal `SUM(payments)` since both are written in the same
+    transaction (see InvoicePayment's docstring)."""
+    doctor = await _make_doctor(real_session, "multi-partial")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "MultiPartial"
+    )
+    invoice = await billing_service.generate_invoice(
+        actor=doctor,
+        visit_id=visit.id,
+        base_description="Consultation Fee",
+        base_amount=Decimal("1000"),
+    )
+
+    first = await billing_service.record_payment(
+        actor=doctor, invoice_id=invoice.id, amount=Decimal("250")
+    )
+    assert first.status == InvoiceStatus.PARTIALLY_PAID
+    assert first.amount_paid == Decimal("250.00")
+
+    second = await billing_service.record_payment(
+        actor=doctor, invoice_id=invoice.id, amount=Decimal("300")
+    )
+    assert second.status == InvoiceStatus.PARTIALLY_PAID
+    assert second.amount_paid == Decimal("550.00")
+
+    third = await billing_service.record_payment(
+        actor=doctor, invoice_id=invoice.id, amount=Decimal("450")
+    )
+    assert third.status == InvoiceStatus.PAID
+    assert third.amount_paid == Decimal("1000.00")
+    assert third.paid_at is not None
+
+    payments = await billing_service.get_payments(invoice.id)
+    assert [p.amount for p in payments] == [Decimal("250.00"), Decimal("300.00"), Decimal("450.00")]
+    assert sum((p.amount for p in payments), Decimal("0")) == third.amount_paid
+    # Each row is independently attributed/timestamped, not a single
+    # mutable field overwritten in place.
+    assert all(p.created_by == doctor.id for p in payments)
+    assert len({p.id for p in payments}) == 3
 
 
 async def test_record_payment_exceeding_balance_raises(

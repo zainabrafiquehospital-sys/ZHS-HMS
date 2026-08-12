@@ -2,7 +2,7 @@
 "Reception as Sole Financial Authority"). Registered once into
 app/db/model_registry.py's centralized model registry.
 
-Three entities:
+Four entities:
 - `PendingBillingItem` — a doctor-submitted additional charge request
   (§7.1), never itself a financial transaction until Reception approves
   it and it is folded into an Invoice.
@@ -13,6 +13,8 @@ Three entities:
   a hospital bills a patient.
 - `InvoiceLineItem` — one charge line on an Invoice, optionally traced
   back to the `PendingBillingItem` it came from.
+- `InvoicePayment` — one payment against an Invoice, the append-only
+  audit trail behind `Invoice.amount_paid`'s maintained running total.
 
 `Refunded` (§7.4) is deliberately not modeled — explicitly out of scope
 for this build; adding it later is an additive enum value, not a
@@ -100,6 +102,7 @@ class Invoice(BaseEntity):
         CheckConstraint(
             "amount_paid <= total_amount", name="ck_invoice_amount_paid_not_exceeding_total"
         ),
+        CheckConstraint("discount_amount >= 0", name="ck_invoice_discount_amount_non_negative"),
     )
 
     visit_id: Mapped[UUID] = mapped_column(ForeignKey("visit.id"), nullable=False)
@@ -118,6 +121,22 @@ class Invoice(BaseEntity):
     total_amount: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)
     amount_paid: Mapped[Decimal] = mapped_column(_MONEY, nullable=False, default=Decimal("0.00"))
     paid_at: Mapped[datetime | None] = mapped_column()
+    # A fixed-amount discount applied once, at generation time only (no
+    # post-generation adjustment endpoint — see BillingService.
+    # generate_invoice's docstring). `total_amount` is already
+    # post-discount; the pre-discount subtotal is never stored
+    # separately because it is always cheaply recoverable as
+    # `total_amount + discount_amount` — sum(line item amounts) must
+    # equal that recovered subtotal exactly. `discount_reason` is
+    # required whenever `discount_amount > 0` (enforced in the
+    # service, not the database) — a discount that cuts real hospital
+    # revenue needs a documented reason, unlike every other billing
+    # mutation here, which only needs the standard actor/timestamp
+    # audit-log trail.
+    discount_amount: Mapped[Decimal] = mapped_column(
+        _MONEY, nullable=False, default=Decimal("0.00")
+    )
+    discount_reason: Mapped[str | None] = mapped_column(String(200))
 
 
 class InvoiceLineItem(BaseEntity):
@@ -132,4 +151,30 @@ class InvoiceLineItem(BaseEntity):
         ForeignKey("pending_billing_item.id")
     )
     description: Mapped[str] = mapped_column(String(200), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)
+
+
+class InvoicePayment(BaseEntity):
+    """One payment against an Invoice — the real, timestamped/attributed
+    audit trail (inherited `created_at` is when it was paid, `created_by`
+    is who recorded it), same "record every mutation as its own
+    immutable row" spirit as `MedicineBillItem`'s snapshot convention.
+
+    `Invoice.amount_paid`/`status` stay exactly as they were — a
+    maintained running total, updated in the same transaction as each
+    new payment row (see `BillingService.record_payment`) — rather than
+    being replaced by a live SUM over this table. Every existing reader
+    of `amount_paid` (the today-summary aggregate, the print receipt,
+    the frontend balance calculation) keeps working completely
+    unchanged; this table only adds the history those readers never
+    needed. `amount_paid` can never drift from `SUM(amount)` here
+    because both are written inside the same DB transaction."""
+
+    __tablename__ = "invoice_payment"
+    __table_args__ = (
+        Index("ix_invoice_payment_invoice_id", "invoice_id"),
+        CheckConstraint("amount > 0", name="ck_invoice_payment_amount_positive"),
+    )
+
+    invoice_id: Mapped[UUID] = mapped_column(ForeignKey("invoice.id"), nullable=False)
     amount: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)

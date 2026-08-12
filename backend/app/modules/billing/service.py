@@ -26,6 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import ValidationError
 from app.modules.auth.models import User
 from app.modules.billing.exceptions import (
+    DiscountExceedsSubtotalError,
+    DiscountReasonRequiredError,
     InvoiceAlreadyOpenError,
     InvoiceNotFoundError,
     InvoiceNotPayableError,
@@ -36,12 +38,14 @@ from app.modules.billing.exceptions import (
 from app.modules.billing.models import (
     Invoice,
     InvoiceLineItem,
+    InvoicePayment,
     InvoiceStatus,
     PendingBillingItem,
     PendingBillingItemStatus,
 )
 from app.modules.billing.repository import (
     InvoiceLineItemRepository,
+    InvoicePaymentRepository,
     InvoiceRepository,
     PendingBillingItemRepository,
 )
@@ -67,6 +71,7 @@ class BillingService:
         pending_billing_item_repository: PendingBillingItemRepository,
         invoice_repository: InvoiceRepository,
         invoice_line_item_repository: InvoiceLineItemRepository,
+        invoice_payment_repository: InvoicePaymentRepository,
         visit_service: VisitService,
         audit_repository: AuditLogRepository,
     ) -> None:
@@ -74,6 +79,7 @@ class BillingService:
         self._pending_repo = pending_billing_item_repository
         self._invoice_repo = invoice_repository
         self._line_item_repo = invoice_line_item_repository
+        self._payment_repo = invoice_payment_repository
         self._visit_service = visit_service
         self._audit_repo = audit_repository
 
@@ -159,11 +165,30 @@ class BillingService:
     # ------------------------------------------------------------------
 
     async def generate_invoice(
-        self, *, actor: User, visit_id: UUID, base_description: str, base_amount: Decimal
+        self,
+        *,
+        actor: User,
+        visit_id: UUID,
+        base_description: str,
+        base_amount: Decimal,
+        discount_amount: Decimal = _ZERO,
+        discount_reason: str | None = None,
     ) -> Invoice:
         """Creates the Invoice for a Visit: the base procedure charge
         plus every currently-`APPROVED` Pending Billing Item, each
         marked `BILLED` so it can never be folded into a second Invoice.
+
+        `discount_amount` (optional, defaults to none) is a flat
+        reduction applied once, here, against the subtotal — there is
+        no separate "apply a discount to an already-generated invoice"
+        endpoint; Reception decides the discount at the same moment it
+        decides the rest of the bill, matching this method's existing
+        "compute the full line-item set in one action" design. A
+        non-zero discount always requires `discount_reason` (a real cut
+        to hospital revenue needs a documented reason); `total_amount`
+        stored on the Invoice is already post-discount, and the
+        pre-discount subtotal is always cheaply recoverable as
+        `total_amount + discount_amount` rather than stored separately.
 
         Callable whether the Visit is fresh out of Consultation
         (`WAITING_BILLING`) or already `COMPLETED` with a prior `Paid`
@@ -178,16 +203,30 @@ class BillingService:
             raise ValidationError("base_amount must be greater than zero.")
         base_amount = quantize_money(base_amount)
 
+        discount_amount = quantize_money(discount_amount) if discount_amount else _ZERO
+        if discount_amount < _ZERO:
+            raise ValidationError("discount_amount cannot be negative.")
+        discount_reason = discount_reason.strip() if discount_reason else None
+        if discount_amount > _ZERO and not discount_reason:
+            raise DiscountReasonRequiredError
+        if discount_amount == _ZERO:
+            discount_reason = None
+
         approved_items = await self._pending_repo.list_for_visit(
             visit_id, status=PendingBillingItemStatus.APPROVED
         )
-        total = base_amount + sum((item.amount for item in approved_items), _ZERO)
+        subtotal = base_amount + sum((item.amount for item in approved_items), _ZERO)
+        if discount_amount > subtotal:
+            raise DiscountExceedsSubtotalError(str(subtotal))
+        total = subtotal - discount_amount
 
         invoice = Invoice(
             visit_id=visit_id,
             status=InvoiceStatus.PENDING_PAYMENT,
             total_amount=total,
             amount_paid=_ZERO,
+            discount_amount=discount_amount,
+            discount_reason=discount_reason,
             created_by=actor.id,
             updated_by=actor.id,
         )
@@ -236,6 +275,8 @@ class BillingService:
                 "visit_id": str(visit_id),
                 "total_amount": str(total),
                 "line_item_count": 1 + len(approved_items),
+                "discount_amount": str(discount_amount),
+                "discount_reason": discount_reason,
             },
         )
         await self._visit_service.mark_payment_pending(actor=actor, visit_id=visit_id)
@@ -282,6 +323,14 @@ class BillingService:
         else:
             invoice.status = InvoiceStatus.PARTIALLY_PAID
         await self._invoice_repo.add(invoice)
+        await self._payment_repo.add(
+            InvoicePayment(
+                invoice_id=invoice.id,
+                amount=amount,
+                created_by=actor.id,
+                updated_by=actor.id,
+            )
+        )
 
         await self._audit_repo.record(
             module="billing",
@@ -311,6 +360,9 @@ class BillingService:
 
     async def get_line_items(self, invoice_id: UUID) -> list[InvoiceLineItem]:
         return await self._line_item_repo.list_for_invoice(invoice_id)
+
+    async def get_payments(self, invoice_id: UUID) -> list[InvoicePayment]:
+        return await self._payment_repo.list_for_invoice(invoice_id)
 
     async def get_today_summary(self) -> tuple[Decimal, int, int]:
         """Read-only aggregate added for the Dashboard module (§22)."""

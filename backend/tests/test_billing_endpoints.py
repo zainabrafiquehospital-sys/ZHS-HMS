@@ -156,6 +156,132 @@ async def test_full_billing_lifecycle_via_http(api_client, real_session, grant_p
     assert "GYN-" in print_resp.text
 
 
+async def test_partial_invoice_payments_via_http_sum_correctly_and_reject_overpay(
+    api_client, real_session, grant_permission
+):
+    doctor, access_token = await _create_and_login(api_client, real_session, "partial-http")
+    await grant_permission(doctor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_START)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_MANAGE)
+    await grant_permission(doctor, PERMISSION_BILLING_MANAGE)
+    await grant_permission(doctor, PERMISSION_BILLING_READ)
+    visit_id = await _make_visit_waiting_billing(api_client, access_token, "PartialHttp")
+
+    generate_resp = await api_client.post(
+        "/api/v1/billing/invoices",
+        json={"visit_id": visit_id, "base_description": "Consultation Fee", "base_amount": "1000.00"},
+        headers=_auth_header(access_token),
+    )
+    assert generate_resp.status_code == 201
+    invoice_id = generate_resp.json()["data"]["id"]
+    assert generate_resp.json()["data"]["payments"] == []
+
+    first_pay = await api_client.post(
+        f"/api/v1/billing/invoices/{invoice_id}/pay",
+        json={"amount": "400.00"},
+        headers=_auth_header(access_token),
+    )
+    assert first_pay.status_code == 200, first_pay.text
+    first_body = first_pay.json()["data"]
+    assert first_body["status"] == "partially_paid"
+    assert first_body["amount_paid"] == "400.00"
+    assert len(first_body["payments"]) == 1
+    assert first_body["payments"][0]["amount"] == "400.00"
+
+    # A second payment that would exceed the remaining 600.00 balance
+    # must be rejected outright, and must not mutate the invoice.
+    overpay_resp = await api_client.post(
+        f"/api/v1/billing/invoices/{invoice_id}/pay",
+        json={"amount": "600.01"},
+        headers=_auth_header(access_token),
+    )
+    assert overpay_resp.status_code == 422
+    assert overpay_resp.json()["error"]["code"] == "PAYMENT_EXCEEDS_BALANCE"
+
+    second_pay = await api_client.post(
+        f"/api/v1/billing/invoices/{invoice_id}/pay",
+        json={"amount": "600.00"},
+        headers=_auth_header(access_token),
+    )
+    assert second_pay.status_code == 200, second_pay.text
+    second_body = second_pay.json()["data"]
+    assert second_body["status"] == "paid"
+    assert second_body["amount_paid"] == "1000.00"
+    assert len(second_body["payments"]) == 2
+    assert [p["amount"] for p in second_body["payments"]] == ["400.00", "600.00"]
+
+    print_resp = await api_client.get(
+        f"/api/v1/billing/invoices/{invoice_id}/print", headers=_auth_header(access_token)
+    )
+    assert print_resp.status_code == 200
+    assert "1,000.00" in print_resp.text
+
+
+async def test_generate_invoice_with_discount_via_http(api_client, real_session, grant_permission):
+    doctor, access_token = await _create_and_login(api_client, real_session, "discount-http")
+    await grant_permission(doctor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_START)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_MANAGE)
+    await grant_permission(doctor, PERMISSION_BILLING_MANAGE)
+    await grant_permission(doctor, PERMISSION_BILLING_READ)
+    visit_id = await _make_visit_waiting_billing(api_client, access_token, "DiscountHttp")
+
+    # A discount without a reason is rejected outright.
+    no_reason_resp = await api_client.post(
+        "/api/v1/billing/invoices",
+        json={
+            "visit_id": visit_id,
+            "base_description": "Consultation Fee",
+            "base_amount": "1000.00",
+            "discount_amount": "100.00",
+        },
+        headers=_auth_header(access_token),
+    )
+    assert no_reason_resp.status_code == 422
+    assert no_reason_resp.json()["error"]["code"] == "DISCOUNT_REASON_REQUIRED"
+
+    # A discount exceeding the subtotal is rejected outright.
+    overshoot_resp = await api_client.post(
+        "/api/v1/billing/invoices",
+        json={
+            "visit_id": visit_id,
+            "base_description": "Consultation Fee",
+            "base_amount": "1000.00",
+            "discount_amount": "1000.01",
+            "discount_reason": "Too generous",
+        },
+        headers=_auth_header(access_token),
+    )
+    assert overshoot_resp.status_code == 422
+    assert overshoot_resp.json()["error"]["code"] == "DISCOUNT_EXCEEDS_SUBTOTAL"
+
+    generate_resp = await api_client.post(
+        "/api/v1/billing/invoices",
+        json={
+            "visit_id": visit_id,
+            "base_description": "Consultation Fee",
+            "base_amount": "1000.00",
+            "discount_amount": "200.00",
+            "discount_reason": "Staff family discount",
+        },
+        headers=_auth_header(access_token),
+    )
+    assert generate_resp.status_code == 201, generate_resp.text
+    invoice_body = generate_resp.json()["data"]
+    assert invoice_body["total_amount"] == "800.00"
+    assert invoice_body["discount_amount"] == "200.00"
+    assert invoice_body["discount_reason"] == "Staff family discount"
+    invoice_id = invoice_body["id"]
+
+    print_resp = await api_client.get(
+        f"/api/v1/billing/invoices/{invoice_id}/print", headers=_auth_header(access_token)
+    )
+    assert print_resp.status_code == 200
+    assert "Subtotal" in print_resp.text
+    assert "Staff family discount" in print_resp.text
+    assert "800.00" in print_resp.text
+
+
 async def test_print_invoice_requires_permission(api_client, real_session, grant_permission):
     doctor, access_token = await _create_and_login(api_client, real_session, "print-no-perm")
     await grant_permission(doctor, PERMISSION_RECEPTION_REGISTER_VISIT)

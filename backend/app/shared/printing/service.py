@@ -53,18 +53,38 @@ def render_invoice_receipt(
     line_items: list[tuple[str, Decimal]],
     total_amount: Decimal,
     amount_paid: Decimal,
+    discount_amount: Decimal = Decimal("0.00"),
+    discount_reason: str | None = None,
 ) -> str:
     """Renders a single-page, print-ready HTML receipt for one Invoice.
     Every dynamic value is HTML-escaped — this document assembles
     patient- and doctor-supplied free text (names, procedure,
     descriptions) directly into markup, so unescaped interpolation would
     be a stored-XSS vector the moment this HTML is ever opened in a
-    browser (which is its entire purpose)."""
+    browser (which is its entire purpose).
+
+    `total_amount` is already post-discount (see BillingService.
+    generate_invoice's docstring) — the pre-discount subtotal shown
+    here is recovered as `total_amount + discount_amount`, never a
+    separately stored value. The Subtotal/Discount rows only appear
+    when a discount was actually applied, so an ordinary invoice's
+    receipt is unchanged from before this field existed."""
     balance_due = total_amount - amount_paid
+    subtotal = total_amount + discount_amount
     rows = "".join(
         f"<tr><td>{_escape(description)}</td>" f"<td class='amount'>{_money(amount)}</td></tr>"
         for description, amount in line_items
     )
+    discount_rows = ""
+    if discount_amount > 0:
+        discount_label = "Discount"
+        if discount_reason:
+            discount_label = f"Discount ({_escape(discount_reason)})"
+        discount_rows = (
+            f"<tr><td>Subtotal</td><td class='amount'>{_money(subtotal)}</td></tr>"
+            f"<tr><td>{discount_label}</td>"
+            f"<td class='amount'>-{_money(discount_amount)}</td></tr>"
+        )
     return f"""<!doctype html>
 <html>
 <head>
@@ -97,6 +117,7 @@ def render_invoice_receipt(
     <thead><tr><th>Description</th><th class="amount">Amount</th></tr></thead>
     <tbody>
       {rows}
+      {discount_rows}
       <tr class="totals"><td>Total</td><td class="amount">{_money(total_amount)}</td></tr>
       <tr><td>Amount Paid</td><td class="amount">{_money(amount_paid)}</td></tr>
       <tr><td>Balance Due</td><td class="amount">{_money(balance_due)}</td></tr>
@@ -472,8 +493,11 @@ def render_medicine_bill_receipt(
     visit_queue_token: str | None,
     patient_full_name: str | None,
     patient_mr_number: str | None,
+    patient_age_years: int | None,
+    patient_phone_number: str | None,
     line_items: list[tuple[str, str, int, Decimal, Decimal]],
     total_amount: Decimal,
+    amount_paid: Decimal,
 ) -> str:
     """Renders the Pharmacy module's medicine bill slip — reuses the
     exact `.sheet`/`.header`/`.title-box`/`.body-grid` grayscale, A4,
@@ -483,17 +507,29 @@ def render_medicine_bill_receipt(
     not color — see this module's own docstring on the Central Print
     Service's grayscale convention).
 
-    `visit_queue_token`/`patient_full_name`/`patient_mr_number` are all
-    `None` for a standalone walk-in sale with no linked Visit (see
+    `visit_queue_token`/`patient_full_name`/`patient_mr_number`/
+    `patient_age_years`/`patient_phone_number` are all `None` for a
+    standalone walk-in sale with no linked Visit (see
     app/modules/pharmacy/models.py's `MedicineBill.visit_id` docstring)
     — the patient/visit reference section is simply omitted in that
-    case rather than rendered with placeholder dashes.
+    case rather than rendered with placeholder dashes. When a Visit is
+    linked, `patient_age_years`/`patient_phone_number` mirror the same
+    two fields `render_registration_slip` already shows (Age, Contact
+    Number) — this is the identical `Patient` record, just rendered a
+    second time on a different document.
 
     `line_items` is `(medicine_name, category, quantity, unit_price,
     line_total)` tuples, already snapshotted at billing time (see
     `MedicineBillItem`'s docstring) — this function renders exactly what
-    was billed, never re-reads the live price list."""
+    was billed, never re-reads the live price list.
+
+    `amount_paid` mirrors `render_invoice_receipt`'s identical Total /
+    Amount Paid / Balance Due footer — a bill freshly created and not
+    yet paid renders `Amount Paid: 0.00` / `Balance Due` equal to the
+    total, exactly like a Pending Payment Invoice would, rather than
+    silently implying the sale was already settled."""
     billed_on = _to_local_time(bill_created_at, display_timezone).strftime("%d %b %Y, %I:%M %p")
+    balance_due = total_amount - amount_paid
     short_bill_id = bill_id.split("-")[0].upper()
 
     logo_data_uri = _logo_data_uri()
@@ -515,6 +551,8 @@ def render_medicine_bill_receipt(
             [
                 _row("Patient Name", patient_full_name),
                 _row("MR Number", patient_mr_number or "—"),
+                _row("Age", f"{patient_age_years} years" if patient_age_years is not None else "—"),
+                _row("Contact Number", patient_phone_number or "—"),
                 _row("Queue Token", visit_queue_token or "—"),
                 _row("Billed On", billed_on),
             ]
@@ -699,11 +737,18 @@ def render_medicine_bill_receipt(
   th.qty, td.qty {{ text-align: center; width: 60px; }}
   th.category, td.category {{ width: 110px; }}
   th.amount, td.amount {{ text-align: right; width: 110px; }}
-  tfoot td {{
+  tfoot tr:first-child td {{
     font-size: 14px;
     font-weight: 800;
     padding-top: 12px;
     border-top: 2px solid var(--rule-strong);
+    border-bottom: none;
+  }}
+  tfoot tr:not(:first-child) td {{
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink-soft);
+    padding-top: 4px;
     border-bottom: none;
   }}
   tfoot td.amount {{ text-align: right; }}
@@ -800,6 +845,14 @@ def render_medicine_bill_receipt(
           <tr>
             <td colspan="4">Total</td>
             <td class="amount">{_money(total_amount)}</td>
+          </tr>
+          <tr>
+            <td colspan="4">Amount Paid</td>
+            <td class="amount">{_money(amount_paid)}</td>
+          </tr>
+          <tr>
+            <td colspan="4">Balance Due</td>
+            <td class="amount">{_money(balance_due)}</td>
           </tr>
         </tfoot>
       </table>

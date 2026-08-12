@@ -94,9 +94,14 @@ async def generate_invoice(
         visit_id=payload.visit_id,
         base_description=payload.base_description,
         base_amount=payload.base_amount,
+        discount_amount=payload.discount_amount,
+        discount_reason=payload.discount_reason,
     )
     line_items = await billing_service.get_line_items(invoice.id)
-    return success_envelope(InvoiceOut.from_invoice(invoice, line_items).model_dump(mode="json"))
+    payments = await billing_service.get_payments(invoice.id)
+    return success_envelope(
+        InvoiceOut.from_invoice(invoice, line_items, payments).model_dump(mode="json")
+    )
 
 
 @router.get("/invoices/{invoice_id}")
@@ -107,7 +112,10 @@ async def get_invoice(
 ) -> dict:
     invoice = await billing_service.get_invoice(invoice_id)
     line_items = await billing_service.get_line_items(invoice.id)
-    return success_envelope(InvoiceOut.from_invoice(invoice, line_items).model_dump(mode="json"))
+    payments = await billing_service.get_payments(invoice.id)
+    return success_envelope(
+        InvoiceOut.from_invoice(invoice, line_items, payments).model_dump(mode="json")
+    )
 
 
 @router.get("/visits/{visit_id}/invoices")
@@ -132,7 +140,10 @@ async def record_payment(
         actor=actor, invoice_id=invoice_id, amount=payload.amount
     )
     line_items = await billing_service.get_line_items(invoice.id)
-    return success_envelope(InvoiceOut.from_invoice(invoice, line_items).model_dump(mode="json"))
+    payments = await billing_service.get_payments(invoice.id)
+    return success_envelope(
+        InvoiceOut.from_invoice(invoice, line_items, payments).model_dump(mode="json")
+    )
 
 
 @router.get("/invoices/{invoice_id}/print", response_class=HTMLResponse)
@@ -165,5 +176,7 @@ async def print_invoice(
         line_items=[(item.description, item.amount) for item in line_items],
         total_amount=invoice.total_amount,
         amount_paid=invoice.amount_paid,
+        discount_amount=invoice.discount_amount,
+        discount_reason=invoice.discount_reason,
     )
     return HTMLResponse(content=html_document)

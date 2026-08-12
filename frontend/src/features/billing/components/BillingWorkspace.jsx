@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Printer, CheckCircle2, XCircle, ReceiptText, Wallet } from 'lucide-react';
@@ -136,6 +136,8 @@ function GenerateInvoiceForm({ visitId, visit }) {
     defaultValues: {
       base_description: visit?.procedure ?? '',
       base_amount: visit?.amount ?? '',
+      discount_amount: '',
+      discount_reason: '',
     },
   });
 
@@ -143,7 +145,7 @@ function GenerateInvoiceForm({ visitId, visit }) {
     setSubmitError(null);
     try {
       await generateInvoice.mutateAsync({ visit_id: visitId, ...values });
-      reset({ base_description: '', base_amount: '' });
+      reset({ base_description: '', base_amount: '', discount_amount: '', discount_reason: '' });
     } catch (error) {
       setSubmitError(error.message || 'Unable to generate invoice.');
     }
@@ -154,33 +156,65 @@ function GenerateInvoiceForm({ visitId, visit }) {
       <CardHeader>
         <CardTitle>Generate Invoice</CardTitle>
       </CardHeader>
-      <CardContent>
-        <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4 sm:flex-row sm:items-end">
-          <div className="flex flex-1 flex-col gap-1.5">
-            <Label htmlFor="base_description">Description</Label>
-            <Input
-              id="base_description"
-              placeholder="e.g. Consultation Fee"
-              {...register('base_description')}
-            />
-            {errors.base_description ? (
-              <p className="text-xs text-destructive">{errors.base_description.message}</p>
-            ) : null}
+      <CardContent className="flex flex-col gap-4">
+        <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
+            <div className="flex flex-1 flex-col gap-1.5">
+              <Label htmlFor="base_description">Description</Label>
+              <Input
+                id="base_description"
+                placeholder="e.g. Consultation Fee"
+                {...register('base_description')}
+              />
+              {errors.base_description ? (
+                <p className="text-xs text-destructive">{errors.base_description.message}</p>
+              ) : null}
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="base_amount">Amount (Rs.)</Label>
+              <Input id="base_amount" type="number" step="0.01" {...register('base_amount')} />
+              {errors.base_amount ? (
+                <p className="text-xs text-destructive">{errors.base_amount.message}</p>
+              ) : null}
+            </div>
           </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="base_amount">Amount (Rs.)</Label>
-            <Input id="base_amount" type="number" step="0.01" {...register('base_amount')} />
-            {errors.base_amount ? (
-              <p className="text-xs text-destructive">{errors.base_amount.message}</p>
-            ) : null}
+          {/* Optional flat discount, applied once at generation time —
+              a reason is required as soon as an amount is entered (see
+              generateInvoiceSchema's cross-field refine). */}
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="discount_amount">Discount (Rs.)</Label>
+              <Input
+                id="discount_amount"
+                type="number"
+                step="0.01"
+                placeholder="0.00"
+                className="sm:w-32"
+                {...register('discount_amount')}
+              />
+              {errors.discount_amount ? (
+                <p className="text-xs text-destructive">{errors.discount_amount.message}</p>
+              ) : null}
+            </div>
+            <div className="flex flex-1 flex-col gap-1.5">
+              <Label htmlFor="discount_reason">Discount Reason</Label>
+              <Input
+                id="discount_reason"
+                placeholder="Required when a discount is applied"
+                {...register('discount_reason')}
+              />
+              {errors.discount_reason ? (
+                <p className="text-xs text-destructive">{errors.discount_reason.message}</p>
+              ) : null}
+            </div>
+            <Button type="submit" disabled={isSubmitting} className="sm:self-end">
+              <ReceiptText className="h-4 w-4" />
+              {isSubmitting ? 'Generating…' : 'Generate Invoice'}
+            </Button>
           </div>
-          <Button type="submit" disabled={isSubmitting}>
-            <ReceiptText className="h-4 w-4" />
-            {isSubmitting ? 'Generating…' : 'Generate Invoice'}
-          </Button>
         </form>
         {submitError ? (
-          <p className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {submitError}
           </p>
         ) : null}
@@ -193,17 +227,31 @@ function RecordPaymentRow({ invoice, visitId }) {
   const recordPayment = useRecordPayment(visitId);
   const printInvoice = usePrintInvoice();
   const [error, setError] = useState(null);
+  const balanceDue = Number(invoice.total_amount) - Number(invoice.amount_paid);
+  const balanceDueValue = balanceDue > 0 ? balanceDue.toFixed(2) : '';
   const {
     register,
     handleSubmit,
     reset,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting, isDirty },
   } = useForm({
     resolver: zodResolver(recordPaymentSchema),
-    defaultValues: { amount: '' },
+    // Defaults to the full remaining balance (still editable) rather
+    // than an always-pays-full button — see the module's Phase 3 note.
+    defaultValues: { amount: balanceDueValue },
   });
 
-  const balanceDue = Number(invoice.total_amount) - Number(invoice.amount_paid);
+  // Keeps the field pinned to the current remaining balance as it
+  // changes underneath (a partial payment elsewhere, a refetch) —
+  // but only while the receptionist hasn't started typing a different
+  // amount, so an in-progress edit is never clobbered.
+  useEffect(() => {
+    if (!isDirty) {
+      reset({ amount: balanceDueValue });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [balanceDueValue]);
+
   const isOpen = invoice.status === 'pending_payment' || invoice.status === 'partially_paid';
 
   async function onSubmit(values) {
@@ -236,6 +284,12 @@ function RecordPaymentRow({ invoice, visitId }) {
           <p className="text-xs text-muted-foreground">
             {invoice.line_items?.length ?? 0} line item(s) · Balance due: {money(balanceDue)}
           </p>
+          {Number(invoice.discount_amount) > 0 ? (
+            <p className="text-xs text-muted-foreground">
+              Discount applied: {money(invoice.discount_amount)}
+              {invoice.discount_reason ? ` — ${invoice.discount_reason}` : ''}
+            </p>
+          ) : null}
         </div>
         <div className="flex items-center gap-2">
           <Badge

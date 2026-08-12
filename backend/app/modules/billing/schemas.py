@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.modules.billing.models import (
     Invoice,
     InvoiceLineItem,
+    InvoicePayment,
     InvoiceStatus,
     PendingBillingItem,
     PendingBillingItemStatus,
@@ -30,6 +31,13 @@ class GenerateInvoiceRequest(BaseModel):
     visit_id: LaxUUID
     base_description: str = Field(min_length=1, max_length=200)
     base_amount: LaxDecimal = Field(gt=0)
+    # Optional flat discount applied at generation time only — see
+    # BillingService.generate_invoice's docstring. Whether a non-zero
+    # discount requires discount_reason is a cross-field business rule,
+    # left to the service (same "schema only enforces per-field shape"
+    # convention every other request here already follows).
+    discount_amount: LaxDecimal = Field(default=Decimal("0"), ge=0)
+    discount_reason: str | None = Field(default=None, max_length=200)
 
 
 class RecordPaymentRequest(BaseModel):
@@ -78,6 +86,24 @@ class InvoiceLineItemOut(BaseModel):
         )
 
 
+class InvoicePaymentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    amount: Decimal
+    created_by: UUID | None
+    created_at: datetime
+
+    @classmethod
+    def from_payment(cls, payment: InvoicePayment) -> "InvoicePaymentOut":
+        return cls(
+            id=payment.id,
+            amount=payment.amount,
+            created_by=payment.created_by,
+            created_at=payment.created_at,
+        )
+
+
 class InvoiceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -86,13 +112,19 @@ class InvoiceOut(BaseModel):
     status: InvoiceStatus
     total_amount: Decimal
     amount_paid: Decimal
+    discount_amount: Decimal
+    discount_reason: str | None
     paid_at: datetime | None
     created_at: datetime
     line_items: list[InvoiceLineItemOut] = Field(default_factory=list)
+    payments: list[InvoicePaymentOut] = Field(default_factory=list)
 
     @classmethod
     def from_invoice(
-        cls, invoice: Invoice, line_items: list[InvoiceLineItem] | None = None
+        cls,
+        invoice: Invoice,
+        line_items: list[InvoiceLineItem] | None = None,
+        payments: list[InvoicePayment] | None = None,
     ) -> "InvoiceOut":
         return cls(
             id=invoice.id,
@@ -100,7 +132,10 @@ class InvoiceOut(BaseModel):
             status=invoice.status,
             total_amount=invoice.total_amount,
             amount_paid=invoice.amount_paid,
+            discount_amount=invoice.discount_amount,
+            discount_reason=invoice.discount_reason,
             paid_at=invoice.paid_at,
             created_at=invoice.created_at,
             line_items=[InvoiceLineItemOut.from_line_item(li) for li in (line_items or [])],
+            payments=[InvoicePaymentOut.from_payment(p) for p in (payments or [])],
         )

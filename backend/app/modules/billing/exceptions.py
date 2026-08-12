@@ -54,6 +54,22 @@ class PaymentExceedsBalanceError(ValidationError):
         )
 
 
+class DiscountExceedsSubtotalError(ValidationError):
+    code = "DISCOUNT_EXCEEDS_SUBTOTAL"
+
+    def __init__(self, subtotal: str) -> None:
+        super().__init__(
+            f"Discount exceeds the invoice subtotal of {subtotal}.", {"subtotal": subtotal}
+        )
+
+
+class DiscountReasonRequiredError(ValidationError):
+    code = "DISCOUNT_REASON_REQUIRED"
+
+    def __init__(self) -> None:
+        super().__init__("A reason is required whenever a discount is applied.")
+
+
 class InvoiceImmutableError(ConflictError):
     code = "INVOICE_IMMUTABLE"
 
