@@ -61,6 +61,52 @@ async def test_login_success_sets_refresh_cookie_and_returns_access_token(api_cl
     assert "refresh_token" in resp.cookies
 
 
+def _set_cookie_header(resp) -> str:
+    """httpx's `resp.cookies` is a plain name->value jar — it does not
+    expose `Set-Cookie` attributes like `SameSite`/`Secure`. This reads
+    the raw header text instead, the only way to assert on those."""
+    return resp.headers.get("set-cookie", "")
+
+
+async def test_refresh_cookie_is_strict_and_not_secure_outside_production(api_client, real_session):
+    """Local/dev deployment: frontend and backend are same-site
+    (localhost:3000 -> localhost:8000), so the refresh cookie keeps the
+    tightest `SameSite=Strict` policy — see
+    app/modules/auth/router.py's `_set_refresh_cookie`."""
+    email = await _create_user_directly(real_session, "cookie-samesite-dev")
+
+    resp = await api_client.post("/api/v1/auth/login", json={"email": email, "password": _PASSWORD})
+
+    header = _set_cookie_header(resp).lower()
+    assert "samesite=strict" in header
+    assert "secure" not in header
+
+
+async def test_refresh_cookie_is_none_and_secure_in_production(api_client, real_session):
+    """Production: frontend (Vercel) and backend (Railway) are genuinely
+    cross-site — `Settings.cors_allowed_origins` defaults to the real
+    Vercel origin (see app/core/config.py) — so the cookie must be
+    `SameSite=None; Secure` or the browser never sends it back on
+    `/auth/refresh` at all, which is exactly the bug this test guards
+    against regressing."""
+    from app.core.config import Settings
+    from app.main import app
+
+    email = await _create_user_directly(real_session, "cookie-samesite-prod")
+    production_settings = Settings(**{**get_settings().model_dump(), "app_env": "production"})
+    app.dependency_overrides[get_settings] = lambda: production_settings
+    try:
+        resp = await api_client.post(
+            "/api/v1/auth/login", json={"email": email, "password": _PASSWORD}
+        )
+    finally:
+        del app.dependency_overrides[get_settings]
+
+    header = _set_cookie_header(resp).lower()
+    assert "samesite=none" in header
+    assert "secure" in header
+
+
 async def test_me_requires_authentication(api_client):
     resp = await api_client.get("/api/v1/auth/me")
 

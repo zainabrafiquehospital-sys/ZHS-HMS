@@ -16,13 +16,19 @@ both per-source-IP, same shape as `login`'s own rate limit, see
 app/modules/auth/dependencies.py for why each exists as an independent
 layer alongside the OTP row's own `attempts` counter.
 
-Refresh tokens travel as an httpOnly, `SameSite=Strict` cookie (never in a
-JSON body), per the architecture document's §2 — the access token, sent as
-an `Authorization: Bearer` header on every other request rather than a
+Refresh tokens travel as an httpOnly cookie (never in a JSON body), per
+the architecture document's §2 — the access token, sent as an
+`Authorization: Bearer` header on every other request rather than a
 cookie, is what makes that header immune to CSRF in the first place (a
 cookie-based access token would need a separate CSRF-token defense; a
 bearer header doesn't). The cookie is scoped to this router's own path so
-it's never sent to unrelated endpoints.
+it's never sent to unrelated endpoints. `SameSite` is `Strict` in any
+same-site deployment (local dev) but must be `None` (with `Secure`) in
+this app's actual production topology, where the frontend and backend
+are genuinely cross-site (Vercel vs. Railway) — see `_set_refresh_cookie`
+for the full reasoning; a `Strict` cookie is simply never delivered back
+on a cross-site request, which is what made every refresh silently fail
+in production.
 
 `login` also enforces a per-source-IP rate limit (see
 app/modules/auth/dependencies.py's `enforce_login_rate_limit` and
@@ -89,7 +95,45 @@ def _set_refresh_cookie(
         path=_cookie_path(settings),
         httponly=True,
         secure=settings.is_production,
-        samesite="strict",
+        # `Settings.cors_allowed_origins` defaults to this deployment's
+        # real frontend origin (a Vercel domain) — the backend and
+        # frontend are genuinely cross-site in production (Railway vs.
+        # Vercel), never merely cross-port the way local dev's
+        # localhost:3000 -> localhost:8000 is. A `SameSite=Strict` (or
+        # even `Lax`) cookie is *never* sent back by the browser on a
+        # cross-site request, at all, regardless of how recently it was
+        # set — not flaky, not a race, structurally impossible. That
+        # made every `/auth/refresh` call in production silently arrive
+        # with no cookie, `raise TokenInvalidError`, and force a logout:
+        # on every hard reload (which always needs a fresh refresh) and
+        # after every access-token expiry (~15 min) during continuous
+        # use. `SameSite=None` is the only setting a genuinely cross-site
+        # deployment's refresh cookie can use and still be delivered;
+        # browsers require `Secure` alongside it, which this already has
+        # via `secure=settings.is_production` — mirrored here with the
+        # identical `is_production` gate so local dev (same-site,
+        # plain http://localhost) keeps the strictly tighter `Strict`
+        # policy unchanged, and only the real cross-site deployment
+        # relaxes to what it actually needs to function.
+        #
+        # This does reopen a narrow CSRF surface on this endpoint alone:
+        # a malicious cross-site page can now trigger a blind POST
+        # /auth/refresh carrying the victim's cookie. It cannot exploit
+        # that for anything meaningful — CORS still blocks the attacker
+        # page from *reading* the response (no readable access token
+        # exfiltrated), and it cannot lock the legitimate user out
+        # either: `AuthService.refresh`'s rotation-race handling already
+        # guarantees both a genuine request and a forged blind one each
+        # end up with their own independently valid token in the same
+        # family (see token_rotation.py's `classify_reuse` /
+        # `BENIGN_REPLAY`) rather than one succeeding and the other
+        # being revoked. Worst case is an unwanted extra rotation, not
+        # session theft. A same-origin deployment (e.g. a Vercel rewrite
+        # proxying /api/* to the backend, so the browser only ever talks
+        # to one origin) would remove this tradeoff entirely rather than
+        # mitigate it, but that is an infrastructure/hosting decision
+        # outside this module's scope, not a code change here.
+        samesite="none" if settings.is_production else "strict",
     )
 
 
