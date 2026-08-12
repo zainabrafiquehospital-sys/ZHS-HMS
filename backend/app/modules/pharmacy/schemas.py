@@ -14,6 +14,8 @@ from app.modules.pharmacy.models import (
     Medicine,
     MedicineBill,
     MedicineBillItem,
+    MedicineBillPayment,
+    MedicineBillStatus,
     MedicineCategory,
 )
 from app.shared.schema_types import LaxDecimal, LaxUUID
@@ -63,6 +65,12 @@ class CreateMedicineBillRequest(BaseModel):
 
     visit_id: LaxUUID | None = None
     items: list[MedicineBillLineItemRequest] = Field(min_length=1)
+
+
+class RecordMedicineBillPaymentRequest(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    amount: LaxDecimal = Field(gt=0)
 
 
 # ---------------------------------------------------------------------
@@ -118,27 +126,56 @@ class MedicineBillItemOut(BaseModel):
         )
 
 
+class MedicineBillPaymentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    amount: Decimal
+    created_by: UUID | None
+    created_at: datetime
+
+    @classmethod
+    def from_payment(cls, payment: MedicineBillPayment) -> "MedicineBillPaymentOut":
+        return cls(
+            id=payment.id,
+            amount=payment.amount,
+            created_by=payment.created_by,
+            created_at=payment.created_at,
+        )
+
+
 class MedicineBillOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     visit_id: UUID | None
     total_amount: Decimal
+    amount_paid: Decimal
+    status: MedicineBillStatus
+    paid_at: datetime | None
     created_by: UUID | None
     created_at: datetime
     items: list[MedicineBillItemOut] = Field(default_factory=list)
+    payments: list[MedicineBillPaymentOut] = Field(default_factory=list)
 
     @classmethod
     def from_bill(
-        cls, bill: MedicineBill, items: list[MedicineBillItem] | None = None
+        cls,
+        bill: MedicineBill,
+        items: list[MedicineBillItem] | None = None,
+        payments: list[MedicineBillPayment] | None = None,
     ) -> "MedicineBillOut":
         return cls(
             id=bill.id,
             visit_id=bill.visit_id,
             total_amount=bill.total_amount,
+            amount_paid=bill.amount_paid,
+            status=bill.status,
+            paid_at=bill.paid_at,
             created_by=bill.created_by,
             created_at=bill.created_at,
             items=[MedicineBillItemOut.from_item(item) for item in (items or [])],
+            payments=[MedicineBillPaymentOut.from_payment(p) for p in (payments or [])],
         )
 
 
@@ -153,6 +190,8 @@ class MedicineBillSummaryOut(BaseModel):
     id: UUID
     visit_id: UUID | None
     total_amount: Decimal
+    amount_paid: Decimal
+    status: MedicineBillStatus
     created_by: UUID | None
     created_at: datetime
     item_count: int
@@ -163,6 +202,8 @@ class MedicineBillSummaryOut(BaseModel):
             id=bill.id,
             visit_id=bill.visit_id,
             total_amount=bill.total_amount,
+            amount_paid=bill.amount_paid,
+            status=bill.status,
             created_by=bill.created_by,
             created_at=bill.created_at,
             item_count=item_count,

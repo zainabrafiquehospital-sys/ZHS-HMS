@@ -1,6 +1,6 @@
 """SQLAlchemy models for the Pharmacy / Medicine Billing module.
 
-Three entities:
+Four entities:
 - `Medicine` — the admin-managed price list. Deliberately carries no
   stock/quantity column: this build tracks price only, never inventory
   (out of scope — see the module's design notes). `is_active` is a soft
@@ -17,7 +17,9 @@ Three entities:
   the inherited `created_by` (BaseEntity) — mirroring `Invoice`'s
   identical choice not to add a redundant actor column (see that
   model's module docstring); there is deliberately no separate
-  `receptionist_id` column here either.
+  `receptionist_id` column here either. `amount_paid`/`status`/`paid_at`
+  mirror `Invoice`'s identical three fields — a maintained running
+  total/derived status, not computed live from `MedicineBillPayment`.
 - `MedicineBillItem` — one line on a MedicineBill. Snapshots the
   medicine's name and unit price at billing time
   (`medicine_name_snapshot`/`unit_price_snapshot`) so a later edit to
@@ -25,10 +27,14 @@ Three entities:
   a patient was actually charged — the same "billed record is
   immutable, even if its source changes later" principle
   `InvoiceLineItem` already follows for `PendingBillingItem`.
+- `MedicineBillPayment` — one payment against a MedicineBill, the same
+  timestamped/attributed audit-trail role `InvoicePayment` plays for
+  Invoice (see that model's docstring for the full rationale).
 
 Money fields use `Numeric`, never `Float` — see
 app/modules/billing/models.py's module docstring for why."""
 
+from datetime import datetime
 from decimal import Decimal
 from enum import Enum as PyEnum
 from uuid import UUID
@@ -46,6 +52,12 @@ class MedicineCategory(PyEnum):
     DROPS = "drops"
     TABLET = "tablet"
     INJECTION = "injection"
+
+
+class MedicineBillStatus(PyEnum):
+    UNPAID = "unpaid"
+    PARTIALLY_PAID = "partially_paid"
+    PAID = "paid"
 
 
 class Medicine(BaseEntity):
@@ -83,12 +95,39 @@ class MedicineBill(BaseEntity):
     __table_args__ = (
         Index("ix_medicine_bill_visit_id", "visit_id"),
         CheckConstraint("total_amount >= 0", name="ck_medicine_bill_total_amount_non_negative"),
+        CheckConstraint("amount_paid >= 0", name="ck_medicine_bill_amount_paid_non_negative"),
+        CheckConstraint(
+            "amount_paid <= total_amount", name="ck_medicine_bill_amount_paid_not_exceeding_total"
+        ),
     )
 
     # Nullable: a medicine bill may stand alone as a walk-in sale with no
     # registered Visit — see this module's docstring.
     visit_id: Mapped[UUID | None] = mapped_column(ForeignKey("visit.id"))
     total_amount: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)
+    # Same shape as app/modules/billing/models.py's Invoice: amount_paid
+    # is a maintained running total (updated in the same transaction as
+    # each new MedicineBillPayment row, so it can never drift from
+    # SUM(amount) there — see that table's own docstring), never derived
+    # live. `status` is likewise the same three-state derivation
+    # (UNPAID/PARTIALLY_PAID/PAID) Invoice already has, just without an
+    # equivalent to Invoice's CANCELLED — a medicine bill has no
+    # cancellation pipeline, unlike an Invoice's Pending Billing Item
+    # review flow.
+    amount_paid: Mapped[Decimal] = mapped_column(_MONEY, nullable=False, default=Decimal("0.00"))
+    status: Mapped[MedicineBillStatus] = mapped_column(
+        Enum(
+            MedicineBillStatus,
+            name="medicine_bill_status",
+            native_enum=False,
+            length=20,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+            create_constraint=True,
+        ),
+        nullable=False,
+        default=MedicineBillStatus.UNPAID,
+    )
+    paid_at: Mapped[datetime | None] = mapped_column()
 
 
 class MedicineBillItem(BaseEntity):
@@ -119,3 +158,23 @@ class MedicineBillItem(BaseEntity):
     unit_price_snapshot: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     line_total: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)
+
+
+class MedicineBillPayment(BaseEntity):
+    """One payment against a MedicineBill — the real, timestamped/
+    attributed audit trail (inherited `created_at` is when it was paid,
+    `created_by` is who recorded it), the exact same shape and rationale
+    as app/modules/billing/models.py's `InvoicePayment`: `MedicineBill.
+    amount_paid`/`status` stay a maintained running total rather than
+    being replaced by a live SUM here, so every existing reader keeps
+    working unchanged and this table only adds history nothing else
+    needed before."""
+
+    __tablename__ = "medicine_bill_payment"
+    __table_args__ = (
+        Index("ix_medicine_bill_payment_medicine_bill_id", "medicine_bill_id"),
+        CheckConstraint("amount > 0", name="ck_medicine_bill_payment_amount_positive"),
+    )
+
+    medicine_bill_id: Mapped[UUID] = mapped_column(ForeignKey("medicine_bill.id"), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)

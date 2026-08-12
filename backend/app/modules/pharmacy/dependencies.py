@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import get_db
 from app.modules.pharmacy.repository import (
     MedicineBillItemRepository,
+    MedicineBillPaymentRepository,
     MedicineBillRepository,
     MedicineRepository,
 )
@@ -31,12 +32,21 @@ def get_medicine_bill_item_repository(
     return MedicineBillItemRepository(db)
 
 
+def get_medicine_bill_payment_repository(
+    db: AsyncSession = Depends(get_db),
+) -> MedicineBillPaymentRepository:
+    return MedicineBillPaymentRepository(db)
+
+
 def get_pharmacy_service(
     db: AsyncSession = Depends(get_db),
     medicine_repository: MedicineRepository = Depends(get_medicine_repository),
     medicine_bill_repository: MedicineBillRepository = Depends(get_medicine_bill_repository),
     medicine_bill_item_repository: MedicineBillItemRepository = Depends(
         get_medicine_bill_item_repository
+    ),
+    medicine_bill_payment_repository: MedicineBillPaymentRepository = Depends(
+        get_medicine_bill_payment_repository
     ),
     visit_service: VisitService = Depends(get_visit_service),
     audit_repository: AuditLogRepository = Depends(get_audit_log_repository),
@@ -46,6 +56,7 @@ def get_pharmacy_service(
         medicine_repository=medicine_repository,
         medicine_bill_repository=medicine_bill_repository,
         medicine_bill_item_repository=medicine_bill_item_repository,
+        medicine_bill_payment_repository=medicine_bill_payment_repository,
         visit_service=visit_service,
         audit_repository=audit_repository,
     )

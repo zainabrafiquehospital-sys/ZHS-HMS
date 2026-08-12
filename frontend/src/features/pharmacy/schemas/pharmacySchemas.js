@@ -23,3 +23,15 @@ export const billLineItemSchema = z.object({
       message: 'Quantity must be a whole number between 1 and 1000',
     }),
 });
+
+// Same shape as billing/schemas/billingSchemas.js's recordPaymentSchema —
+// a partial-payment amount, validated client-side before it ever reaches
+// the server's own "exceeds remaining balance" check.
+export const recordMedicineBillPaymentSchema = z.object({
+  amount: z
+    .union([z.string(), z.number()])
+    .transform((value) => Number(value))
+    .refine((value) => Number.isFinite(value) && value > 0, {
+      message: 'Amount must be greater than 0',
+    }),
+});

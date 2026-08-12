@@ -46,6 +46,20 @@ export function useCreateMedicineBill() {
   });
 }
 
+/** Records a payment against a just-finalized (UNPAID/PARTIALLY_PAID)
+ * medicine bill — same shape as billing/hooks/useBilling.js's
+ * useRecordPayment. */
+export function useRecordMedicineBillPayment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ billId, amount }) => pharmacyService.recordPayment(billId, amount),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pharmacy', 'bills'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+  });
+}
+
 /** Every medicine bill created on `dayKey`'s UTC calendar date — the
  * Admin Overview's Medicine Bills tab. Unlike the Visit listing's own
  * client-side "today" filter (see useAdminOverview.js's docstring), this

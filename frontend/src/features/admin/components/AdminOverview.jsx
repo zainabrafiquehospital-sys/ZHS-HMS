@@ -16,6 +16,8 @@ import {
 import { PendingApprovals } from '@/features/admin/components/PendingApprovals';
 import { DateNavigator } from '@/features/admin/components/DateNavigator';
 import { LeadsSection } from '@/features/admin/components/LeadsSection';
+import { ShiftRevenuePieChart } from '@/features/admin/components/ShiftRevenuePieChart';
+import { computeShiftRevenueBreakdown } from '@/features/admin/utils/shiftRevenue';
 import { Card, CardContent, CardHeader } from '@/shared/components/ui/Card';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
@@ -92,6 +94,7 @@ function MedicineBillsPanel({ selectedDate }) {
     () => (bills ?? []).reduce((sum, bill) => sum + Number(bill.total_amount), 0),
     [bills],
   );
+  const shiftRevenue = useMemo(() => computeShiftRevenueBreakdown(bills, 'total_amount'), [bills]);
 
   async function handlePrint(billId) {
     setPrintError(null);
@@ -116,6 +119,11 @@ function MedicineBillsPanel({ selectedDate }) {
         <SummaryTile icon={Receipt} label="Total Revenue" value={formatPkr(totalRevenue)} />
       </div>
 
+      <div>
+        <p className="mb-2 text-xs font-medium text-muted-foreground">Revenue by Shift</p>
+        <ShiftRevenuePieChart data={shiftRevenue} />
+      </div>
+
       {rows.length === 0 ? (
         <p className="py-10 text-center text-sm text-muted-foreground">
           No medicine bills were created on {formatDisplayDate(selectedDate)}.
@@ -129,6 +137,7 @@ function MedicineBillsPanel({ selectedDate }) {
               <TableHead>Billed By</TableHead>
               <TableHead className="text-right">Items</TableHead>
               <TableHead className="text-right">Total</TableHead>
+              <TableHead>Status</TableHead>
               <TableHead />
             </TableRow>
           </TableHeader>
@@ -151,6 +160,20 @@ function MedicineBillsPanel({ selectedDate }) {
                   <TableCell className="text-right tabular-nums">{bill.item_count}</TableCell>
                   <TableCell className="whitespace-nowrap text-right font-medium tabular-nums">
                     {formatPkr(bill.total_amount)}
+                  </TableCell>
+                  <TableCell>
+                    <Badge
+                      variant={
+                        bill.status === 'paid'
+                          ? 'success'
+                          : bill.status === 'partially_paid'
+                            ? 'warning'
+                            : 'outline'
+                      }
+                      className="capitalize"
+                    >
+                      {bill.status.replaceAll('_', ' ')}
+                    </Badge>
                   </TableCell>
                   <TableCell>
                     <Button
@@ -189,6 +212,7 @@ export function AdminOverview() {
     () => visits.reduce((sum, visit) => sum + Number(visit.amount), 0),
     [visits],
   );
+  const shiftRevenue = useMemo(() => computeShiftRevenueBreakdown(visits, 'amount'), [visits]);
 
   const statusCounts = useMemo(() => {
     const counts = {};
@@ -246,6 +270,11 @@ export function AdminOverview() {
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <SummaryTile icon={ClipboardList} label="Total Visits" value={visits.length} />
                 <SummaryTile icon={Receipt} label="Total Revenue" value={formatPkr(totalRevenue)} />
+              </div>
+
+              <div>
+                <p className="mb-2 text-xs font-medium text-muted-foreground">Revenue by Shift</p>
+                <ShiftRevenuePieChart data={shiftRevenue} />
               </div>
 
               {Object.keys(statusCounts).length > 0 ? (

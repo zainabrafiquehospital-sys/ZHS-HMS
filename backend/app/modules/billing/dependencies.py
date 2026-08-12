@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import get_db
 from app.modules.billing.repository import (
     InvoiceLineItemRepository,
+    InvoicePaymentRepository,
     InvoiceRepository,
     PendingBillingItemRepository,
 )
@@ -33,6 +34,12 @@ def get_invoice_line_item_repository(
     return InvoiceLineItemRepository(db)
 
 
+def get_invoice_payment_repository(
+    db: AsyncSession = Depends(get_db),
+) -> InvoicePaymentRepository:
+    return InvoicePaymentRepository(db)
+
+
 def get_billing_service(
     db: AsyncSession = Depends(get_db),
     pending_billing_item_repository: PendingBillingItemRepository = Depends(
@@ -42,6 +49,7 @@ def get_billing_service(
     invoice_line_item_repository: InvoiceLineItemRepository = Depends(
         get_invoice_line_item_repository
     ),
+    invoice_payment_repository: InvoicePaymentRepository = Depends(get_invoice_payment_repository),
     visit_service: VisitService = Depends(get_visit_service),
     audit_repository: AuditLogRepository = Depends(get_audit_log_repository),
 ) -> BillingService:
@@ -50,6 +58,7 @@ def get_billing_service(
         pending_billing_item_repository=pending_billing_item_repository,
         invoice_repository=invoice_repository,
         invoice_line_item_repository=invoice_line_item_repository,
+        invoice_payment_repository=invoice_payment_repository,
         visit_service=visit_service,
         audit_repository=audit_repository,
     )

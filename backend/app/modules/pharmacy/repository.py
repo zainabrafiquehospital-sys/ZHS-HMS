@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import InstrumentedAttribute
 
-from app.modules.pharmacy.models import Medicine, MedicineBill, MedicineBillItem
+from app.modules.pharmacy.models import Medicine, MedicineBill, MedicineBillItem, MedicineBillPayment
 from app.shared.repository.base_repository import BaseRepository
 
 # Whitelist of columns MedicineRepository.list_all may sort by — never
@@ -69,6 +69,19 @@ class MedicineRepository(BaseRepository[Medicine]):
 class MedicineBillRepository(BaseRepository[MedicineBill]):
     model = MedicineBill
 
+    async def get_for_update(self, medicine_bill_id: UUID) -> MedicineBill | None:
+        """Row-locking variant of `get_by_id`, for `PharmacyService.
+        record_payment`'s read-modify-write — identical rationale to
+        app/modules/billing/repository.py's `InvoiceRepository.
+        get_for_update`: two concurrent payments against the same bill
+        must never both compute their "amount paid so far" from the
+        same stale snapshot."""
+        stmt = self._exclude_soft_deleted(
+            select(MedicineBill).where(MedicineBill.id == medicine_bill_id), include_deleted=False
+        ).with_for_update()
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def list_for_day(self, day: datetime) -> list[MedicineBill]:
         """Every medicine bill created on `day`'s UTC calendar date — the
         Admin Overview's Medicine Bills tab, the same UTC-calendar-day
@@ -122,3 +135,17 @@ class MedicineBillItemRepository(BaseRepository[MedicineBillItem]):
         )
         result = await self.session.execute(stmt)
         return dict(result.all())
+
+
+class MedicineBillPaymentRepository(BaseRepository[MedicineBillPayment]):
+    model = MedicineBillPayment
+
+    async def list_for_bill(self, medicine_bill_id: UUID) -> list[MedicineBillPayment]:
+        stmt = self._exclude_soft_deleted(
+            select(MedicineBillPayment)
+            .where(MedicineBillPayment.medicine_bill_id == medicine_bill_id)
+            .order_by(MedicineBillPayment.created_at.asc()),
+            include_deleted=False,
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())

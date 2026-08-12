@@ -29,6 +29,7 @@ from app.modules.pharmacy.schemas import (
     MedicineBillSummaryOut,
     MedicineOut,
     MedicineSortField,
+    RecordMedicineBillPaymentRequest,
     UpdateMedicineRequest,
 )
 from app.modules.pharmacy.service import PharmacyService
@@ -136,6 +137,31 @@ async def create_bill(
     return success_envelope(MedicineBillOut.from_bill(bill, items).model_dump(mode="json"))
 
 
+@router.post("/bills/{bill_id}/pay")
+async def record_payment(
+    bill_id: UUID,
+    payload: RecordMedicineBillPaymentRequest,
+    pharmacy_service: PharmacyService = Depends(get_pharmacy_service),
+    actor: User = Depends(require_permission(PERMISSION_PHARMACY_BILL)),
+) -> dict:
+    """Gated on `pharmacy:bill`, the same permission that creates a bill
+    — unlike Billing's `submit_charge`/`manage` split (a real segregation
+    of duties between a doctor requesting a charge and Reception
+    approving/collecting it), Pharmacy has no equivalent second actor:
+    the same receptionist who builds and finalizes a medicine bill is
+    always the one collecting payment for it at the same counter, so a
+    separate "manage" gate here would be a distinction without a
+    difference."""
+    bill = await pharmacy_service.record_payment(
+        actor=actor, bill_id=bill_id, amount=payload.amount
+    )
+    items = await pharmacy_service.get_bill_items(bill.id)
+    payments = await pharmacy_service.get_bill_payments(bill.id)
+    return success_envelope(
+        MedicineBillOut.from_bill(bill, items, payments).model_dump(mode="json")
+    )
+
+
 @router.get("/bills")
 async def list_bills_for_day(
     date: date_type = Query(description="Calendar day (UTC) to list medicine bills for."),
@@ -158,7 +184,10 @@ async def get_bill(
 ) -> dict:
     bill = await pharmacy_service.get_bill(bill_id)
     items = await pharmacy_service.get_bill_items(bill.id)
-    return success_envelope(MedicineBillOut.from_bill(bill, items).model_dump(mode="json"))
+    payments = await pharmacy_service.get_bill_payments(bill.id)
+    return success_envelope(
+        MedicineBillOut.from_bill(bill, items, payments).model_dump(mode="json")
+    )
 
 
 @router.get("/bills/{bill_id}/print", response_class=HTMLResponse)
@@ -192,6 +221,8 @@ async def print_bill(
         visit_queue_token=visit.queue_token if visit else None,
         patient_full_name=patient.full_name if patient else None,
         patient_mr_number=patient.mr_number if patient else None,
+        patient_age_years=patient.age_years if patient else None,
+        patient_phone_number=patient.phone_number if patient else None,
         line_items=[
             (
                 item.medicine_name_snapshot,
@@ -203,5 +234,6 @@ async def print_bill(
             for item in items
         ],
         total_amount=bill.total_amount,
+        amount_paid=bill.amount_paid,
     )
     return HTMLResponse(content=html_document)

@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from app.modules.billing.models import (
     Invoice,
     InvoiceLineItem,
+    InvoicePayment,
     InvoiceStatus,
     PendingBillingItem,
     PendingBillingItemStatus,
@@ -128,6 +129,20 @@ class InvoiceLineItemRepository(BaseRepository[InvoiceLineItem]):
             select(InvoiceLineItem)
             .where(InvoiceLineItem.invoice_id == invoice_id)
             .order_by(InvoiceLineItem.created_at.asc()),
+            include_deleted=False,
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+
+class InvoicePaymentRepository(BaseRepository[InvoicePayment]):
+    model = InvoicePayment
+
+    async def list_for_invoice(self, invoice_id: UUID) -> list[InvoicePayment]:
+        stmt = self._exclude_soft_deleted(
+            select(InvoicePayment)
+            .where(InvoicePayment.invoice_id == invoice_id)
+            .order_by(InvoicePayment.created_at.asc()),
             include_deleted=False,
         )
         result = await self.session.execute(stmt)

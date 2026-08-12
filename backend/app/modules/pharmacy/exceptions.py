@@ -34,3 +34,23 @@ class MedicineBillEmptyError(ValidationError):
 
     def __init__(self) -> None:
         super().__init__("A medicine bill must have at least one line item.")
+
+
+class MedicineBillNotPayableError(ValidationError):
+    code = "MEDICINE_BILL_NOT_PAYABLE"
+
+    def __init__(self, status: str) -> None:
+        super().__init__(
+            f"A medicine bill with status '{status}' cannot receive a payment.",
+            {"status": status},
+        )
+
+
+class MedicineBillPaymentExceedsBalanceError(ValidationError):
+    code = "MEDICINE_BILL_PAYMENT_EXCEEDS_BALANCE"
+
+    def __init__(self, remaining_balance: str) -> None:
+        super().__init__(
+            f"Payment exceeds the remaining balance of {remaining_balance}.",
+            {"remaining_balance": remaining_balance},
+        )

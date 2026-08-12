@@ -1,6 +1,6 @@
 """Pharmacy / Medicine Billing business logic.
 
-Two independent concerns:
+Three independent concerns:
 - Managing the medicine price list (`create_medicine`/`update_medicine`)
   — plain CRUD, Admin-only (`pharmacy:manage`).
 - Building and finalizing a `MedicineBill` in one action
@@ -9,29 +9,52 @@ Two independent concerns:
   module docstring on why), computes each line total and the bill's
   grand total via `quantize_money()`, and persists the bill and every
   item in one transaction — the same shape as
-  app/modules/billing/service.py's `generate_invoice`.
+  app/modules/billing/service.py's `generate_invoice`. A newly created
+  bill always starts `UNPAID` with `amount_paid=0` — recording the
+  payment is a deliberately separate step (`record_payment`), mirroring
+  Billing's own generate-then-pay split, not a silent "already fully
+  paid" assumption.
+- Recording a payment against a bill (`record_payment`) — allows any
+  amount up to the remaining balance, derives `UNPAID`/`PARTIALLY_PAID`/
+  `PAID` from the running `amount_paid` total, and records the payment
+  as its own row (`MedicineBillPayment`) — the identical shape and
+  concurrency handling as `BillingService.record_payment`; see that
+  method's own docstring for the `SELECT ... FOR UPDATE` rationale,
+  which applies here for the same reason (a lost update on a money
+  field is a financial-integrity bug, not a cosmetic one).
 
 `visit_id` is optional (a medicine bill may be a standalone walk-in
 sale); when supplied, `VisitService.get_visit` validates it exists
 before anything is written, so an invalid id surfaces as a clean
 `VisitNotFoundError` rather than a raw FK `IntegrityError`."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.exceptions import ValidationError
 from app.modules.auth.models import User
 from app.modules.pharmacy.exceptions import (
     MedicineBillNotFoundError,
+    MedicineBillNotPayableError,
+    MedicineBillPaymentExceedsBalanceError,
     MedicineInactiveError,
     MedicineNotFoundError,
 )
-from app.modules.pharmacy.models import Medicine, MedicineBill, MedicineBillItem, MedicineCategory
+from app.modules.pharmacy.models import (
+    Medicine,
+    MedicineBill,
+    MedicineBillItem,
+    MedicineBillPayment,
+    MedicineBillStatus,
+    MedicineCategory,
+)
 from app.modules.pharmacy.repository import (
     MEDICINE_SORTABLE_COLUMNS,
     MedicineBillItemRepository,
+    MedicineBillPaymentRepository,
     MedicineBillRepository,
     MedicineRepository,
 )
@@ -49,6 +72,7 @@ class PharmacyService:
         medicine_repository: MedicineRepository,
         medicine_bill_repository: MedicineBillRepository,
         medicine_bill_item_repository: MedicineBillItemRepository,
+        medicine_bill_payment_repository: MedicineBillPaymentRepository,
         visit_service: VisitService,
         audit_repository: AuditLogRepository,
     ) -> None:
@@ -56,6 +80,7 @@ class PharmacyService:
         self._medicine_repo = medicine_repository
         self._bill_repo = medicine_bill_repository
         self._item_repo = medicine_bill_item_repository
+        self._payment_repo = medicine_bill_payment_repository
         self._visit_service = visit_service
         self._audit_repo = audit_repository
 
@@ -172,6 +197,8 @@ class PharmacyService:
         bill = MedicineBill(
             visit_id=visit_id,
             total_amount=total,
+            amount_paid=_ZERO,
+            status=MedicineBillStatus.UNPAID,
             created_by=actor.id,
             updated_by=actor.id,
         )
@@ -219,6 +246,61 @@ class PharmacyService:
 
     async def get_bill_items(self, bill_id: UUID) -> list[MedicineBillItem]:
         return await self._item_repo.list_for_bill(bill_id)
+
+    async def get_bill_payments(self, bill_id: UUID) -> list[MedicineBillPayment]:
+        return await self._payment_repo.list_for_bill(bill_id)
+
+    async def record_payment(
+        self, *, actor: User, bill_id: UUID, amount: Decimal
+    ) -> MedicineBill:
+        """Same shape as `BillingService.record_payment` — see that
+        method's docstring for the full `SELECT ... FOR UPDATE`
+        rationale (identical here: a read-modify-write on a money
+        field). A fully `PAID` bill is immutable, matching `Invoice`'s
+        `PAID`/`CANCELLED` immutability; `MedicineBill` has no
+        `CANCELLED` equivalent, so `PAID` is the only terminal state to
+        guard against here."""
+        bill = await self._bill_repo.get_for_update(bill_id)
+        if bill is None:
+            raise MedicineBillNotFoundError
+        if bill.status == MedicineBillStatus.PAID:
+            raise MedicineBillNotPayableError(bill.status.value)
+        if amount <= _ZERO:
+            raise ValidationError("Payment amount must be greater than zero.")
+        amount = quantize_money(amount)
+
+        remaining = bill.total_amount - bill.amount_paid
+        if amount > remaining:
+            raise MedicineBillPaymentExceedsBalanceError(str(remaining))
+
+        bill.amount_paid = bill.amount_paid + amount
+        bill.updated_by = actor.id
+        fully_paid = bill.amount_paid == bill.total_amount
+        if fully_paid:
+            bill.status = MedicineBillStatus.PAID
+            bill.paid_at = datetime.now(UTC)
+        else:
+            bill.status = MedicineBillStatus.PARTIALLY_PAID
+        await self._bill_repo.add(bill)
+        await self._payment_repo.add(
+            MedicineBillPayment(
+                medicine_bill_id=bill.id,
+                amount=amount,
+                created_by=actor.id,
+                updated_by=actor.id,
+            )
+        )
+
+        await self._audit_repo.record(
+            module="pharmacy",
+            action="pharmacy.payment_recorded",
+            entity_type="medicine_bill",
+            entity_id=bill.id,
+            actor_user_id=actor.id,
+            metadata={"amount": str(amount), "fully_paid": fully_paid},
+        )
+        await self._session.commit()
+        return await self._get_bill(bill.id)
 
     async def list_bill_summaries_for_day(self, day: datetime) -> list[tuple[MedicineBill, int]]:
         """`(bill, item_count)` pairs for every medicine bill created on

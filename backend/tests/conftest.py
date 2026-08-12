@@ -38,6 +38,7 @@ from app.modules.auth.user_service import UserService
 from app.modules.auth.validators import derive_permission_group
 from app.modules.billing.repository import (
     InvoiceLineItemRepository,
+    InvoicePaymentRepository,
     InvoiceRepository,
     PendingBillingItemRepository,
 )
@@ -49,6 +50,7 @@ from app.modules.patients.repository import PatientRepository
 from app.modules.patients.service import PatientService
 from app.modules.pharmacy.repository import (
     MedicineBillItemRepository,
+    MedicineBillPaymentRepository,
     MedicineBillRepository,
     MedicineRepository,
 )
@@ -254,7 +256,8 @@ async def real_session():
             )
             # Billing rows must be deleted before visit for the same
             # reason (see app/modules/billing/models.py) — line items
-            # first (they FK to both invoice and pending_billing_item).
+            # and payments first (they FK to invoice; pending_billing_item
+            # FKs to visit directly).
             await session.execute(
                 text(
                     "DELETE FROM audit_log WHERE entity_id IN "
@@ -273,6 +276,13 @@ async def real_session():
             await session.execute(
                 text(
                     "DELETE FROM invoice_line_item WHERE invoice_id IN "
+                    f"(SELECT id FROM invoice WHERE visit_id IN ({visit_owned_by_test_data}))"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM invoice_payment WHERE invoice_id IN "
                     f"(SELECT id FROM invoice WHERE visit_id IN ({visit_owned_by_test_data}))"
                 ),
                 cleanup_params,
@@ -312,6 +322,13 @@ async def real_session():
             await session.execute(
                 text(
                     "DELETE FROM medicine_bill_item WHERE medicine_bill_id IN "
+                    f"({medicine_bill_owned_by_test_data})"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM medicine_bill_payment WHERE medicine_bill_id IN "
                     f"({medicine_bill_owned_by_test_data})"
                 ),
                 cleanup_params,
@@ -515,6 +532,7 @@ def billing_service(real_session, visit_service) -> BillingService:
         pending_billing_item_repository=PendingBillingItemRepository(real_session),
         invoice_repository=InvoiceRepository(real_session),
         invoice_line_item_repository=InvoiceLineItemRepository(real_session),
+        invoice_payment_repository=InvoicePaymentRepository(real_session),
         visit_service=visit_service,
         audit_repository=AuditLogRepository(real_session),
     )
@@ -527,6 +545,7 @@ def pharmacy_service(real_session, visit_service) -> PharmacyService:
         medicine_repository=MedicineRepository(real_session),
         medicine_bill_repository=MedicineBillRepository(real_session),
         medicine_bill_item_repository=MedicineBillItemRepository(real_session),
+        medicine_bill_payment_repository=MedicineBillPaymentRepository(real_session),
         visit_service=visit_service,
         audit_repository=AuditLogRepository(real_session),
     )
