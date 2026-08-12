@@ -1,12 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Sun, Moon } from 'lucide-react';
+import { Sun, Sunset, Moon } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
 import { getCurrentShift } from '@/utils/timezone';
 
-const SHIFT_ICON = { morning: Sun, night: Moon };
-const SHIFT_LABEL = { morning: 'Morning Shift', night: 'Night Shift' };
+const SHIFT_ICON = { morning: Sun, evening: Sunset, night: Moon };
+const SHIFT_LABEL = { morning: 'Morning Shift', evening: 'Evening Shift', night: 'Night Shift' };
 
 /** "Which shift is live right now" indicator, in DISPLAY_TIMEZONE (see
  * utils/timezone.js's `getCurrentShift`) — shared by every shift-based

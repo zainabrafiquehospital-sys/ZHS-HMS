@@ -79,26 +79,118 @@ const _hourFormatter = new Intl.DateTimeFormat('en-US', {
   hour12: false,
 });
 
-// Mirrors backend/app/modules/auth/models.py's Shift enum (MORNING/
-// NIGHT — the hospital's own two-shift model), but the actual
-// clock-hour boundary between them is not defined anywhere in this
-// codebase (confirmed: no backend config, no existing frontend
-// component). This is a reasonable, standard two-shift hospital split
-// (08:00-20:00 = morning, else night) picked to build the "which shift
-// is it right now" badge Reception/Vitals both need — adjust here if
-// the hospital's actual shift changeover time differs.
-const _MORNING_SHIFT_START_HOUR = 8;
-const _MORNING_SHIFT_END_HOUR = 20;
+// A "which shift is it right now" concept, computed live from clock
+// time only — never a stored assignment. This is deliberately a
+// *different* concept from backend/app/modules/auth/models.py's stored
+// `Shift` enum (MORNING/NIGHT) a staff member picks once at signup
+// (see SignupForm.jsx) and which only ever gets *displayed* elsewhere
+// (PendingApprovals.jsx) — that field answers "which shift is this
+// person assigned to work"; everything in this section answers "which
+// shift is it right now", and the two are allowed to disagree (a
+// Morning-assigned receptionist working late still sees "Night" here).
+// The stored field stays a 2-way Morning/Night choice; it is out of
+// scope here — expanding it would mean a migration inside the frozen
+// auth module, which nothing below needs.
+//
+// Three ~8h shifts, mirroring a realistic hospital rotation. Boundary
+// hours (24h clock, DISPLAY_TIMEZONE): adjust here if the hospital's
+// actual shift changeover times differ. `night` is the one shift that
+// spans across midnight (22:00 on one calendar day to 06:00 on the
+// next) — see `getCurrentShiftWindow` below for why that needs real
+// start/end instants, not just an hour-of-day, to handle correctly.
+export const SHIFT_ORDER = ['morning', 'evening', 'night'];
+const _SHIFT_BOUNDARIES = {
+  morning: { startHour: 6, endHour: 14 },
+  evening: { startHour: 14, endHour: 22 },
+  night: { startHour: 22, endHour: 6 }, // wraps past midnight
+};
 
-/** Which `Shift` enum value the current moment falls into, in
- * DISPLAY_TIMEZONE — backs the "Morning/Night" badge shown to shift-
- * based staff (Reception, Vitals) so they can see at a glance which
- * shift is currently active, independent of their own account's
- * `shift` field (that's which shift they're assigned to, not which one
- * is live right now). */
+// DISPLAY_TIMEZONE is a fixed UTC+5 offset (Asia/Karachi, no DST) — see
+// formatDisplayDate's docstring for the identical assumption. That
+// fixed offset is what makes "DISPLAY_TIMEZONE hour H on calendar day
+// D" convertible to a real UTC instant by plain hour arithmetic, no
+// timezone-database lookup needed.
+const _DISPLAY_TIMEZONE_UTC_OFFSET_HOURS = 5;
+
+function _displayTimeToUtcInstant(dayKey, hour) {
+  const [year, month, day] = dayKey.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day, hour - _DISPLAY_TIMEZONE_UTC_OFFSET_HOURS, 0, 0));
+}
+
+function _shiftForHour(hour) {
+  return SHIFT_ORDER.find((shift) => {
+    const { startHour, endHour } = _SHIFT_BOUNDARIES[shift];
+    return startHour < endHour
+      ? hour >= startHour && hour < endHour
+      : hour >= startHour || hour < endHour;
+  });
+}
+
+/** Which shift `isoTimestamp` (or "now", if omitted) falls into, in
+ * DISPLAY_TIMEZONE — classifies a single moment by its own hour, with
+ * no notion of which continuous shift-instance it belongs to (see
+ * `getCurrentShiftWindow` for that). Used to bucket a list of
+ * already-fetched records (e.g. a day's visits or medicine bills) by
+ * shift for a revenue breakdown. */
+export function getShiftForTimestamp(isoTimestamp) {
+  const hour = Number(_hourFormatter.format(isoTimestamp ? new Date(isoTimestamp) : new Date()));
+  return _shiftForHour(hour);
+}
+
+/** Which shift is live right now, in DISPLAY_TIMEZONE — backs the
+ * "Morning/Evening/Night" badge shown to shift-based staff (Reception,
+ * Vitals) so they can see at a glance which shift is currently active.
+ * See this section's own docstring for why this is unrelated to the
+ * account's own stored `shift` field. */
 export function getCurrentShift() {
-  const hour = Number(_hourFormatter.format(new Date()));
-  return hour >= _MORNING_SHIFT_START_HOUR && hour < _MORNING_SHIFT_END_HOUR ? 'morning' : 'night';
+  return getShiftForTimestamp();
+}
+
+/** The currently-active shift's real start/end instants (`Date`
+ * objects), not just which shift it is — safe to compare directly
+ * against any `created_at` timestamp. This is what makes "show me
+ * everything created during my current shift" correct across a
+ * midnight rollover: a plain calendar-day filter
+ * (`displayDayKey(x) === todayDisplayDayKey()`) silently drops
+ * anything created before midnight the moment the day rolls over,
+ * even though that receptionist's shift (Night, 22:00->06:00) is
+ * still ongoing. Correctly resolves which calendar day the window's
+ * start/end actually fall on, whichever half of a wrapping shift
+ * "now" happens to be in.
+ *
+ * Relies on DISPLAY_TIMEZONE (Asia/Karachi) being a fixed UTC+5 offset
+ * with no DST — the same assumption `formatDisplayDate`'s docstring
+ * already documents and relies on. */
+export function getCurrentShiftWindow(now = new Date()) {
+  const hour = Number(_hourFormatter.format(now));
+  const todayKey = _dayKeyFormatter.format(now);
+  const shift = _shiftForHour(hour);
+  const { startHour, endHour } = _SHIFT_BOUNDARIES[shift];
+  const wraps = startHour > endHour;
+  // For a wrapping shift, "now" is either in its late half (started
+  // today, ends tomorrow — e.g. 23:00 within Night's 22:00->06:00) or
+  // its early/post-midnight half (started yesterday, ends today — e.g.
+  // 02:00 within that same window).
+  const startedYesterday = wraps && hour < endHour;
+  const startDayKey = startedYesterday ? shiftDisplayDayKey(todayKey, -1) : todayKey;
+  const endDayKey = wraps ? shiftDisplayDayKey(startDayKey, 1) : startDayKey;
+  return {
+    shift,
+    startsAt: _displayTimeToUtcInstant(startDayKey, startHour),
+    endsAt: _displayTimeToUtcInstant(endDayKey, endHour),
+  };
+}
+
+/** Whether `isoTimestamp` falls within the currently-active shift's
+ * window — the cross-midnight-safe replacement for a calendar-day
+ * filter (`displayDayKey(x) === todayDisplayDayKey()`), used by
+ * anything that must show "everything created during the current
+ * shift" (e.g. Reception's Today's Registrations) rather than
+ * "everything created on today's calendar date". */
+export function isWithinCurrentShiftWindow(isoTimestamp, now = new Date()) {
+  const { startsAt, endsAt } = getCurrentShiftWindow(now);
+  const moment = new Date(isoTimestamp);
+  return moment >= startsAt && moment < endsAt;
 }
 
 /** "Friday, August 7, 2026"-style label for a `displayDayKey` — safe

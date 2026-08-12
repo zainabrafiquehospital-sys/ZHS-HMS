@@ -82,10 +82,7 @@ export function TodaysRegistrations() {
 
   const pageCount = Math.max(1, Math.ceil(filteredVisits.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
-  const pagedVisits = filteredVisits.slice(
-    (currentPage - 1) * PAGE_SIZE,
-    currentPage * PAGE_SIZE,
-  );
+  const pagedVisits = filteredVisits.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   function handleSearchChange(value) {
     setSearchTerm(value);
@@ -105,20 +102,26 @@ export function TodaysRegistrations() {
     }
   }
 
-  if (isLoading) return <PageLoader label="Loading today's registrations" />;
+  if (isLoading) return <PageLoader label="Loading this shift's registrations" />;
   if (isError) {
-    return <PageError error={error} reset={refetch} message="Couldn't load today's registrations." />;
+    return (
+      <PageError
+        error={error}
+        reset={refetch}
+        message="Couldn't load this shift's registrations."
+      />
+    );
   }
 
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between gap-2">
-        <CardTitle>Today&apos;s Registrations</CardTitle>
+        <CardTitle>This Shift&apos;s Registrations</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <SummaryTile icon={Receipt} label="Revenue Today" value={formatPkr(totalRevenue)} />
-          <SummaryTile icon={Users} label="Slips Registered Today" value={visits.length} />
+          <SummaryTile icon={Receipt} label="Revenue This Shift" value={formatPkr(totalRevenue)} />
+          <SummaryTile icon={Users} label="Slips Registered This Shift" value={visits.length} />
         </div>
 
         <div className="relative sm:max-w-xs">
@@ -139,7 +142,7 @@ export function TodaysRegistrations() {
 
         {visits.length === 0 ? (
           <p className="py-10 text-center text-sm text-muted-foreground">
-            No visits registered yet today — new registrations will appear here immediately.
+            No visits registered yet this shift — new registrations will appear here immediately.
           </p>
         ) : filteredVisits.length === 0 ? (
           <p className="py-10 text-center text-sm text-muted-foreground">
