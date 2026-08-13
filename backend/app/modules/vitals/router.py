@@ -8,7 +8,7 @@ from app.modules.auth.dependencies import require_permission
 from app.modules.auth.models import User
 from app.modules.vitals.constants import PERMISSION_VITALS_READ, PERMISSION_VITALS_RECORD
 from app.modules.vitals.dependencies import get_vitals_service
-from app.modules.vitals.schemas import RecordVitalsRequest, VitalsRecordOut
+from app.modules.vitals.schemas import RecordVitalsRequest, VitalsCreatorStatOut, VitalsRecordOut
 from app.modules.vitals.service import VitalsService
 from app.shared.envelope import success_envelope
 
@@ -34,6 +34,24 @@ async def record_vitals(
         notes=payload.notes,
     )
     return success_envelope(VitalsRecordOut.from_record(record).model_dump(mode="json"))
+
+
+@router.get("/stats/by-creator")
+async def get_vitals_stats_by_creator(
+    vitals_service: VitalsService = Depends(get_vitals_service),
+    _actor: User = Depends(require_permission(PERMISSION_VITALS_READ)),
+) -> dict:
+    """Read-only aggregate added for the Admin "Employee Accounts &
+    Stats" page — one row per user who has recorded at least one Vitals
+    reading, each with their all-time count. Not paginated: bounded by
+    the number of distinct users who have ever recorded vitals (see
+    VitalsRecordRepository.count_by_creator)."""
+    counts = await vitals_service.count_by_creator()
+    body = [
+        VitalsCreatorStatOut(user_id=user_id, count=count).model_dump(mode="json")
+        for user_id, count in counts.items()
+    ]
+    return success_envelope(body)
 
 
 @router.get("/visits/{visit_id}")

@@ -25,6 +25,7 @@ from app.modules.pharmacy.dependencies import get_pharmacy_service
 from app.modules.pharmacy.schemas import (
     CreateMedicineBillRequest,
     CreateMedicineRequest,
+    MedicineBillCreatorStatOut,
     MedicineBillOut,
     MedicineBillSummaryOut,
     MedicineOut,
@@ -179,6 +180,27 @@ async def list_bills_for_day(
     body = [
         MedicineBillSummaryOut.from_bill(bill, item_count).model_dump(mode="json")
         for bill, item_count in summaries
+    ]
+    return success_envelope(body)
+
+
+@router.get("/bills/stats/by-creator")
+async def get_bill_stats_by_creator(
+    pharmacy_service: PharmacyService = Depends(get_pharmacy_service),
+    _actor: User = Depends(require_permission(PERMISSION_PHARMACY_READ)),
+) -> dict:
+    """Read-only aggregate added for the Admin "Employee Accounts &
+    Stats" page — one row per user who has created at least one
+    medicine bill, each with their all-time bill count and total
+    revenue billed. Not paginated: bounded by the number of distinct
+    users who have ever created a bill (see MedicineBillRepository.
+    count_and_revenue_by_creator)."""
+    stats = await pharmacy_service.count_and_revenue_by_creator()
+    body = [
+        MedicineBillCreatorStatOut(user_id=user_id, count=count, revenue=revenue).model_dump(
+            mode="json"
+        )
+        for user_id, (count, revenue) in stats.items()
     ]
     return success_envelope(body)
 

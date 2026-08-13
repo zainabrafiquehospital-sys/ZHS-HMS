@@ -55,3 +55,16 @@ class VitalsRecordOut(BaseModel):
             notes=record.notes,
             created_at=record.created_at,
         )
+
+
+class VitalsCreatorStatOut(BaseModel):
+    """One row of `GET /vitals/stats/by-creator`'s response — one user's
+    "vitals recorded" count. Not an ORM-backed schema, same plain-
+    aggregate shape as app/modules/visits/schemas.py's
+    `VisitCreatorStatOut`. Powers the Admin "Employee Accounts & Stats"
+    page."""
+
+    model_config = ConfigDict(strict=True)
+
+    user_id: UUID
+    count: int

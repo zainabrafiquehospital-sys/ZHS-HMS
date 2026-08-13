@@ -75,3 +75,18 @@ class VisitSummary(BaseModel):
     id: UUID
     queue_token: str
     status: VisitStatus
+
+
+class VisitCreatorStatOut(BaseModel):
+    """One row of `GET /visits/stats/by-creator`'s response — one user's
+    "visits registered" count. Not an ORM-backed schema (constructed
+    directly from `VisitRepository.count_by_creator`'s `{user_id: count}`
+    dict, not `from_attributes`) — same plain-aggregate shape convention
+    as dashboard/schemas.py's `DoctorDashboardOut`. Powers the Admin
+    "Employee Accounts & Stats" page's per-receptionist "visits
+    registered" column."""
+
+    model_config = ConfigDict(strict=True)
+
+    user_id: UUID
+    count: int

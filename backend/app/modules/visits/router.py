@@ -13,7 +13,7 @@ from app.modules.auth.models import User
 from app.modules.visits.constants import PERMISSION_VISITS_READ
 from app.modules.visits.dependencies import get_visit_service
 from app.modules.visits.models import VisitStatus
-from app.modules.visits.schemas import VisitOut, VisitSortField
+from app.modules.visits.schemas import VisitCreatorStatOut, VisitOut, VisitSortField
 from app.modules.visits.service import VisitService
 from app.shared.envelope import success_envelope
 from app.shared.pagination import PaginationMeta, SortOrder
@@ -51,6 +51,24 @@ async def list_visits(
     body = [VisitOut.from_visit(visit).model_dump(mode="json") for visit in visits]
     meta = PaginationMeta(page=page, page_size=page_size, total=total).model_dump(mode="json")
     return success_envelope(body, meta)
+
+
+@router.get("/stats/by-creator")
+async def get_visit_stats_by_creator(
+    visit_service: VisitService = Depends(get_visit_service),
+    _actor: User = Depends(require_permission(PERMISSION_VISITS_READ)),
+) -> dict:
+    """Read-only aggregate added for the Admin "Employee Accounts &
+    Stats" page — one row per user who has registered at least one
+    Visit, each with their all-time count. Not paginated: bounded by
+    the number of distinct users who have ever registered a Visit, not
+    by Visit volume itself (see VisitRepository.count_by_creator)."""
+    counts = await visit_service.count_by_creator()
+    body = [
+        VisitCreatorStatOut(user_id=user_id, count=count).model_dump(mode="json")
+        for user_id, count in counts.items()
+    ]
+    return success_envelope(body)
 
 
 @router.get("/{visit_id}")

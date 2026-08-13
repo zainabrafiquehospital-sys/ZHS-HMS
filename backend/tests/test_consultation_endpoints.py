@@ -125,6 +125,46 @@ async def test_full_consultation_lifecycle_via_http(
     assert active_resp.json()["data"]["status"] == "awaiting_vitals"
 
 
+async def test_get_consultation_stats_by_doctor_requires_permission(api_client, real_session):
+    _actor, access_token = await _create_and_login(api_client, real_session, "stats-no-perm")
+
+    resp = await api_client.get(
+        "/api/v1/consultations/stats/by-doctor", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_get_consultation_stats_by_doctor_returns_accurate_counts(
+    api_client, real_session, grant_permission, reception_service
+):
+    doctor, access_token = await _create_and_login(api_client, real_session, "stats-correctness")
+    await grant_permission(doctor, PERMISSION_CONSULTATION_START)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_MANAGE)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_READ)
+    visit = await _make_visit(reception_service, doctor, "StatsCorrectness")
+    start_resp = await api_client.post(
+        "/api/v1/consultations",
+        json={"visit_id": str(visit.id)},
+        headers=_auth_header(access_token),
+    )
+    consultation_id = start_resp.json()["data"]["id"]
+    complete_resp = await api_client.post(
+        f"/api/v1/consultations/{consultation_id}/complete",
+        json={"diagnosis": "Healthy", "prescription": "None"},
+        headers=_auth_header(access_token),
+    )
+    assert complete_resp.status_code == 200
+
+    resp = await api_client.get(
+        "/api/v1/consultations/stats/by-doctor", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 200
+    rows = {row["user_id"]: row["count"] for row in resp.json()["data"]}
+    assert rows[str(doctor.id)] == 1
+
+
 async def test_complete_consultation_success_via_http(
     api_client, real_session, grant_permission, reception_service
 ):

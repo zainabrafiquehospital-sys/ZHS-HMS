@@ -14,6 +14,7 @@ from app.modules.consultation.constants import (
 from app.modules.consultation.dependencies import get_consultation_service
 from app.modules.consultation.schemas import (
     CompleteConsultationRequest,
+    ConsultationDoctorStatOut,
     ConsultationOut,
     SendToVitalsRequest,
     StartConsultationRequest,
@@ -34,6 +35,25 @@ async def start_consultation(
         actor=actor, visit_id=payload.visit_id
     )
     return success_envelope(ConsultationOut.from_consultation(consultation).model_dump(mode="json"))
+
+
+@router.get("/stats/by-doctor")
+async def get_consultation_stats_by_doctor(
+    consultation_service: ConsultationService = Depends(get_consultation_service),
+    _actor: User = Depends(require_permission(PERMISSION_CONSULTATION_READ)),
+) -> dict:
+    """Read-only aggregate added for the Admin "Employee Accounts &
+    Stats" page — one row per doctor with at least one completed
+    consultation, each with their all-time completed count. Not
+    paginated: bounded by the number of distinct doctors, not
+    consultation volume (see ConsultationRepository.
+    count_completed_by_doctor)."""
+    counts = await consultation_service.count_completed_by_doctor()
+    body = [
+        ConsultationDoctorStatOut(user_id=user_id, count=count).model_dump(mode="json")
+        for user_id, count in counts.items()
+    ]
+    return success_envelope(body)
 
 
 @router.get("/{consultation_id}")

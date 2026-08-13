@@ -3,6 +3,7 @@ app/modules/patients/repository.py's identical module docstring for the
 "persistence only, no policy" rationale."""
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -86,6 +87,29 @@ class MedicineBillRepository(BaseRepository[MedicineBill]):
         ).with_for_update()
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def count_and_revenue_by_creator(self) -> dict[UUID, tuple[int, Decimal]]:
+        """Backs the Admin "Employee Accounts & Stats" page's per-
+        receptionist "medicine bills created" / "revenue billed"
+        figures — one `GROUP BY` query for every creator's bill count
+        and `total_amount` sum, the same N+1-avoidance shape as
+        app/modules/visits/repository.py's `count_by_creator`. "Revenue
+        billed" deliberately sums `total_amount` (what was billed), not
+        `amount_paid` (what has actually been collected so far) — an
+        unpaid or partially-paid bill still counts toward this figure,
+        matching the task's literal "revenue billed" wording. Bills
+        with a NULL `created_by` (none in practice — see
+        PharmacyService.create_bill — but never assumed) are excluded
+        rather than surfacing as a spurious `{None: ...}` entry."""
+        stmt = (
+            select(MedicineBill.created_by, func.count(), func.sum(MedicineBill.total_amount))
+            .where(MedicineBill.deleted_at.is_(None), MedicineBill.created_by.is_not(None))
+            .group_by(MedicineBill.created_by)
+        )
+        result = await self.session.execute(stmt)
+        return {
+            created_by: (count, revenue) for created_by, count, revenue in result.all()
+        }
 
     async def list_for_day(self, day: datetime) -> list[MedicineBill]:
         """Every medicine bill created on `day`'s UTC calendar date — the

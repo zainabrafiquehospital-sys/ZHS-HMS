@@ -149,3 +149,8 @@ class VitalsService:
         )
         other_visit_ids = [visit.id for visit in visits if visit.id != exclude_visit_id]
         return await self._vitals_repo.get_latest_for_visit_ids(other_visit_ids)
+
+    async def count_by_creator(self) -> dict[UUID, int]:
+        """Read-only aggregate added for the Admin "Employee Accounts &
+        Stats" page — see VitalsRecordRepository.count_by_creator."""
+        return await self._vitals_repo.count_by_creator()

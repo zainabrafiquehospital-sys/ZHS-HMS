@@ -110,3 +110,20 @@ class VisitRepository(BaseRepository[Visit]):
         )
         result = await self.session.execute(stmt)
         return dict(result.all())
+
+    async def count_by_creator(self) -> dict[UUID, int]:
+        """Backs the Admin "Employee Accounts & Stats" page's per-
+        receptionist "visits registered" figure — one `GROUP BY` query
+        for every creator's count across all Visits, the same N+1-
+        avoidance shape as `count_by_status` above. Visits with a NULL
+        `created_by` (none in practice — VisitService.register_visit
+        always stamps it — but never assumed) are excluded by the
+        `is_not(None)` filter rather than surfacing as a spurious
+        `{None: n}` entry the caller would have to special-case."""
+        stmt = (
+            select(Visit.created_by, func.count())
+            .where(Visit.deleted_at.is_(None), Visit.created_by.is_not(None))
+            .group_by(Visit.created_by)
+        )
+        result = await self.session.execute(stmt)
+        return dict(result.all())

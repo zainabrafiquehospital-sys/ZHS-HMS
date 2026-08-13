@@ -140,6 +140,65 @@ async def test_count_by_status_reflects_new_visits(db_session):
     assert after[VisitStatus.WAITING_DOCTOR] - baseline.get(VisitStatus.WAITING_DOCTOR, 0) == 2
 
 
+async def test_count_by_creator_reflects_new_visits(db_session):
+    """Asserts a delta, not an absolute count — same rationale as
+    `test_count_by_status_reflects_new_visits` above (the shared test
+    database already holds committed visits from other test suites)."""
+    repo = VisitRepository(db_session)
+    patient = await _make_patient(db_session)
+    doctor = await _make_doctor(db_session)
+    creator = await _make_doctor(db_session)  # any real user id works as a creator
+    baseline = await repo.count_by_creator()
+
+    visit = Visit(
+        patient_id=patient.id,
+        doctor_user_id=doctor.id,
+        queue_token=_unique_token(),
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=True,
+        status=VisitStatus.REGISTERED,
+        created_by=creator.id,
+    )
+    await repo.add(visit)
+    another = Visit(
+        patient_id=patient.id,
+        doctor_user_id=doctor.id,
+        queue_token=_unique_token(),
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=True,
+        status=VisitStatus.REGISTERED,
+        created_by=creator.id,
+    )
+    await repo.add(another)
+
+    after = await repo.count_by_creator()
+
+    assert after[creator.id] - baseline.get(creator.id, 0) == 2
+
+
+async def test_count_by_creator_excludes_null_created_by(db_session):
+    repo = VisitRepository(db_session)
+    patient = await _make_patient(db_session)
+    doctor = await _make_doctor(db_session)
+    visit = Visit(
+        patient_id=patient.id,
+        doctor_user_id=doctor.id,
+        queue_token=_unique_token(),
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=True,
+        status=VisitStatus.REGISTERED,
+        created_by=None,
+    )
+    await repo.add(visit)
+
+    counts = await repo.count_by_creator()
+
+    assert None not in counts
+
+
 async def test_search_excludes_soft_deleted_visits(db_session):
     patient = await _make_patient(db_session)
     doctor = await _make_doctor(db_session)

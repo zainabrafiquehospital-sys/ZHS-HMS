@@ -136,6 +136,11 @@ class VisitService:
         """Read-only aggregate added for the Dashboard module (§22)."""
         return await self._visit_repo.count_by_status()
 
+    async def count_by_creator(self) -> dict[UUID, int]:
+        """Read-only aggregate added for the Admin "Employee Accounts &
+        Stats" page — see VisitRepository.count_by_creator."""
+        return await self._visit_repo.count_by_creator()
+
     async def list_visits(
         self,
         *,

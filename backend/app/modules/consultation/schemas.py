@@ -55,3 +55,16 @@ class ConsultationOut(BaseModel):
             created_at=consultation.created_at,
             completed_at=consultation.completed_at,
         )
+
+
+class ConsultationDoctorStatOut(BaseModel):
+    """One row of `GET /consultations/stats/by-doctor`'s response — one
+    doctor's "consultations completed" count. Not an ORM-backed schema,
+    same plain-aggregate shape as
+    app/modules/visits/schemas.py's `VisitCreatorStatOut`. Powers the
+    Admin "Employee Accounts & Stats" page."""
+
+    model_config = ConfigDict(strict=True)
+
+    user_id: UUID
+    count: int

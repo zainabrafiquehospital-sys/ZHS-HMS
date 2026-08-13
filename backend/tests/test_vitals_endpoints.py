@@ -77,6 +77,40 @@ async def test_record_vitals_without_permission_is_forbidden(
     assert resp.status_code == 403
 
 
+async def test_get_vitals_stats_by_creator_requires_permission(api_client, real_session):
+    _actor, access_token = await _create_and_login(api_client, real_session, "stats-no-perm")
+
+    resp = await api_client.get(
+        "/api/v1/vitals/stats/by-creator", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_get_vitals_stats_by_creator_returns_accurate_counts(
+    api_client, real_session, grant_permission, reception_service
+):
+    staff, access_token = await _create_and_login(api_client, real_session, "stats-correctness")
+    await grant_permission(staff, PERMISSION_VITALS_RECORD)
+    await grant_permission(staff, PERMISSION_VITALS_READ)
+    visit = await _make_visit(reception_service, staff, "StatsCorrectness", vitals_required=True)
+
+    resp = await api_client.post(
+        "/api/v1/vitals",
+        json={"visit_id": str(visit.id), "systolic_bp": 118, "diastolic_bp": 76},
+        headers=_auth_header(access_token),
+    )
+    assert resp.status_code == 201
+
+    stats_resp = await api_client.get(
+        "/api/v1/vitals/stats/by-creator", headers=_auth_header(access_token)
+    )
+
+    assert stats_resp.status_code == 200
+    rows = {row["user_id"]: row["count"] for row in stats_resp.json()["data"]}
+    assert rows[str(staff.id)] == 1
+
+
 async def test_record_vitals_success_routes_to_doctor(
     api_client, real_session, grant_permission, reception_service
 ):

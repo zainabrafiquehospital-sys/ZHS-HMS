@@ -79,6 +79,37 @@ async def test_get_active_for_visit_finds_awaiting_vitals(db_session):
     assert found.id == consultation.id
 
 
+async def test_count_completed_by_doctor_only_counts_completed(db_session):
+    """Asserts a delta, not an absolute count — same rationale as
+    app/modules/visits' `test_count_by_status_reflects_new_visits`
+    (the shared test database already holds committed consultations
+    from other test suites)."""
+    repo = ConsultationRepository(db_session)
+    visit_a, doctor = await _make_visit(db_session)
+    visit_b, _other_doctor = await _make_visit(db_session)
+    baseline = await repo.count_completed_by_doctor()
+
+    await repo.add(
+        Consultation(
+            visit_id=visit_a.id,
+            doctor_user_id=doctor.id,
+            status=ConsultationStatus.COMPLETED,
+            completed_at=datetime.now(UTC),
+        )
+    )
+    await repo.add(
+        Consultation(
+            visit_id=visit_b.id,
+            doctor_user_id=doctor.id,
+            status=ConsultationStatus.IN_PROGRESS,
+        )
+    )
+
+    after = await repo.count_completed_by_doctor()
+
+    assert after[doctor.id] - baseline.get(doctor.id, 0) == 1
+
+
 async def test_get_active_for_visit_ignores_completed(db_session):
     visit, doctor = await _make_visit(db_session)
     await ConsultationRepository(db_session).add(

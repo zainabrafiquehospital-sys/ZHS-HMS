@@ -3,7 +3,7 @@ app/modules/patients/repository.py's identical module docstring."""
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.modules.vitals.models import VitalsRecord
 from app.shared.repository.base_repository import BaseRepository
@@ -42,3 +42,19 @@ class VitalsRecordRepository(BaseRepository[VitalsRecord]):
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def count_by_creator(self) -> dict[UUID, int]:
+        """Backs the Admin "Employee Accounts & Stats" page's per-
+        vitals-staff "vitals recorded" figure — one `GROUP BY` query for
+        every creator's count, the same N+1-avoidance shape as
+        app/modules/visits/repository.py's `count_by_creator`. Records
+        with a NULL `created_by` (none in practice — VitalsService.
+        record_vitals always stamps it — but never assumed) are
+        excluded rather than surfacing as a spurious `{None: n}` entry."""
+        stmt = (
+            select(VitalsRecord.created_by, func.count())
+            .where(VitalsRecord.deleted_at.is_(None), VitalsRecord.created_by.is_not(None))
+            .group_by(VitalsRecord.created_by)
+        )
+        result = await self.session.execute(stmt)
+        return dict(result.all())

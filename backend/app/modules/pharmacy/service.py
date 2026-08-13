@@ -385,3 +385,8 @@ class PharmacyService:
         bills = await self._bill_repo.list_for_day(day)
         counts = await self._item_repo.count_items_for_bills([bill.id for bill in bills])
         return [(bill, counts.get(bill.id, 0)) for bill in bills]
+
+    async def count_and_revenue_by_creator(self) -> dict[UUID, tuple[int, Decimal]]:
+        """Read-only aggregate added for the Admin "Employee Accounts &
+        Stats" page — see MedicineBillRepository.count_and_revenue_by_creator."""
+        return await self._bill_repo.count_and_revenue_by_creator()

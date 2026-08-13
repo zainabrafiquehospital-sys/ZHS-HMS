@@ -124,6 +124,46 @@ async def test_create_bill_requires_permission(api_client, real_session, grant_p
     assert resp.status_code == 403
 
 
+async def test_get_bill_stats_by_creator_requires_permission(api_client, real_session):
+    _actor, access_token = await _create_and_login(api_client, real_session, "stats-no-perm")
+
+    resp = await api_client.get(
+        "/api/v1/pharmacy/bills/stats/by-creator", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_get_bill_stats_by_creator_returns_accurate_counts_and_revenue(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "stats-correctness")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor, PERMISSION_PHARMACY_READ)
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}StatsCorrectness", price="25.00"
+    )
+    visit_id = await _register_visit(api_client, access_token, "StatsCorrectness")
+
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": visit_id, "items": [{"medicine_id": medicine_id, "quantity": 4}]},
+        headers=_auth_header(access_token),
+    )
+    assert bill_resp.status_code == 201, bill_resp.text
+
+    resp = await api_client.get(
+        "/api/v1/pharmacy/bills/stats/by-creator", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 200
+    rows = {row["user_id"]: row for row in resp.json()["data"]}
+    assert rows[str(actor.id)]["count"] == 1
+    assert rows[str(actor.id)]["revenue"] == "100.00"
+
+
 async def test_full_pharmacy_lifecycle_via_http(api_client, real_session, grant_permission):
     admin, admin_token = await _create_and_login(api_client, real_session, "admin-lifecycle")
     await grant_permission(admin, PERMISSION_PHARMACY_MANAGE)

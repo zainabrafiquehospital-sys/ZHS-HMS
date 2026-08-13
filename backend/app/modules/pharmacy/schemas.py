@@ -236,3 +236,19 @@ class MedicineBillSummaryOut(BaseModel):
             item_count=item_count,
             manual_patient_name=bill.manual_patient_name,
         )
+
+
+class MedicineBillCreatorStatOut(BaseModel):
+    """One row of `GET /pharmacy/bills/stats/by-creator`'s response —
+    one user's "medicine bills created" count and "revenue billed" sum
+    (of `total_amount`, not `amount_paid` — see repository.py's
+    `count_and_revenue_by_creator` docstring). Not an ORM-backed schema,
+    same plain-aggregate shape as
+    app/modules/visits/schemas.py's `VisitCreatorStatOut`. Powers the
+    Admin "Employee Accounts & Stats" page."""
+
+    model_config = ConfigDict(strict=True)
+
+    user_id: UUID
+    count: int
+    revenue: Decimal

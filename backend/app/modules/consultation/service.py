@@ -259,3 +259,8 @@ class ConsultationService:
 
     async def get_active_for_visit(self, visit_id: UUID) -> Consultation | None:
         return await self._consultation_repo.get_active_for_visit(visit_id)
+
+    async def count_completed_by_doctor(self) -> dict[UUID, int]:
+        """Read-only aggregate added for the Admin "Employee Accounts &
+        Stats" page — see ConsultationRepository.count_completed_by_doctor."""
+        return await self._consultation_repo.count_completed_by_doctor()

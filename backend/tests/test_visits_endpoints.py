@@ -85,6 +85,50 @@ async def test_get_visit_returns_registered_visit(
     assert body["status"] == "waiting_doctor"
 
 
+async def test_get_visit_stats_by_creator_requires_permission(api_client, real_session):
+    _actor, access_token = await _create_and_login(api_client, real_session, "stats-no-perm")
+
+    resp = await api_client.get(
+        "/api/v1/visits/stats/by-creator", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_get_visit_stats_by_creator_returns_accurate_counts(
+    api_client, real_session, grant_permission, patient_service, visit_service
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "stats-correctness")
+    await grant_permission(actor, PERMISSION_VISITS_READ)
+    patient = await patient_service.register_patient(
+        actor=actor,
+        full_name=f"{TEST_PATIENT_NAME_PREFIX}VisitStats",
+        guardian_name=None,
+        gender=PatientGender.FEMALE,
+        age_years=28,
+        phone_number="03001234567",
+        cnic=None,
+        address=None,
+    )
+    for _ in range(3):
+        await visit_service.register_visit(
+            actor=actor,
+            patient_id=patient.id,
+            doctor_user_id=actor.id,
+            procedure="Consultation",
+            amount=Decimal("1500.00"),
+            vitals_required=False,
+        )
+
+    resp = await api_client.get(
+        "/api/v1/visits/stats/by-creator", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 200
+    rows = {row["user_id"]: row["count"] for row in resp.json()["data"]}
+    assert rows[str(actor.id)] == 3
+
+
 async def test_list_visits_filters_by_patient_id_and_returns_pagination_meta(
     api_client, real_session, grant_permission, patient_service, visit_service
 ):
