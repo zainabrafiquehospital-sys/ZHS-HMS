@@ -132,9 +132,16 @@ async def create_bill(
         actor=actor,
         visit_id=payload.visit_id,
         items=[(item.medicine_id, item.quantity) for item in payload.items],
+        initial_payment_amount=payload.initial_payment_amount,
+        manual_patient_name=payload.manual_patient_name,
+        manual_patient_age=payload.manual_patient_age,
+        manual_patient_phone=payload.manual_patient_phone,
     )
     items = await pharmacy_service.get_bill_items(bill.id)
-    return success_envelope(MedicineBillOut.from_bill(bill, items).model_dump(mode="json"))
+    payments = await pharmacy_service.get_bill_payments(bill.id)
+    return success_envelope(
+        MedicineBillOut.from_bill(bill, items, payments).model_dump(mode="json")
+    )
 
 
 @router.post("/bills/{bill_id}/pay")
@@ -203,7 +210,16 @@ async def print_bill(
     endpoint and Reception's registration-slip print endpoint — Pharmacy
     decides *whether* this bill may be printed (the same `pharmacy:read`
     gate as viewing it) and supplies the data; the shared printing
-    service only ever renders it (Phase 6 §14)."""
+    service only ever renders it (Phase 6 §14).
+
+    Sources the slip's patient/visit reference block from whichever of
+    the three mutually-exclusive states this bill is in (see models.py's
+    `MedicineBill` docstring): a linked Visit's real Patient record, the
+    manually-typed name/age/contact, or neither (an anonymous walk-in,
+    the pre-existing behavior, unchanged). `render_medicine_bill_receipt`
+    itself needs no changes for this — it already renders the reference
+    section whenever `patient_full_name` is not `None`, regardless of
+    which of these three sources supplied it."""
     bill = await pharmacy_service.get_bill(bill_id)
     items = await pharmacy_service.get_bill_items(bill.id)
 
@@ -213,16 +229,32 @@ async def print_bill(
         visit = await visit_service.get_visit(bill.visit_id)
         patient = await patient_service.get_patient(visit.patient_id)
 
+    if patient is not None:
+        patient_full_name = patient.full_name
+        patient_mr_number = patient.mr_number
+        patient_age_years = patient.age_years
+        patient_phone_number = patient.phone_number
+    elif bill.manual_patient_name is not None:
+        patient_full_name = bill.manual_patient_name
+        patient_mr_number = None
+        patient_age_years = bill.manual_patient_age
+        patient_phone_number = bill.manual_patient_phone
+    else:
+        patient_full_name = None
+        patient_mr_number = None
+        patient_age_years = None
+        patient_phone_number = None
+
     html_document = render_medicine_bill_receipt(
         hospital_name=settings.app_name,
         display_timezone=settings.display_timezone,
         bill_id=str(bill.id),
         bill_created_at=bill.created_at,
         visit_queue_token=visit.queue_token if visit else None,
-        patient_full_name=patient.full_name if patient else None,
-        patient_mr_number=patient.mr_number if patient else None,
-        patient_age_years=patient.age_years if patient else None,
-        patient_phone_number=patient.phone_number if patient else None,
+        patient_full_name=patient_full_name,
+        patient_mr_number=patient_mr_number,
+        patient_age_years=patient_age_years,
+        patient_phone_number=patient_phone_number,
         line_items=[
             (
                 item.medicine_name_snapshot,

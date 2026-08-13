@@ -96,6 +96,7 @@ async def generate_invoice(
         base_amount=payload.base_amount,
         discount_amount=payload.discount_amount,
         discount_reason=payload.discount_reason,
+        initial_payment_amount=payload.initial_payment_amount,
     )
     line_items = await billing_service.get_line_items(invoice.id)
     payments = await billing_service.get_payments(invoice.id)

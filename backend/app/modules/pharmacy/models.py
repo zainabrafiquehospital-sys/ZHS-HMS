@@ -20,6 +20,16 @@ Four entities:
   `receptionist_id` column here either. `amount_paid`/`status`/`paid_at`
   mirror `Invoice`'s identical three fields — a maintained running
   total/derived status, not computed live from `MedicineBillPayment`.
+  `manual_patient_name`/`manual_patient_age`/`manual_patient_phone` are
+  a third, mutually-exclusive alternative to `visit_id`: purely
+  display information for the printed slip when the receptionist wants
+  a name/age/contact on the slip without an existing Patient/Visit
+  record to link (patient not in the system, or a deliberate skip) —
+  no Patient or Visit row is looked up or created for this. A bill has
+  at most one of a linked `visit_id`, complete manual patient fields
+  (all three together, never partial), or neither (an anonymous
+  walk-in) — enforced by this table's own CHECK constraints below, not
+  only in the service layer.
 - `MedicineBillItem` — one line on a MedicineBill. Snapshots the
   medicine's name and unit price at billing time
   (`medicine_name_snapshot`/`unit_price_snapshot`) so a later edit to
@@ -99,6 +109,25 @@ class MedicineBill(BaseEntity):
         CheckConstraint(
             "amount_paid <= total_amount", name="ck_medicine_bill_amount_paid_not_exceeding_total"
         ),
+        # A linked visit and manual patient details are mutually
+        # exclusive — see this module's docstring. Enforced here, not
+        # only in PharmacyService.create_bill, the same "the database is
+        # the real backstop" rigor every other cross-field invariant in
+        # this codebase already gets (e.g. Invoice's single-open-invoice
+        # index).
+        CheckConstraint(
+            "NOT (visit_id IS NOT NULL AND manual_patient_name IS NOT NULL)",
+            name="ck_medicine_bill_not_both_visit_and_manual_patient",
+        ),
+        # The three manual fields are all-or-nothing — a half-filled
+        # manual entry would render a broken slip (see
+        # render_medicine_bill_receipt's reference-section branching).
+        CheckConstraint(
+            "(manual_patient_name IS NULL AND manual_patient_age IS NULL "
+            "AND manual_patient_phone IS NULL) OR (manual_patient_name IS NOT NULL "
+            "AND manual_patient_age IS NOT NULL AND manual_patient_phone IS NOT NULL)",
+            name="ck_medicine_bill_manual_patient_fields_all_or_none",
+        ),
     )
 
     # Nullable: a medicine bill may stand alone as a walk-in sale with no
@@ -128,6 +157,14 @@ class MedicineBill(BaseEntity):
         default=MedicineBillStatus.UNPAID,
     )
     paid_at: Mapped[datetime | None] = mapped_column()
+    # Same field shapes/lengths as app/modules/patients/models.py's
+    # Patient.full_name/age_years/phone_number — this is the identical
+    # data, just typed in ad hoc for the slip instead of sourced from a
+    # real Patient record. See this class's own docstring for the
+    # mutual-exclusivity rule with `visit_id`.
+    manual_patient_name: Mapped[str | None] = mapped_column(String(150))
+    manual_patient_age: Mapped[int | None] = mapped_column(Integer)
+    manual_patient_phone: Mapped[str | None] = mapped_column(String(20))
 
 
 class MedicineBillItem(BaseEntity):

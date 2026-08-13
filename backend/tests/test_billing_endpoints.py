@@ -282,6 +282,89 @@ async def test_generate_invoice_with_discount_via_http(api_client, real_session,
     assert "800.00" in print_resp.text
 
 
+async def test_generate_invoice_with_initial_payment_via_http(
+    api_client, real_session, grant_permission
+):
+    """The merged single-step flow over a real HTTP request/response —
+    Advance Received travels in the same POST /billing/invoices call
+    (`initial_payment_amount`), and the response already reflects the
+    recorded payment (no second request needed)."""
+    doctor, access_token = await _create_and_login(api_client, real_session, "initial-payment-http")
+    await grant_permission(doctor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_START)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_MANAGE)
+    await grant_permission(doctor, PERMISSION_BILLING_MANAGE)
+    await grant_permission(doctor, PERMISSION_BILLING_READ)
+    visit_id = await _make_visit_waiting_billing(api_client, access_token, "InitialPaymentHttp")
+
+    generate_resp = await api_client.post(
+        "/api/v1/billing/invoices",
+        json={
+            "visit_id": visit_id,
+            "base_description": "Consultation Fee",
+            "base_amount": "1000.00",
+            "initial_payment_amount": "600.00",
+        },
+        headers=_auth_header(access_token),
+    )
+    assert generate_resp.status_code == 201, generate_resp.text
+    body = generate_resp.json()["data"]
+    assert body["status"] == "partially_paid"
+    assert body["amount_paid"] == "600.00"
+    assert len(body["payments"]) == 1
+    assert body["payments"][0]["amount"] == "600.00"
+    # Pending = Total - Received (Total already post-discount; no
+    # discount here, so Total - Discount collapses to just Total).
+    pending = float(body["total_amount"]) - float(body["amount_paid"])
+    assert pending == 400.00
+
+
+async def test_generate_invoice_initial_payment_exceeding_balance_creates_no_invoice(
+    api_client, real_session, grant_permission
+):
+    """Atomicity across a real HTTP request boundary: an
+    initial_payment_amount that exceeds the balance is rejected, and —
+    verified from a completely separate, later request (its own fresh
+    DB session) — leaves no Invoice behind at all. Never a created-but-
+    unpaid-and-unrecoverable record from a payment that failed."""
+    doctor, access_token = await _create_and_login(api_client, real_session, "initial-payment-atomic")
+    await grant_permission(doctor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_START)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_MANAGE)
+    await grant_permission(doctor, PERMISSION_BILLING_MANAGE)
+    await grant_permission(doctor, PERMISSION_BILLING_READ)
+    visit_id = await _make_visit_waiting_billing(api_client, access_token, "InitialPaymentAtomic")
+
+    failed_resp = await api_client.post(
+        "/api/v1/billing/invoices",
+        json={
+            "visit_id": visit_id,
+            "base_description": "Consultation Fee",
+            "base_amount": "1000.00",
+            "initial_payment_amount": "1000.01",
+        },
+        headers=_auth_header(access_token),
+    )
+    assert failed_resp.status_code == 422
+    assert failed_resp.json()["error"]["code"] == "PAYMENT_EXCEEDS_BALANCE"
+
+    list_resp = await api_client.get(
+        f"/api/v1/billing/visits/{visit_id}/invoices", headers=_auth_header(access_token)
+    )
+    assert list_resp.status_code == 200
+    assert list_resp.json()["data"] == []
+
+    # The visit is still generate-able afterward too — confirms
+    # InvoiceAlreadyOpenError never fires, i.e. no open invoice was
+    # left behind by the failed attempt.
+    retry_resp = await api_client.post(
+        "/api/v1/billing/invoices",
+        json={"visit_id": visit_id, "base_description": "Consultation Fee", "base_amount": "1000.00"},
+        headers=_auth_header(access_token),
+    )
+    assert retry_resp.status_code == 201, retry_resp.text
+
+
 async def test_print_invoice_requires_permission(api_client, real_session, grant_permission):
     doctor, access_token = await _create_and_login(api_client, real_session, "print-no-perm")
     await grant_permission(doctor, PERMISSION_RECEPTION_REGISTER_VISIT)

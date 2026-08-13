@@ -173,6 +173,7 @@ class BillingService:
         base_amount: Decimal,
         discount_amount: Decimal = _ZERO,
         discount_reason: str | None = None,
+        initial_payment_amount: Decimal = _ZERO,
     ) -> Invoice:
         """Creates the Invoice for a Visit: the base procedure charge
         plus every currently-`APPROVED` Pending Billing Item, each
@@ -189,6 +190,20 @@ class BillingService:
         stored on the Invoice is already post-discount, and the
         pre-discount subtotal is always cheaply recoverable as
         `total_amount + discount_amount` rather than stored separately.
+
+        `initial_payment_amount` (optional, defaults to none) folds
+        Reception's single most common next action — collecting
+        whatever the patient is paying right now — into this same call
+        and the same commit, via the shared `_apply_payment` helper
+        also used by `record_payment` below. This is a UX/API-shape
+        merge, not a new payment concept: it produces exactly the
+        `InvoicePayment` audit row and `amount_paid`/`status` update a
+        separate, immediately-following `record_payment` call would
+        have, just without the two-request round trip that could leave
+        an invoice created-but-never-paid if a second call failed
+        independently. Recording no payment at all (the default) still
+        works exactly as before — creating an Invoice has never
+        required an immediate payment, and still doesn't.
 
         Callable whether the Visit is fresh out of Consultation
         (`WAITING_BILLING`) or already `COMPLETED` with a prior `Paid`
@@ -279,33 +294,49 @@ class BillingService:
                 "discount_reason": discount_reason,
             },
         )
+
+        initial_payment_amount = (
+            quantize_money(initial_payment_amount) if initial_payment_amount else _ZERO
+        )
+        if initial_payment_amount < _ZERO:
+            raise ValidationError("initial_payment_amount cannot be negative.")
+        fully_paid = False
+        if initial_payment_amount > _ZERO:
+            fully_paid = await self._apply_payment(
+                invoice=invoice, actor=actor, amount=initial_payment_amount
+            )
+
+        # Always Pending Payment first, even when the initial payment
+        # already pays it off in full — same two-hop path a separate
+        # generate_invoice-then-record_payment call would have taken
+        # (WAITING_BILLING/COMPLETED -> PAYMENT_PENDING -> COMPLETED);
+        # COMPLETED has no direct self-transition (see visits/service.py's
+        # VALID_TRANSITIONS), so this is the one sequencing that is
+        # always valid regardless of the Visit's status beforehand.
         await self._visit_service.mark_payment_pending(actor=actor, visit_id=visit_id)
+        if fully_paid:
+            await self._visit_service.mark_completed(actor=actor, visit_id=visit_id)
         await self._session.commit()
         return await self._invoice_repo.get_by_id(invoice.id)
 
-    async def record_payment(self, *, actor: User, invoice_id: UUID, amount: Decimal) -> Invoice:
-        """Paid/cancelled invoices are immutable (§7.4) — enforced here
-        by rejecting any payment against an invoice not currently
-        `Pending Payment`/`Partially Paid`, and by never allowing a
-        payment to exceed the remaining balance (which would otherwise
-        silently overpay past `total_amount`).
+    async def _apply_payment(self, *, invoice: Invoice, actor: User, amount: Decimal) -> bool:
+        """Shared by `generate_invoice`'s optional initial payment and
+        `record_payment`'s top-up payment below — validates `amount`
+        against the remaining balance, mutates `invoice.amount_paid`/
+        `status`/`paid_at` in memory, stages a new `InvoicePayment`
+        audit row, and records the audit-log entry. Never commits and
+        never touches `VisitService`: the two call sites need different
+        Visit-transition sequencing around it (a freshly-generated
+        invoice's Visit isn't in Payment Pending yet; an existing
+        invoice being topped up already is), so each caller sequences
+        that itself. Returns whether this payment brought the invoice
+        to fully Paid.
 
-        Reads the Invoice with `SELECT ... FOR UPDATE`
-        (`InvoiceRepository.get_for_update`), not the plain `get_invoice`
-        — this is a read-modify-write on a money field, and two
-        concurrent payment requests against the same Invoice must never
-        both compute their "amount paid so far" from the same stale
-        snapshot (a lost update on money is a financial-integrity bug,
-        not a cosmetic one). The row lock makes the second concurrent
-        request's read wait for the first's commit, then correctly see
-        the already-updated balance — surfacing as a clean
-        `InvoiceNotPayableError`/`PaymentExceedsBalanceError` for the
-        loser instead of a silent double-payment."""
-        invoice = await self._invoice_repo.get_for_update(invoice_id)
-        if invoice is None:
-            raise InvoiceNotFoundError
-        if invoice.status not in (InvoiceStatus.PENDING_PAYMENT, InvoiceStatus.PARTIALLY_PAID):
-            raise InvoiceNotPayableError(invoice.status.value)
+        Assumes the invoice is already known payable (status Pending
+        Payment/Partially Paid) — `record_payment` checks that itself
+        before calling this; `generate_invoice`'s invoice is always
+        freshly created and Pending Payment by construction, so it
+        never needs the check."""
         if amount <= _ZERO:
             raise ValidationError("Payment amount must be greater than zero.")
         amount = quantize_money(amount)
@@ -331,7 +362,6 @@ class BillingService:
                 updated_by=actor.id,
             )
         )
-
         await self._audit_repo.record(
             module="billing",
             action="billing.payment_recorded",
@@ -344,6 +374,37 @@ class BillingService:
                 "fully_paid": fully_paid,
             },
         )
+        return fully_paid
+
+    async def record_payment(self, *, actor: User, invoice_id: UUID, amount: Decimal) -> Invoice:
+        """Records an *additional* payment against an already-created
+        Invoice — topping up toward the remaining balance on a later
+        visit/call, not the primary way an Invoice gets its first
+        payment (see `generate_invoice`'s `initial_payment_amount` for
+        that). Paid/cancelled invoices are immutable (§7.4) — enforced
+        here by rejecting any payment against an invoice not currently
+        `Pending Payment`/`Partially Paid`, and by never allowing a
+        payment to exceed the remaining balance (which would otherwise
+        silently overpay past `total_amount`).
+
+        Reads the Invoice with `SELECT ... FOR UPDATE`
+        (`InvoiceRepository.get_for_update`), not the plain `get_invoice`
+        — this is a read-modify-write on a money field, and two
+        concurrent payment requests against the same Invoice must never
+        both compute their "amount paid so far" from the same stale
+        snapshot (a lost update on money is a financial-integrity bug,
+        not a cosmetic one). The row lock makes the second concurrent
+        request's read wait for the first's commit, then correctly see
+        the already-updated balance — surfacing as a clean
+        `InvoiceNotPayableError`/`PaymentExceedsBalanceError` for the
+        loser instead of a silent double-payment."""
+        invoice = await self._invoice_repo.get_for_update(invoice_id)
+        if invoice is None:
+            raise InvoiceNotFoundError
+        if invoice.status not in (InvoiceStatus.PENDING_PAYMENT, InvoiceStatus.PARTIALLY_PAID):
+            raise InvoiceNotPayableError(invoice.status.value)
+
+        fully_paid = await self._apply_payment(invoice=invoice, actor=actor, amount=amount)
         if fully_paid:
             await self._visit_service.mark_completed(actor=actor, visit_id=invoice.visit_id)
         await self._session.commit()

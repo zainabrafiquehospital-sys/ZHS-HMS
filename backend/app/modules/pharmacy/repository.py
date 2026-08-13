@@ -8,7 +8,12 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import InstrumentedAttribute
 
-from app.modules.pharmacy.models import Medicine, MedicineBill, MedicineBillItem, MedicineBillPayment
+from app.modules.pharmacy.models import (
+    Medicine,
+    MedicineBill,
+    MedicineBillItem,
+    MedicineBillPayment,
+)
 from app.shared.repository.base_repository import BaseRepository
 
 # Whitelist of columns MedicineRepository.list_all may sort by — never

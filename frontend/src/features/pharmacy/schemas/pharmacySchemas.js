@@ -26,7 +26,9 @@ export const billLineItemSchema = z.object({
 
 // Same shape as billing/schemas/billingSchemas.js's recordPaymentSchema —
 // a partial-payment amount, validated client-side before it ever reaches
-// the server's own "exceeds remaining balance" check.
+// the server's own "exceeds remaining balance" check. Used by the
+// Admin Overview "record an additional payment" action (a later
+// top-up on an already-created bill), not by the finalize step itself.
 export const recordMedicineBillPaymentSchema = z.object({
   amount: z
     .union([z.string(), z.number()])
@@ -34,4 +36,34 @@ export const recordMedicineBillPaymentSchema = z.object({
     .refine((value) => Number.isFinite(value) && value > 0, {
       message: 'Amount must be greater than 0',
     }),
+});
+
+// The optional "Advance Received" field on the Finalize & Print form —
+// same nonNegativeAmount shape as billing/schemas/billingSchemas.js's
+// discount_amount/initial_payment_amount: blank/zero always means "not
+// paid yet", never a hidden "pay in full" shortcut.
+export const finalizeBillSchema = z.object({
+  initial_payment_amount: z
+    .union([z.string(), z.number()])
+    .transform((value) => (value === '' || value === null || value === undefined ? 0 : Number(value)))
+    .refine((value) => Number.isFinite(value) && value >= 0, {
+      message: 'Amount must be zero or greater',
+    }),
+});
+
+// Manual Entry mode's three fields (VisitLinkPanel) — same per-field
+// shape as app/modules/patients/schemas.py's CreatePatientRequest
+// (full_name/age_years/phone_number), validated client-side before
+// the request ever reaches the server's own all-or-nothing check.
+// Unlike discount/advance-received, these are never individually
+// optional once Manual Entry mode is active — all three or none.
+export const manualPatientSchema = z.object({
+  manual_patient_name: z.string().min(1, 'Name is required').max(150),
+  manual_patient_age: z
+    .union([z.string(), z.number()])
+    .transform((value) => Number(value))
+    .refine((value) => Number.isInteger(value) && value >= 0 && value <= 150, {
+      message: 'Age must be a whole number between 0 and 150',
+    }),
+  manual_patient_phone: z.string().min(6, 'Contact number is required').max(20),
 });

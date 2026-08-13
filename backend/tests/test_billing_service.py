@@ -352,6 +352,189 @@ async def test_generate_invoice_discount_equal_to_subtotal_allows_zero_total(
     assert invoice.status == InvoiceStatus.PENDING_PAYMENT
 
 
+async def test_generate_invoice_with_initial_payment_records_partial_atomically(
+    real_session, reception_service, consultation_service, billing_service
+):
+    """The merged single-step flow: generate_invoice's optional
+    initial_payment_amount records a payment in the same call/commit
+    as creation — same InvoicePayment audit-row mechanism
+    record_payment uses, not a second request."""
+    doctor = await _make_doctor(real_session, "initial-payment-partial")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "InitialPaymentPartial"
+    )
+
+    invoice = await billing_service.generate_invoice(
+        actor=doctor,
+        visit_id=visit.id,
+        base_description="Consultation Fee",
+        base_amount=Decimal("1000"),
+        initial_payment_amount=Decimal("400"),
+    )
+
+    assert invoice.status == InvoiceStatus.PARTIALLY_PAID
+    assert invoice.amount_paid == Decimal("400.00")
+    assert invoice.total_amount - invoice.amount_paid == Decimal("600.00")  # Pending
+    payments = await billing_service.get_payments(invoice.id)
+    assert [p.amount for p in payments] == [Decimal("400.00")]
+    assert payments[0].created_by == doctor.id
+
+
+async def test_generate_invoice_with_initial_payment_paying_in_full_completes_visit(
+    real_session, reception_service, consultation_service, visit_service, billing_service
+):
+    """Advance Received equal to the total marks the invoice Paid and
+    completes the Visit in the same call — WAITING_BILLING ->
+    PAYMENT_PENDING -> COMPLETED, the same two-hop path a separate
+    generate_invoice-then-record_payment call would have taken (see
+    generate_invoice's own docstring for why it's always this
+    sequencing, never a direct WAITING_BILLING -> COMPLETED skip)."""
+    doctor = await _make_doctor(real_session, "initial-payment-full")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "InitialPaymentFull"
+    )
+
+    invoice = await billing_service.generate_invoice(
+        actor=doctor,
+        visit_id=visit.id,
+        base_description="Consultation Fee",
+        base_amount=Decimal("1000"),
+        initial_payment_amount=Decimal("1000"),
+    )
+
+    assert invoice.status == InvoiceStatus.PAID
+    assert invoice.paid_at is not None
+    assert invoice.amount_paid == invoice.total_amount
+    updated_visit = await visit_service.get_visit(visit.id)
+    assert updated_visit.status == VisitStatus.COMPLETED
+
+
+async def test_generate_invoice_without_initial_payment_then_paid_later_still_works(
+    real_session, reception_service, consultation_service, visit_service, billing_service
+):
+    """The "create now, pay later" path must still work unchanged: no
+    initial_payment_amount still creates a Pending Payment invoice with
+    amount_paid=0, and a later, separate record_payment call (the "top
+    up" action) still pays it off exactly as before."""
+    doctor = await _make_doctor(real_session, "no-initial-payment")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "NoInitialPayment"
+    )
+
+    invoice = await billing_service.generate_invoice(
+        actor=doctor,
+        visit_id=visit.id,
+        base_description="Consultation Fee",
+        base_amount=Decimal("1000"),
+    )
+    assert invoice.status == InvoiceStatus.PENDING_PAYMENT
+    assert invoice.amount_paid == Decimal("0.00")
+    updated_visit = await visit_service.get_visit(visit.id)
+    assert updated_visit.status == VisitStatus.PAYMENT_PENDING
+
+    paid = await billing_service.record_payment(
+        actor=doctor, invoice_id=invoice.id, amount=Decimal("1000")
+    )
+    assert paid.status == InvoiceStatus.PAID
+    completed_visit = await visit_service.get_visit(visit.id)
+    assert completed_visit.status == VisitStatus.COMPLETED
+
+
+async def test_generate_invoice_discount_and_initial_payment_combined_computes_pending(
+    real_session, reception_service, consultation_service, billing_service
+):
+    """Discount and Advance Received applied together: subtotal 1500
+    (1000 base + 500 approved item) minus 200 discount = 1300 total;
+    500 advance leaves Pending = Total - Discount - Received = 1500 -
+    200 - 500 = 800, which is exactly total_amount - amount_paid."""
+    doctor = await _make_doctor(real_session, "discount-and-advance")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "DiscountAndAdvance"
+    )
+    approved = await billing_service.submit_pending_item(
+        actor=doctor, visit_id=visit.id, description="Ultrasound", amount=Decimal("500")
+    )
+    await billing_service.approve_pending_item(actor=doctor, item_id=approved.id)
+
+    invoice = await billing_service.generate_invoice(
+        actor=doctor,
+        visit_id=visit.id,
+        base_description="Consultation Fee",
+        base_amount=Decimal("1000"),
+        discount_amount=Decimal("200"),
+        discount_reason="Staff family discount",
+        initial_payment_amount=Decimal("500"),
+    )
+
+    assert invoice.total_amount == Decimal("1300.00")
+    assert invoice.amount_paid == Decimal("500.00")
+    assert invoice.status == InvoiceStatus.PARTIALLY_PAID
+    pending = invoice.total_amount - invoice.amount_paid
+    assert pending == Decimal("800.00")
+    subtotal = invoice.total_amount + invoice.discount_amount
+    assert subtotal - invoice.discount_amount - invoice.amount_paid == pending
+
+
+async def test_generate_invoice_initial_payment_exceeding_balance_raises(
+    real_session, reception_service, consultation_service, billing_service
+):
+    doctor = await _make_doctor(real_session, "initial-payment-overpay")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "InitialPaymentOverpay"
+    )
+
+    with pytest.raises(PaymentExceedsBalanceError):
+        await billing_service.generate_invoice(
+            actor=doctor,
+            visit_id=visit.id,
+            base_description="Consultation Fee",
+            base_amount=Decimal("1000"),
+            initial_payment_amount=Decimal("1000.01"),
+        )
+
+
+async def test_generate_invoice_initial_payment_on_reopened_visit_fully_pays_and_recompletes(
+    real_session, reception_service, consultation_service, visit_service, billing_service
+):
+    """The `COMPLETED -> PAYMENT_PENDING -> COMPLETED` double-hop must
+    also work when the initial payment fully pays off a *second*
+    invoice raised after the Visit already completed (§7.4's "new
+    Outstanding Invoice" case) — COMPLETED has no direct self-
+    transition, so this exercises the one sequencing generate_invoice
+    always uses regardless of the Visit's status beforehand."""
+    doctor = await _make_doctor(real_session, "initial-payment-reopen")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "InitialPaymentReopen"
+    )
+    first_invoice = await billing_service.generate_invoice(
+        actor=doctor,
+        visit_id=visit.id,
+        base_description="Consultation Fee",
+        base_amount=Decimal("1000"),
+        initial_payment_amount=Decimal("1000"),
+    )
+    assert first_invoice.status == InvoiceStatus.PAID
+    completed_visit = await visit_service.get_visit(visit.id)
+    assert completed_visit.status == VisitStatus.COMPLETED
+
+    late_item = await billing_service.submit_pending_item(
+        actor=doctor, visit_id=visit.id, description="Post-discharge dressing", amount=Decimal("200")
+    )
+    await billing_service.approve_pending_item(actor=doctor, item_id=late_item.id)
+    second_invoice = await billing_service.generate_invoice(
+        actor=doctor,
+        visit_id=visit.id,
+        base_description="Additional charge",
+        base_amount=Decimal("1"),
+        initial_payment_amount=Decimal("201"),
+    )
+
+    assert second_invoice.status == InvoiceStatus.PAID
+    assert second_invoice.total_amount == Decimal("201.00")
+    reopened_then_completed_visit = await visit_service.get_visit(visit.id)
+    assert reopened_then_completed_visit.status == VisitStatus.COMPLETED
+
+
 async def test_record_full_payment_marks_paid_and_completes_visit(
     real_session, reception_service, consultation_service, visit_service, billing_service
 ):

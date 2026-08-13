@@ -38,6 +38,12 @@ class GenerateInvoiceRequest(BaseModel):
     # convention every other request here already follows).
     discount_amount: LaxDecimal = Field(default=Decimal("0"), ge=0)
     discount_reason: str | None = Field(default=None, max_length=200)
+    # Optional payment recorded atomically alongside generation — the
+    # "Advance Received" field on Billing's single merged form (see
+    # BillingService.generate_invoice's docstring). Validated against
+    # the remaining balance server-side same as any other payment;
+    # schema only enforces >= 0 here.
+    initial_payment_amount: LaxDecimal = Field(default=Decimal("0"), ge=0)
 
 
 class RecordPaymentRequest(BaseModel):

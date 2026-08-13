@@ -102,26 +102,22 @@ export function TodaysRegistrations() {
     }
   }
 
-  if (isLoading) return <PageLoader label="Loading this shift's registrations" />;
+  if (isLoading) return <PageLoader label="Loading today's registrations" />;
   if (isError) {
     return (
-      <PageError
-        error={error}
-        reset={refetch}
-        message="Couldn't load this shift's registrations."
-      />
+      <PageError error={error} reset={refetch} message="Couldn't load today's registrations." />
     );
   }
 
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between gap-2">
-        <CardTitle>This Shift&apos;s Registrations</CardTitle>
+        <CardTitle>My Registrations Today</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <SummaryTile icon={Receipt} label="Revenue This Shift" value={formatPkr(totalRevenue)} />
-          <SummaryTile icon={Users} label="Slips Registered This Shift" value={visits.length} />
+          <SummaryTile icon={Receipt} label="My Revenue Today" value={formatPkr(totalRevenue)} />
+          <SummaryTile icon={Users} label="My Slips Today" value={visits.length} />
         </div>
 
         <div className="relative sm:max-w-xs">
@@ -142,7 +138,8 @@ export function TodaysRegistrations() {
 
         {visits.length === 0 ? (
           <p className="py-10 text-center text-sm text-muted-foreground">
-            No visits registered yet this shift — new registrations will appear here immediately.
+            No visits registered by you yet today — new registrations will appear here
+            immediately.
           </p>
         ) : filteredVisits.length === 0 ? (
           <p className="py-10 text-center text-sm text-muted-foreground">

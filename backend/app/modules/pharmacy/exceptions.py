@@ -54,3 +54,21 @@ class MedicineBillPaymentExceedsBalanceError(ValidationError):
             f"Payment exceeds the remaining balance of {remaining_balance}.",
             {"remaining_balance": remaining_balance},
         )
+
+
+class MedicineBillManualPatientConflictsWithVisitError(ValidationError):
+    code = "MEDICINE_BILL_MANUAL_PATIENT_CONFLICTS_WITH_VISIT"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "A medicine bill cannot have both a linked visit and manual patient details."
+        )
+
+
+class MedicineBillManualPatientFieldsIncompleteError(ValidationError):
+    code = "MEDICINE_BILL_MANUAL_PATIENT_FIELDS_INCOMPLETE"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Manual patient details require name, age, and contact number all together."
+        )

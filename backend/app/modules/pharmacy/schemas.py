@@ -65,6 +65,22 @@ class CreateMedicineBillRequest(BaseModel):
 
     visit_id: LaxUUID | None = None
     items: list[MedicineBillLineItemRequest] = Field(min_length=1)
+    # Optional payment recorded atomically alongside creation — the
+    # "Advance Received" field on Pharmacy's single merged counter
+    # form (see PharmacyService.create_bill's docstring). Validated
+    # against the remaining balance server-side same as any other
+    # payment; schema only enforces >= 0 here.
+    initial_payment_amount: LaxDecimal = Field(default=Decimal("0"), ge=0)
+    # Purely display information for the printed slip when no
+    # visit_id is linked — see PharmacyService.create_bill's docstring.
+    # Same per-field shape as app/modules/patients/schemas.py's
+    # CreatePatientRequest (full_name/age_years/phone_number); whether
+    # these are required together, and mutually exclusive with
+    # visit_id, is a cross-field business rule left to the service
+    # (same convention every other request here already follows).
+    manual_patient_name: str | None = Field(default=None, min_length=1, max_length=150)
+    manual_patient_age: int | None = Field(default=None, ge=0, le=150)
+    manual_patient_phone: str | None = Field(default=None, min_length=6, max_length=20)
 
 
 class RecordMedicineBillPaymentRequest(BaseModel):
@@ -155,6 +171,9 @@ class MedicineBillOut(BaseModel):
     paid_at: datetime | None
     created_by: UUID | None
     created_at: datetime
+    manual_patient_name: str | None
+    manual_patient_age: int | None
+    manual_patient_phone: str | None
     items: list[MedicineBillItemOut] = Field(default_factory=list)
     payments: list[MedicineBillPaymentOut] = Field(default_factory=list)
 
@@ -174,6 +193,9 @@ class MedicineBillOut(BaseModel):
             paid_at=bill.paid_at,
             created_by=bill.created_by,
             created_at=bill.created_at,
+            manual_patient_name=bill.manual_patient_name,
+            manual_patient_age=bill.manual_patient_age,
+            manual_patient_phone=bill.manual_patient_phone,
             items=[MedicineBillItemOut.from_item(item) for item in (items or [])],
             payments=[MedicineBillPaymentOut.from_payment(p) for p in (payments or [])],
         )
@@ -195,6 +217,11 @@ class MedicineBillSummaryOut(BaseModel):
     created_by: UUID | None
     created_at: datetime
     item_count: int
+    # Only the name, not age/phone — the Medicine Bills tab's "Patient"
+    # column shows a linked visit's patient name the same minimal way
+    # (see MedicineBillOut for the full manual-entry field set, used by
+    # the print slip instead).
+    manual_patient_name: str | None
 
     @classmethod
     def from_bill(cls, bill: MedicineBill, item_count: int) -> "MedicineBillSummaryOut":
@@ -207,4 +234,5 @@ class MedicineBillSummaryOut(BaseModel):
             created_by=bill.created_by,
             created_at=bill.created_at,
             item_count=item_count,
+            manual_patient_name=bill.manual_patient_name,
         )

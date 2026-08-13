@@ -222,6 +222,150 @@ async def test_standalone_walk_in_bill_has_no_visit(api_client, real_session, gr
     assert resp.json()["data"]["visit_id"] is None
 
 
+async def test_create_bill_with_manual_patient_details_prints_correctly(
+    api_client, real_session, grant_permission
+):
+    """Manual Entry mode: no Patient/Visit lookup or creation, purely
+    display data — but it must show up on the printed slip in the same
+    reference-section spot a linked visit's real Patient would (Age/
+    Contact Number rendering added earlier for that case, reused as-is
+    — see app/modules/pharmacy/router.py's `print_bill` docstring)."""
+    actor, access_token = await _create_and_login(api_client, real_session, "manual-entry")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor, PERMISSION_PHARMACY_READ)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}ManualEntry", price="40.00"
+    )
+
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": None,
+            "items": [{"medicine_id": medicine_id, "quantity": 1}],
+            "manual_patient_name": "Zainab Rafique",
+            "manual_patient_age": 34,
+            "manual_patient_phone": "03211234567",
+        },
+        headers=_auth_header(access_token),
+    )
+    assert bill_resp.status_code == 201, bill_resp.text
+    body = bill_resp.json()["data"]
+    assert body["visit_id"] is None
+    assert body["manual_patient_name"] == "Zainab Rafique"
+    assert body["manual_patient_age"] == 34
+    assert body["manual_patient_phone"] == "03211234567"
+    bill_id = body["id"]
+
+    print_resp = await api_client.get(
+        f"/api/v1/pharmacy/bills/{bill_id}/print", headers=_auth_header(access_token)
+    )
+    assert print_resp.status_code == 200
+    assert "Zainab Rafique" in print_resp.text
+    assert "34 years" in print_resp.text
+    assert "03211234567" in print_resp.text
+    # No real Patient record exists for this bill — the MR Number row
+    # must render the same "unknown" placeholder a walk-in's queue
+    # token row already uses, never a fabricated value.
+    assert "Sale Type" not in print_resp.text  # not the walk-in-only branch
+
+    list_resp = await api_client.get(
+        "/api/v1/pharmacy/bills",
+        params={"date": datetime.now(UTC).date().isoformat()},
+        headers=_auth_header(access_token),
+    )
+    assert list_resp.status_code == 200
+    matching = [row for row in list_resp.json()["data"] if row["id"] == bill_id]
+    assert len(matching) == 1
+    assert matching[0]["manual_patient_name"] == "Zainab Rafique"
+
+
+async def test_create_bill_manual_patient_and_visit_id_together_rejected(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "manual-plus-visit")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}ManualPlusVisit", price="15.00"
+    )
+    visit_id = await _register_visit(api_client, access_token, "ManualPlusVisit")
+
+    resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": visit_id,
+            "items": [{"medicine_id": medicine_id, "quantity": 1}],
+            "manual_patient_name": "Should Be Rejected",
+            "manual_patient_age": 40,
+            "manual_patient_phone": "03000000000",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "MEDICINE_BILL_MANUAL_PATIENT_CONFLICTS_WITH_VISIT"
+
+
+async def test_create_bill_partial_manual_patient_fields_rejected(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "manual-partial")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}ManualPartial", price="15.00"
+    )
+
+    resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": None,
+            "items": [{"medicine_id": medicine_id, "quantity": 1}],
+            "manual_patient_name": "Only Name Given",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "MEDICINE_BILL_MANUAL_PATIENT_FIELDS_INCOMPLETE"
+
+
+async def test_create_bill_walk_in_unaffected_by_manual_patient_feature(
+    api_client, real_session, grant_permission
+):
+    """A pure walk-in (neither visit_id nor manual patient fields)
+    still works exactly as before — the third, unchanged state."""
+    actor, access_token = await _create_and_login(api_client, real_session, "walk-in-unaffected")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor, PERMISSION_PHARMACY_READ)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}WalkInUnaffected", price="22.00"
+    )
+
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": None, "items": [{"medicine_id": medicine_id, "quantity": 1}]},
+        headers=_auth_header(access_token),
+    )
+    assert bill_resp.status_code == 201, bill_resp.text
+    body = bill_resp.json()["data"]
+    assert body["visit_id"] is None
+    assert body["manual_patient_name"] is None
+    assert body["manual_patient_age"] is None
+    assert body["manual_patient_phone"] is None
+    bill_id = body["id"]
+
+    print_resp = await api_client.get(
+        f"/api/v1/pharmacy/bills/{bill_id}/print", headers=_auth_header(access_token)
+    )
+    assert print_resp.status_code == 200
+    assert "Sale Type" in print_resp.text
+    assert "Walk-in (no visit on file)" in print_resp.text
+
+
 async def test_create_bill_rejects_inactive_medicine(api_client, real_session, grant_permission):
     actor, access_token = await _create_and_login(api_client, real_session, "inactive-med")
     await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
@@ -293,6 +437,142 @@ async def test_new_bill_starts_unpaid_with_zero_paid(api_client, real_session, g
     assert body["payments"] == []
 
 
+async def test_create_bill_with_initial_payment_records_it_atomically(
+    api_client, real_session, grant_permission
+):
+    """The merged single-step counter flow: create_bill's optional
+    initial_payment_amount ("Advance Received" on Finalize & Print)
+    records a payment in the same request/commit as creation — same
+    MedicineBillPayment audit-row mechanism record_payment uses, never
+    a second, separately-failing request."""
+    actor, access_token = await _create_and_login(api_client, real_session, "initial-payment-partial")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}InitialPartial", price="100.00"
+    )
+
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": None,
+            "items": [{"medicine_id": medicine_id, "quantity": 2}],
+            "initial_payment_amount": "80.00",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert bill_resp.status_code == 201, bill_resp.text
+    body = bill_resp.json()["data"]
+    assert body["total_amount"] == "200.00"
+    assert body["status"] == "partially_paid"
+    assert body["amount_paid"] == "80.00"
+    assert len(body["payments"]) == 1
+    assert body["payments"][0]["amount"] == "80.00"
+    pending = float(body["total_amount"]) - float(body["amount_paid"])
+    assert pending == 120.00
+
+
+async def test_create_bill_with_initial_payment_paying_in_full(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "initial-payment-full")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}InitialFull", price="60.00"
+    )
+
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": None,
+            "items": [{"medicine_id": medicine_id, "quantity": 1}],
+            "initial_payment_amount": "60.00",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert bill_resp.status_code == 201, bill_resp.text
+    body = bill_resp.json()["data"]
+    assert body["status"] == "paid"
+    assert body["amount_paid"] == body["total_amount"]
+    assert body["paid_at"] is not None
+
+
+async def test_create_bill_without_initial_payment_then_paid_later_still_works(
+    api_client, real_session, grant_permission
+):
+    """The "finalize now, pay later" path must still work unchanged:
+    omitting initial_payment_amount still creates an UNPAID bill with
+    amount_paid=0, and a later, separate record_payment call (the "top
+    up" action, now surfaced in Admin Overview) still pays it off
+    exactly as before."""
+    actor, access_token = await _create_and_login(api_client, real_session, "no-initial-payment")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}NoInitial", price="45.00"
+    )
+
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": None, "items": [{"medicine_id": medicine_id, "quantity": 1}]},
+        headers=_auth_header(access_token),
+    )
+    assert bill_resp.status_code == 201, bill_resp.text
+    bill_id = bill_resp.json()["data"]["id"]
+    assert bill_resp.json()["data"]["status"] == "unpaid"
+    assert bill_resp.json()["data"]["amount_paid"] == "0.00"
+
+    pay_resp = await api_client.post(
+        f"/api/v1/pharmacy/bills/{bill_id}/pay",
+        json={"amount": "45.00"},
+        headers=_auth_header(access_token),
+    )
+    assert pay_resp.status_code == 200, pay_resp.text
+    assert pay_resp.json()["data"]["status"] == "paid"
+
+
+async def test_create_bill_initial_payment_exceeding_balance_creates_no_bill(
+    api_client, real_session, grant_permission
+):
+    """Atomicity across a real HTTP request boundary: an
+    initial_payment_amount that exceeds the bill's total is rejected,
+    and — verified via a separate, later request's own fresh DB
+    session — no bill is left behind at all."""
+    actor, access_token = await _create_and_login(api_client, real_session, "initial-payment-atomic")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor, PERMISSION_PHARMACY_READ)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}InitialAtomic", price="30.00"
+    )
+    today = datetime.now(UTC).date().isoformat()
+
+    baseline_resp = await api_client.get(
+        "/api/v1/pharmacy/bills", params={"date": today}, headers=_auth_header(access_token)
+    )
+    baseline_count = len(baseline_resp.json()["data"])
+
+    failed_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": None,
+            "items": [{"medicine_id": medicine_id, "quantity": 1}],
+            "initial_payment_amount": "30.01",
+        },
+        headers=_auth_header(access_token),
+    )
+    assert failed_resp.status_code == 422
+    assert failed_resp.json()["error"]["code"] == "MEDICINE_BILL_PAYMENT_EXCEEDS_BALANCE"
+
+    after_resp = await api_client.get(
+        "/api/v1/pharmacy/bills", params={"date": today}, headers=_auth_header(access_token)
+    )
+    assert len(after_resp.json()["data"]) == baseline_count
+
+
 async def test_multiple_partial_bill_payments_sum_correctly_and_settle_status(
     api_client, real_session, grant_permission
 ):
@@ -362,8 +642,9 @@ async def test_multiple_partial_bill_payments_sum_correctly_and_settle_status(
         f"/api/v1/pharmacy/bills/{bill_id}/print", headers=_auth_header(access_token)
     )
     assert print_resp.status_code == 200
-    assert "Amount Paid" in print_resp.text
-    assert "Balance Due" in print_resp.text
+    assert "Total Amount" in print_resp.text
+    assert "Received" in print_resp.text
+    assert "Pending" in print_resp.text
 
 
 async def test_bill_payment_exceeding_balance_rejected(api_client, real_session, grant_permission):

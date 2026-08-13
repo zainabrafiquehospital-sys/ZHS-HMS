@@ -7,21 +7,32 @@ Three independent concerns:
   (`create_bill`) — validates every line item's medicine exists and is
   active, snapshots its name/price at billing time (see models.py's
   module docstring on why), computes each line total and the bill's
-  grand total via `quantize_money()`, and persists the bill and every
-  item in one transaction — the same shape as
-  app/modules/billing/service.py's `generate_invoice`. A newly created
-  bill always starts `UNPAID` with `amount_paid=0` — recording the
-  payment is a deliberately separate step (`record_payment`), mirroring
-  Billing's own generate-then-pay split, not a silent "already fully
-  paid" assumption.
-- Recording a payment against a bill (`record_payment`) — allows any
-  amount up to the remaining balance, derives `UNPAID`/`PARTIALLY_PAID`/
-  `PAID` from the running `amount_paid` total, and records the payment
-  as its own row (`MedicineBillPayment`) — the identical shape and
-  concurrency handling as `BillingService.record_payment`; see that
-  method's own docstring for the `SELECT ... FOR UPDATE` rationale,
-  which applies here for the same reason (a lost update on a money
-  field is a financial-integrity bug, not a cosmetic one).
+  grand total via `quantize_money()`, and persists the bill, every
+  item, and an optional initial payment all in one transaction — the
+  same shape as app/modules/billing/service.py's `generate_invoice`.
+  `initial_payment_amount` (optional, defaults to none) is the
+  "Advance Received" field on Pharmacy's single merged counter form:
+  a bill with no initial payment still starts `UNPAID` with
+  `amount_paid=0` exactly as before; one with an initial payment is
+  created already `PARTIALLY_PAID`/`PAID`, atomically — never a bill
+  that exists with a payment that might fail in a second, separate
+  request. `manual_patient_name`/`_age`/`_phone` (optional, all-or-
+  nothing, mutually exclusive with `visit_id`) let Reception put a
+  name/age/contact on the printed slip without an existing Patient/
+  Visit to link — see models.py's `MedicineBill` docstring.
+- Recording a payment against a bill (`record_payment`) — an
+  *additional*, later top-up toward the remaining balance (not the
+  primary way a bill gets paid, now that `create_bill` folds the first
+  payment in) — allows any amount up to the remaining balance, derives
+  `UNPAID`/`PARTIALLY_PAID`/`PAID` from the running `amount_paid`
+  total, and records the payment as its own row
+  (`MedicineBillPayment`). Shares its actual validate-and-apply logic
+  with `create_bill`'s initial payment via the private `_apply_payment`
+  helper — the identical shape and concurrency handling as
+  `BillingService.record_payment`; see that method's own docstring for
+  the `SELECT ... FOR UPDATE` rationale, which applies here for the
+  same reason (a lost update on a money field is a financial-integrity
+  bug, not a cosmetic one).
 
 `visit_id` is optional (a medicine bill may be a standalone walk-in
 sale); when supplied, `VisitService.get_visit` validates it exists
@@ -37,6 +48,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import ValidationError
 from app.modules.auth.models import User
 from app.modules.pharmacy.exceptions import (
+    MedicineBillManualPatientConflictsWithVisitError,
+    MedicineBillManualPatientFieldsIncompleteError,
     MedicineBillNotFoundError,
     MedicineBillNotPayableError,
     MedicineBillPaymentExceedsBalanceError,
@@ -173,12 +186,46 @@ class PharmacyService:
         actor: User,
         visit_id: UUID | None,
         items: list[tuple[UUID, int]],
+        initial_payment_amount: Decimal = _ZERO,
+        manual_patient_name: str | None = None,
+        manual_patient_age: int | None = None,
+        manual_patient_phone: str | None = None,
     ) -> MedicineBill:
         """`items` is a list of `(medicine_id, quantity)` pairs, already
         validated non-empty by `CreateMedicineBillRequest`. Every
         medicine referenced must exist and be active — checked up front,
         before anything is written, so a bad line item never leaves a
-        partially-built bill behind."""
+        partially-built bill behind.
+
+        `initial_payment_amount` (optional, defaults to none) folds
+        collecting whatever the patient is paying right now into this
+        same call and the same commit, via the shared `_apply_payment`
+        helper also used by `record_payment` below — the identical
+        merge `BillingService.generate_invoice` does for Invoices, see
+        that method's docstring for the full rationale. Recording no
+        payment at all (the default) still works exactly as before: a
+        bill with no `initial_payment_amount` is created `UNPAID`, same
+        as ever.
+
+        `manual_patient_name`/`manual_patient_age`/`manual_patient_phone`
+        (all optional, default None) are purely display information for
+        the printed slip when no registered Patient/Visit is being
+        linked — see models.py's `MedicineBill` docstring for the full
+        rationale and the DB-level CHECK constraints that also enforce
+        the two rules validated here: mutually exclusive with
+        `visit_id`, and all-or-nothing (never a partial manual entry)."""
+        manual_fields = (manual_patient_name, manual_patient_age, manual_patient_phone)
+        any_manual_field = any(field is not None for field in manual_fields)
+        all_manual_fields = all(field is not None for field in manual_fields)
+        if any_manual_field and not all_manual_fields:
+            raise MedicineBillManualPatientFieldsIncompleteError
+        if any_manual_field and visit_id is not None:
+            raise MedicineBillManualPatientConflictsWithVisitError
+        if manual_patient_name is not None:
+            manual_patient_name = manual_patient_name.strip()
+        if manual_patient_phone is not None:
+            manual_patient_phone = manual_patient_phone.strip()
+
         if visit_id is not None:
             await self._visit_service.get_visit(visit_id)
 
@@ -199,6 +246,9 @@ class PharmacyService:
             total_amount=total,
             amount_paid=_ZERO,
             status=MedicineBillStatus.UNPAID,
+            manual_patient_name=manual_patient_name,
+            manual_patient_age=manual_patient_age,
+            manual_patient_phone=manual_patient_phone,
             created_by=actor.id,
             updated_by=actor.id,
         )
@@ -230,8 +280,18 @@ class PharmacyService:
                 "visit_id": str(visit_id) if visit_id else None,
                 "total_amount": str(total),
                 "line_item_count": len(resolved),
+                "manual_patient_name": manual_patient_name,
             },
         )
+
+        initial_payment_amount = (
+            quantize_money(initial_payment_amount) if initial_payment_amount else _ZERO
+        )
+        if initial_payment_amount < _ZERO:
+            raise ValidationError("initial_payment_amount cannot be negative.")
+        if initial_payment_amount > _ZERO:
+            await self._apply_payment(bill=bill, actor=actor, amount=initial_payment_amount)
+
         await self._session.commit()
         return await self._get_bill(bill.id)
 
@@ -250,21 +310,18 @@ class PharmacyService:
     async def get_bill_payments(self, bill_id: UUID) -> list[MedicineBillPayment]:
         return await self._payment_repo.list_for_bill(bill_id)
 
-    async def record_payment(
-        self, *, actor: User, bill_id: UUID, amount: Decimal
-    ) -> MedicineBill:
-        """Same shape as `BillingService.record_payment` — see that
-        method's docstring for the full `SELECT ... FOR UPDATE`
-        rationale (identical here: a read-modify-write on a money
-        field). A fully `PAID` bill is immutable, matching `Invoice`'s
-        `PAID`/`CANCELLED` immutability; `MedicineBill` has no
-        `CANCELLED` equivalent, so `PAID` is the only terminal state to
-        guard against here."""
-        bill = await self._bill_repo.get_for_update(bill_id)
-        if bill is None:
-            raise MedicineBillNotFoundError
-        if bill.status == MedicineBillStatus.PAID:
-            raise MedicineBillNotPayableError(bill.status.value)
+    async def _apply_payment(self, *, bill: MedicineBill, actor: User, amount: Decimal) -> bool:
+        """Shared by `create_bill`'s optional initial payment above and
+        `record_payment`'s top-up payment below — validates `amount`
+        against the remaining balance, mutates `bill.amount_paid`/
+        `status`/`paid_at` in memory, stages a new `MedicineBillPayment`
+        audit row, and records the audit-log entry. Never commits.
+        Returns whether this payment brought the bill to fully `PAID`.
+
+        Assumes the bill is already known payable (not `PAID`) —
+        `record_payment` checks that itself before calling this;
+        `create_bill`'s bill is always freshly created and `UNPAID` by
+        construction, so it never needs the check."""
         if amount <= _ZERO:
             raise ValidationError("Payment amount must be greater than zero.")
         amount = quantize_money(amount)
@@ -290,7 +347,6 @@ class PharmacyService:
                 updated_by=actor.id,
             )
         )
-
         await self._audit_repo.record(
             module="pharmacy",
             action="pharmacy.payment_recorded",
@@ -299,6 +355,26 @@ class PharmacyService:
             actor_user_id=actor.id,
             metadata={"amount": str(amount), "fully_paid": fully_paid},
         )
+        return fully_paid
+
+    async def record_payment(self, *, actor: User, bill_id: UUID, amount: Decimal) -> MedicineBill:
+        """Records an *additional* payment against an already-created
+        bill — topping up toward the remaining balance later, not the
+        primary way a bill gets its first payment (see `create_bill`'s
+        `initial_payment_amount` for that). Same shape as
+        `BillingService.record_payment` — see that method's docstring
+        for the full `SELECT ... FOR UPDATE` rationale (identical here:
+        a read-modify-write on a money field). A fully `PAID` bill is
+        immutable, matching `Invoice`'s `PAID`/`CANCELLED` immutability;
+        `MedicineBill` has no `CANCELLED` equivalent, so `PAID` is the
+        only terminal state to guard against here."""
+        bill = await self._bill_repo.get_for_update(bill_id)
+        if bill is None:
+            raise MedicineBillNotFoundError
+        if bill.status == MedicineBillStatus.PAID:
+            raise MedicineBillNotPayableError(bill.status.value)
+
+        await self._apply_payment(bill=bill, actor=actor, amount=amount)
         await self._session.commit()
         return await self._get_bill(bill.id)
 

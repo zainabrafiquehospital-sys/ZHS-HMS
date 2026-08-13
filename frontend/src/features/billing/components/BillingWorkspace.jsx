@@ -133,11 +133,15 @@ function GenerateInvoiceForm({ visitId, visit }) {
     // Pre-filled from the amount Reception already entered at
     // registration — Reception typed it once, Billing never asks
     // again (still editable/overridable here if it needs adjusting).
+    // discount_amount/initial_payment_amount both start blank — blank
+    // always means "not applicable", never a hidden "pay in full" or
+    // "no discount" shortcut (see generateInvoiceSchema's comment).
     defaultValues: {
       base_description: visit?.procedure ?? '',
       base_amount: visit?.amount ?? '',
       discount_amount: '',
       discount_reason: '',
+      initial_payment_amount: '',
     },
   });
 
@@ -145,7 +149,13 @@ function GenerateInvoiceForm({ visitId, visit }) {
     setSubmitError(null);
     try {
       await generateInvoice.mutateAsync({ visit_id: visitId, ...values });
-      reset({ base_description: '', base_amount: '', discount_amount: '', discount_reason: '' });
+      reset({
+        base_description: '',
+        base_amount: '',
+        discount_amount: '',
+        discount_reason: '',
+        initial_payment_amount: '',
+      });
     } catch (error) {
       setSubmitError(error.message || 'Unable to generate invoice.');
     }
@@ -207,6 +217,28 @@ function GenerateInvoiceForm({ visitId, visit }) {
                 <p className="text-xs text-destructive">{errors.discount_reason.message}</p>
               ) : null}
             </div>
+          </div>
+          {/* Optional payment collected in the same step as generation
+              — leave blank to create the invoice unpaid, as before;
+              typing the same amount as the total records it as paid
+              in full immediately. Recorded atomically with the invoice
+              itself (see BillingService.generate_invoice's docstring)
+              — never a separate, possibly-failing second request. */}
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="initial_payment_amount">Advance Received (Rs.)</Label>
+              <Input
+                id="initial_payment_amount"
+                type="number"
+                step="0.01"
+                placeholder="0.00"
+                className="sm:w-40"
+                {...register('initial_payment_amount')}
+              />
+              {errors.initial_payment_amount ? (
+                <p className="text-xs text-destructive">{errors.initial_payment_amount.message}</p>
+              ) : null}
+            </div>
             <Button type="submit" disabled={isSubmitting} className="sm:self-end">
               <ReceiptText className="h-4 w-4" />
               {isSubmitting ? 'Generating…' : 'Generate Invoice'}
@@ -227,8 +259,13 @@ function RecordPaymentRow({ invoice, visitId }) {
   const recordPayment = useRecordPayment(visitId);
   const printInvoice = usePrintInvoice();
   const [error, setError] = useState(null);
-  const balanceDue = Number(invoice.total_amount) - Number(invoice.amount_paid);
-  const balanceDueValue = balanceDue > 0 ? balanceDue.toFixed(2) : '';
+  // Same Total Amount / Received / Pending framing as the print
+  // receipt (shared/printing/service.py's render_invoice_receipt) —
+  // Total Amount is the pre-discount subtotal, recovered the same way
+  // (total_amount is already post-discount on the stored Invoice).
+  const totalAmount = Number(invoice.total_amount) + Number(invoice.discount_amount);
+  const pending = Number(invoice.total_amount) - Number(invoice.amount_paid);
+  const balanceDueValue = pending > 0 ? pending.toFixed(2) : '';
   const {
     register,
     handleSubmit,
@@ -278,11 +315,11 @@ function RecordPaymentRow({ invoice, visitId }) {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <p className="text-sm font-medium text-foreground">
-            Invoice {invoice.id.slice(0, 8)} — {money(invoice.total_amount)} total,{' '}
-            {money(invoice.amount_paid)} paid
+            Invoice {invoice.id.slice(0, 8)} — Total Amount {money(totalAmount)}
           </p>
           <p className="text-xs text-muted-foreground">
-            {invoice.line_items?.length ?? 0} line item(s) · Balance due: {money(balanceDue)}
+            {invoice.line_items?.length ?? 0} line item(s) · Received: {money(invoice.amount_paid)}{' '}
+            · Pending: {money(pending)}
           </p>
           {Number(invoice.discount_amount) > 0 ? (
             <p className="text-xs text-muted-foreground">
@@ -320,22 +357,33 @@ function RecordPaymentRow({ invoice, visitId }) {
       </div>
 
       {isOpen ? (
-        <form onSubmit={handleSubmit(onSubmit)} className="flex items-end gap-3">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor={`amount-${invoice.id}`}>Record Payment (Rs.)</Label>
-            <Input
-              id={`amount-${invoice.id}`}
-              type="number"
-              step="0.01"
-              {...register('amount')}
-            />
-            {errors.amount ? <p className="text-xs text-destructive">{errors.amount.message}</p> : null}
-          </div>
-          <Button type="submit" size="sm" disabled={isSubmitting}>
-            <Wallet className="h-4 w-4" />
-            {isSubmitting ? 'Recording…' : 'Record Payment'}
-          </Button>
-        </form>
+        <div className="flex flex-col gap-2">
+          {/* This is a later top-up toward what's still Pending — the
+              invoice's first payment is normally already recorded via
+              Generate Invoice's own "Advance Received" field; this row
+              is for a patient coming back to pay the rest. */}
+          <p className="text-xs text-muted-foreground">
+            Record an additional payment toward the remaining balance.
+          </p>
+          <form onSubmit={handleSubmit(onSubmit)} className="flex items-end gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={`amount-${invoice.id}`}>Additional Payment (Rs.)</Label>
+              <Input
+                id={`amount-${invoice.id}`}
+                type="number"
+                step="0.01"
+                {...register('amount')}
+              />
+              {errors.amount ? (
+                <p className="text-xs text-destructive">{errors.amount.message}</p>
+              ) : null}
+            </div>
+            <Button type="submit" size="sm" disabled={isSubmitting}>
+              <Wallet className="h-4 w-4" />
+              {isSubmitting ? 'Recording…' : 'Record Additional Payment'}
+            </Button>
+          </form>
+        </div>
       ) : null}
 
       {error ? <p className="text-xs text-destructive">{error}</p> : null}

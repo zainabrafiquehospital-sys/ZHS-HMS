@@ -63,27 +63,30 @@ def render_invoice_receipt(
     be a stored-XSS vector the moment this HTML is ever opened in a
     browser (which is its entire purpose).
 
-    `total_amount` is already post-discount (see BillingService.
-    generate_invoice's docstring) — the pre-discount subtotal shown
-    here is recovered as `total_amount + discount_amount`, never a
-    separately stored value. The Subtotal/Discount rows only appear
-    when a discount was actually applied, so an ordinary invoice's
-    receipt is unchanged from before this field existed."""
-    balance_due = total_amount - amount_paid
+    Leads with the simple three-line mental model every workspace
+    screen now shares: **Total Amount** (the pre-discount subtotal —
+    `total_amount` is already post-discount on the stored Invoice, see
+    BillingService.generate_invoice's docstring, so this recovers it as
+    `total_amount + discount_amount` rather than storing it twice),
+    **Discount** (only shown when actually applied — `discount_amount
+    == 0` means the row is fully absent, never a zero line), then
+    **Received**/**Pending** (`amount_paid` / `total_amount -
+    amount_paid` — Pending is mathematically identical to `Total -
+    Discount - Received` since `Total - Discount` is exactly the stored
+    post-discount `total_amount`)."""
+    pending = total_amount - amount_paid
     subtotal = total_amount + discount_amount
     rows = "".join(
         f"<tr><td>{_escape(description)}</td>" f"<td class='amount'>{_money(amount)}</td></tr>"
         for description, amount in line_items
     )
-    discount_rows = ""
+    discount_row = ""
     if discount_amount > 0:
         discount_label = "Discount"
         if discount_reason:
             discount_label = f"Discount ({_escape(discount_reason)})"
-        discount_rows = (
-            f"<tr><td>Subtotal</td><td class='amount'>{_money(subtotal)}</td></tr>"
-            f"<tr><td>{discount_label}</td>"
-            f"<td class='amount'>-{_money(discount_amount)}</td></tr>"
+        discount_row = (
+            f"<tr><td>{discount_label}</td><td class='amount'>-{_money(discount_amount)}</td></tr>"
         )
     return f"""<!doctype html>
 <html>
@@ -117,10 +120,10 @@ def render_invoice_receipt(
     <thead><tr><th>Description</th><th class="amount">Amount</th></tr></thead>
     <tbody>
       {rows}
-      {discount_rows}
-      <tr class="totals"><td>Total</td><td class="amount">{_money(total_amount)}</td></tr>
-      <tr><td>Amount Paid</td><td class="amount">{_money(amount_paid)}</td></tr>
-      <tr><td>Balance Due</td><td class="amount">{_money(balance_due)}</td></tr>
+      <tr class="totals"><td>Total Amount</td><td class="amount">{_money(subtotal)}</td></tr>
+      {discount_row}
+      <tr><td>Received</td><td class="amount">{_money(amount_paid)}</td></tr>
+      <tr><td>Pending</td><td class="amount">{_money(pending)}</td></tr>
     </tbody>
   </table>
 </body>
@@ -523,13 +526,15 @@ def render_medicine_bill_receipt(
     `MedicineBillItem`'s docstring) — this function renders exactly what
     was billed, never re-reads the live price list.
 
-    `amount_paid` mirrors `render_invoice_receipt`'s identical Total /
-    Amount Paid / Balance Due footer — a bill freshly created and not
-    yet paid renders `Amount Paid: 0.00` / `Balance Due` equal to the
-    total, exactly like a Pending Payment Invoice would, rather than
-    silently implying the sale was already settled."""
+    `amount_paid` mirrors `render_invoice_receipt`'s identical Total
+    Amount / Received / Pending footer (Pharmacy has no discount
+    concept, so there is no conditional Discount row here — always
+    exactly these three) — a bill freshly created and not yet paid
+    renders `Received: 0.00` / `Pending` equal to the total, exactly
+    like an unpaid Invoice would, rather than silently implying the
+    sale was already settled."""
     billed_on = _to_local_time(bill_created_at, display_timezone).strftime("%d %b %Y, %I:%M %p")
-    balance_due = total_amount - amount_paid
+    pending = total_amount - amount_paid
     short_bill_id = bill_id.split("-")[0].upper()
 
     logo_data_uri = _logo_data_uri()
@@ -843,16 +848,16 @@ def render_medicine_bill_receipt(
         </tbody>
         <tfoot>
           <tr>
-            <td colspan="4">Total</td>
+            <td colspan="4">Total Amount</td>
             <td class="amount">{_money(total_amount)}</td>
           </tr>
           <tr>
-            <td colspan="4">Amount Paid</td>
+            <td colspan="4">Received</td>
             <td class="amount">{_money(amount_paid)}</td>
           </tr>
           <tr>
-            <td colspan="4">Balance Due</td>
-            <td class="amount">{_money(balance_due)}</td>
+            <td colspan="4">Pending</td>
+            <td class="amount">{_money(pending)}</td>
           </tr>
         </tfoot>
       </table>

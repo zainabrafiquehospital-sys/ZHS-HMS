@@ -1,7 +1,9 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { ClipboardList, Pill, Printer, Receipt, Search } from 'lucide-react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { ClipboardList, Pill, Printer, Receipt, Search, Wallet } from 'lucide-react';
 import {
   useAdminVisitsForDay,
   usePatientsForVisits,
@@ -10,18 +12,22 @@ import {
 import {
   useMedicineBillsForDay,
   usePrintMedicineBill,
+  useRecordMedicineBillPayment,
   useUsersForMedicineBills,
   useVisitsForMedicineBills,
 } from '@/features/pharmacy/hooks/usePharmacy';
+import { recordMedicineBillPaymentSchema } from '@/features/pharmacy/schemas/pharmacySchemas';
 import { PendingApprovals } from '@/features/admin/components/PendingApprovals';
 import { DateNavigator } from '@/features/admin/components/DateNavigator';
 import { LeadsSection } from '@/features/admin/components/LeadsSection';
-import { ShiftRevenuePieChart } from '@/features/admin/components/ShiftRevenuePieChart';
-import { computeShiftRevenueBreakdown } from '@/features/admin/utils/shiftRevenue';
+import { RevenueByActorPieChart } from '@/features/admin/components/RevenueByActorPieChart';
+import { computeRevenueByActor, resolveActorSlices } from '@/features/admin/utils/revenueByActor';
 import { Card, CardContent, CardHeader } from '@/shared/components/ui/Card';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
+import { ConfirmDialog } from '@/shared/components/ui/ConfirmDialog';
 import { Input } from '@/shared/components/ui/Input';
+import { Label } from '@/shared/components/ui/Label';
 import { Tabs } from '@/shared/components/ui/Tabs';
 import { PageLoader } from '@/shared/components/PageLoader';
 import { PageError } from '@/shared/components/PageError';
@@ -76,6 +82,68 @@ function SummaryTile({ icon: Icon, label, value }) {
   );
 }
 
+/** Records an *additional* payment on an already-created medicine
+ * bill — the "top up toward what's still Pending" action for a
+ * patient returning to pay off a balance, now that the bill's first
+ * payment is normally already folded into Finalize & Print at the
+ * Pharmacy counter (see MedicineBillingWorkspace.jsx's docstring).
+ * Admin Overview's Medicine Bills tab is the one screen that already
+ * lists every bill regardless of day-of-creation or visit link, so
+ * this lives here rather than in the Pharmacy workspace, which is
+ * only ever the point of a *new* sale. Reuses the existing
+ * ConfirmDialog primitive rather than a one-off modal. */
+function RecordBillPaymentDialog({ bill, onClose }) {
+  const recordPayment = useRecordMedicineBillPayment();
+  const printBill = usePrintMedicineBill();
+  const [error, setError] = useState(null);
+  const pending = Number(bill.total_amount) - Number(bill.amount_paid);
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm({
+    resolver: zodResolver(recordMedicineBillPaymentSchema),
+    defaultValues: { amount: '' },
+  });
+
+  async function onSubmit(values) {
+    setError(null);
+    try {
+      await recordPayment.mutateAsync({ billId: bill.id, amount: values.amount });
+      await printBill.mutateAsync(bill.id);
+      onClose();
+    } catch (submitError) {
+      setError(submitError.message || 'Unable to record payment.');
+    }
+  }
+
+  return (
+    <ConfirmDialog
+      open
+      title={`Record Payment — Bill ${bill.id.slice(0, 8)}`}
+      confirmLabel={isSubmitting ? 'Recording…' : 'Record Payment & Print'}
+      cancelLabel="Cancel"
+      onCancel={onClose}
+      onConfirm={handleSubmit(onSubmit)}
+      description={
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-muted-foreground">
+            An additional payment toward this bill's remaining balance — not the bill's original
+            payment. Total {formatPkr(bill.total_amount)} · Received {formatPkr(bill.amount_paid)}{' '}
+            · Pending {formatPkr(pending)}.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="admin-bill-payment-amount">Amount (Rs.)</Label>
+            <Input id="admin-bill-payment-amount" type="number" step="0.01" {...register('amount')} />
+            {errors.amount ? <p className="text-xs text-destructive">{errors.amount.message}</p> : null}
+          </div>
+          {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        </div>
+      }
+    />
+  );
+}
+
 /** The Medicine Bills tab — mirrors the Visits tab's own day-scoped,
  * read-only shape (same `selectedDate`, same "view/reprint" action
  * pattern as Billing's own `usePrintInvoice`), but reads `GET
@@ -89,12 +157,16 @@ function MedicineBillsPanel({ selectedDate }) {
   const usersById = useUsersForMedicineBills(bills);
   const printBill = usePrintMedicineBill();
   const [printError, setPrintError] = useState(null);
+  const [payingBill, setPayingBill] = useState(null);
 
   const totalRevenue = useMemo(
     () => (bills ?? []).reduce((sum, bill) => sum + Number(bill.total_amount), 0),
     [bills],
   );
-  const shiftRevenue = useMemo(() => computeShiftRevenueBreakdown(bills, 'total_amount'), [bills]);
+  const revenueByActor = useMemo(
+    () => resolveActorSlices(computeRevenueByActor(bills, 'total_amount'), usersById),
+    [bills, usersById],
+  );
 
   async function handlePrint(billId) {
     setPrintError(null);
@@ -120,8 +192,8 @@ function MedicineBillsPanel({ selectedDate }) {
       </div>
 
       <div>
-        <p className="mb-2 text-xs font-medium text-muted-foreground">Revenue by Shift</p>
-        <ShiftRevenuePieChart data={shiftRevenue} />
+        <p className="mb-2 text-xs font-medium text-muted-foreground">Revenue by Receptionist</p>
+        <RevenueByActorPieChart data={revenueByActor} />
       </div>
 
       {rows.length === 0 ? (
@@ -152,7 +224,14 @@ function MedicineBillsPanel({ selectedDate }) {
                     {formatDisplayTime(bill.created_at)}
                   </TableCell>
                   <TableCell className="max-w-[160px] truncate font-medium text-foreground">
-                    {bill.visit_id ? (patient?.full_name ?? '…') : 'Walk-in'}
+                    {/* Same three-way fallback the print slip's own
+                        patient/visit reference block uses (see
+                        app/modules/pharmacy/router.py's `print_bill`):
+                        a linked visit's real Patient, else the
+                        manually-typed name, else a plain walk-in. */}
+                    {bill.visit_id
+                      ? (patient?.full_name ?? '…')
+                      : (bill.manual_patient_name ?? 'Walk-in')}
                   </TableCell>
                   <TableCell className="max-w-[140px] truncate">
                     {bill.created_by ? billedBy?.full_name || '…' : '—'}
@@ -176,15 +255,23 @@ function MedicineBillsPanel({ selectedDate }) {
                     </Badge>
                   </TableCell>
                   <TableCell>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handlePrint(bill.id)}
-                      disabled={printBill.isPending}
-                    >
-                      <Printer className="h-4 w-4" />
-                      Reprint
-                    </Button>
+                    <div className="flex gap-2">
+                      {bill.status !== 'paid' ? (
+                        <Button size="sm" variant="outline" onClick={() => setPayingBill(bill)}>
+                          <Wallet className="h-4 w-4" />
+                          Record Payment
+                        </Button>
+                      ) : null}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handlePrint(bill.id)}
+                        disabled={printBill.isPending}
+                      >
+                        <Printer className="h-4 w-4" />
+                        Reprint
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               );
@@ -193,6 +280,9 @@ function MedicineBillsPanel({ selectedDate }) {
         </Table>
       )}
       {printError ? <p className="text-sm text-destructive">{printError}</p> : null}
+      {payingBill ? (
+        <RecordBillPaymentDialog bill={payingBill} onClose={() => setPayingBill(null)} />
+      ) : null}
     </div>
   );
 }
@@ -212,7 +302,10 @@ export function AdminOverview() {
     () => visits.reduce((sum, visit) => sum + Number(visit.amount), 0),
     [visits],
   );
-  const shiftRevenue = useMemo(() => computeShiftRevenueBreakdown(visits, 'amount'), [visits]);
+  const revenueByActor = useMemo(
+    () => resolveActorSlices(computeRevenueByActor(visits, 'amount'), receptionistsById),
+    [visits, receptionistsById],
+  );
 
   const statusCounts = useMemo(() => {
     const counts = {};
@@ -273,8 +366,10 @@ export function AdminOverview() {
               </div>
 
               <div>
-                <p className="mb-2 text-xs font-medium text-muted-foreground">Revenue by Shift</p>
-                <ShiftRevenuePieChart data={shiftRevenue} />
+                <p className="mb-2 text-xs font-medium text-muted-foreground">
+                  Revenue by Receptionist
+                </p>
+                <RevenueByActorPieChart data={revenueByActor} />
               </div>
 
               {Object.keys(statusCounts).length > 0 ? (

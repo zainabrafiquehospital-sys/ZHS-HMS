@@ -96,26 +96,14 @@ const _hourFormatter = new Intl.DateTimeFormat('en-US', {
 // hours (24h clock, DISPLAY_TIMEZONE): adjust here if the hospital's
 // actual shift changeover times differ. `night` is the one shift that
 // spans across midnight (22:00 on one calendar day to 06:00 on the
-// next) — see `getCurrentShiftWindow` below for why that needs real
-// start/end instants, not just an hour-of-day, to handle correctly.
+// next) — see `_shiftForHour` below for how a wrapping range is
+// matched.
 export const SHIFT_ORDER = ['morning', 'evening', 'night'];
 const _SHIFT_BOUNDARIES = {
   morning: { startHour: 6, endHour: 14 },
   evening: { startHour: 14, endHour: 22 },
   night: { startHour: 22, endHour: 6 }, // wraps past midnight
 };
-
-// DISPLAY_TIMEZONE is a fixed UTC+5 offset (Asia/Karachi, no DST) — see
-// formatDisplayDate's docstring for the identical assumption. That
-// fixed offset is what makes "DISPLAY_TIMEZONE hour H on calendar day
-// D" convertible to a real UTC instant by plain hour arithmetic, no
-// timezone-database lookup needed.
-const _DISPLAY_TIMEZONE_UTC_OFFSET_HOURS = 5;
-
-function _displayTimeToUtcInstant(dayKey, hour) {
-  const [year, month, day] = dayKey.split('-').map(Number);
-  return new Date(Date.UTC(year, month - 1, day, hour - _DISPLAY_TIMEZONE_UTC_OFFSET_HOURS, 0, 0));
-}
 
 function _shiftForHour(hour) {
   return SHIFT_ORDER.find((shift) => {
@@ -128,10 +116,8 @@ function _shiftForHour(hour) {
 
 /** Which shift `isoTimestamp` (or "now", if omitted) falls into, in
  * DISPLAY_TIMEZONE — classifies a single moment by its own hour, with
- * no notion of which continuous shift-instance it belongs to (see
- * `getCurrentShiftWindow` for that). Used to bucket a list of
- * already-fetched records (e.g. a day's visits or medicine bills) by
- * shift for a revenue breakdown. */
+ * no notion of which continuous shift-instance it belongs to. Used by
+ * `getCurrentShift` below. */
 export function getShiftForTimestamp(isoTimestamp) {
   const hour = Number(_hourFormatter.format(isoTimestamp ? new Date(isoTimestamp) : new Date()));
   return _shiftForHour(hour);
@@ -144,53 +130,6 @@ export function getShiftForTimestamp(isoTimestamp) {
  * account's own stored `shift` field. */
 export function getCurrentShift() {
   return getShiftForTimestamp();
-}
-
-/** The currently-active shift's real start/end instants (`Date`
- * objects), not just which shift it is — safe to compare directly
- * against any `created_at` timestamp. This is what makes "show me
- * everything created during my current shift" correct across a
- * midnight rollover: a plain calendar-day filter
- * (`displayDayKey(x) === todayDisplayDayKey()`) silently drops
- * anything created before midnight the moment the day rolls over,
- * even though that receptionist's shift (Night, 22:00->06:00) is
- * still ongoing. Correctly resolves which calendar day the window's
- * start/end actually fall on, whichever half of a wrapping shift
- * "now" happens to be in.
- *
- * Relies on DISPLAY_TIMEZONE (Asia/Karachi) being a fixed UTC+5 offset
- * with no DST — the same assumption `formatDisplayDate`'s docstring
- * already documents and relies on. */
-export function getCurrentShiftWindow(now = new Date()) {
-  const hour = Number(_hourFormatter.format(now));
-  const todayKey = _dayKeyFormatter.format(now);
-  const shift = _shiftForHour(hour);
-  const { startHour, endHour } = _SHIFT_BOUNDARIES[shift];
-  const wraps = startHour > endHour;
-  // For a wrapping shift, "now" is either in its late half (started
-  // today, ends tomorrow — e.g. 23:00 within Night's 22:00->06:00) or
-  // its early/post-midnight half (started yesterday, ends today — e.g.
-  // 02:00 within that same window).
-  const startedYesterday = wraps && hour < endHour;
-  const startDayKey = startedYesterday ? shiftDisplayDayKey(todayKey, -1) : todayKey;
-  const endDayKey = wraps ? shiftDisplayDayKey(startDayKey, 1) : startDayKey;
-  return {
-    shift,
-    startsAt: _displayTimeToUtcInstant(startDayKey, startHour),
-    endsAt: _displayTimeToUtcInstant(endDayKey, endHour),
-  };
-}
-
-/** Whether `isoTimestamp` falls within the currently-active shift's
- * window — the cross-midnight-safe replacement for a calendar-day
- * filter (`displayDayKey(x) === todayDisplayDayKey()`), used by
- * anything that must show "everything created during the current
- * shift" (e.g. Reception's Today's Registrations) rather than
- * "everything created on today's calendar date". */
-export function isWithinCurrentShiftWindow(isoTimestamp, now = new Date()) {
-  const { startsAt, endsAt } = getCurrentShiftWindow(now);
-  const moment = new Date(isoTimestamp);
-  return moment >= startsAt && moment < endsAt;
 }
 
 /** "Friday, August 7, 2026"-style label for a `displayDayKey` — safe
