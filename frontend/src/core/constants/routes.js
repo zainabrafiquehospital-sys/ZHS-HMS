@@ -20,4 +20,6 @@ export const ROUTES = {
   ADMIN: '/admin',
   PHARMACY: '/pharmacy',
   ADMIN_MEDICINES: '/admin/medicines',
+  ADMIN_PATIENTS: '/admin/patients',
+  ADMIN_EMPLOYEES: '/admin/employees',
 };

@@ -31,4 +31,24 @@ export const patientsService = {
   getById(patientId) {
     return httpClient.get(`/patients/${patientId}`);
   },
+
+  // The Admin Patient Directory's full, real server-side paginated/
+  // sortable/searchable listing — deliberately distinct from `search`
+  // above (a name-lookup autocomplete, always page_size=20/sorted by
+  // name) and from any "fetch N recent + filter client-side" pattern:
+  // every page/sort/search param is passed straight through to
+  // `GET /patients`'s own real pagination (see backend/app/modules/
+  // patients/router.py's `list_patients`), so this scales correctly
+  // regardless of how many patients exist.
+  list({ page = 1, pageSize = 20, search, sortBy = 'created_at', sortOrder = 'desc' } = {}) {
+    return httpClient.get('/patients', {
+      params: {
+        page,
+        page_size: pageSize,
+        search: search || undefined,
+        sort_by: sortBy,
+        sort_order: sortOrder,
+      },
+    });
+  },
 };

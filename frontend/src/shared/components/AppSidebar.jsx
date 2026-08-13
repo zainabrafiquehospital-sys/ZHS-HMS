@@ -12,6 +12,8 @@ import {
   ShieldCheck,
   Pill,
   PackageSearch,
+  BookUser,
+  Users,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { ROUTES } from '@/core/constants/routes';
@@ -50,6 +52,24 @@ const NAV_ITEMS = [
     label: 'Medicines',
     icon: PackageSearch,
     permission: 'pharmacy:manage',
+  },
+  // Same "own top-level entry, permission-gated only" shape as Medicines
+  // above — Patient Directory and Employee Accounts & Stats are both
+  // Admin sub-screens, not landing modules (see access.js's
+  // MODULE_ACCESS, which deliberately omits all three for the same
+  // reason), gated on the same read permission their own route's
+  // layout.jsx already enforces server-side.
+  {
+    href: ROUTES.ADMIN_PATIENTS,
+    label: 'Patient Directory',
+    icon: BookUser,
+    permission: 'patients:read',
+  },
+  {
+    href: ROUTES.ADMIN_EMPLOYEES,
+    label: 'Employee Accounts',
+    icon: Users,
+    permission: 'users:read',
   },
 ];
 
