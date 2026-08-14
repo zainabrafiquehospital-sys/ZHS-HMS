@@ -10,6 +10,7 @@ what makes "no module may write a Visit status that isn't a valid
 transition from its current status" (§4.1) an enforced invariant instead
 of a convention every caller has to remember on its own."""
 
+from datetime import date as date_type
 from decimal import Decimal
 from uuid import UUID
 
@@ -136,16 +137,19 @@ class VisitService:
         """Read-only aggregate added for the Dashboard module (§22)."""
         return await self._visit_repo.count_by_status()
 
-    async def count_by_creator(self) -> dict[UUID, int]:
-        """Read-only aggregate added for the Admin "Employee Accounts &
-        Stats" page — see VisitRepository.count_by_creator."""
-        return await self._visit_repo.count_by_creator()
+    async def count_and_revenue_by_creator(self) -> dict[UUID, tuple[int, Decimal]]:
+        """Read-only aggregate for the Admin "Employee Accounts & Stats"
+        page and Reception's own "My Revenue"/"My Slips" tiles — see
+        VisitRepository.count_and_revenue_by_creator."""
+        return await self._visit_repo.count_and_revenue_by_creator()
 
     async def list_visits(
         self,
         *,
         patient_id: UUID | None,
         doctor_user_id: UUID | None,
+        created_by: UUID | None = None,
+        date: date_type | None = None,
         unassigned_only: bool = False,
         status: VisitStatus | None,
         sort_by: str,
@@ -157,6 +161,8 @@ class VisitService:
         return await self._visit_repo.search(
             patient_id=patient_id,
             doctor_user_id=doctor_user_id,
+            created_by=created_by,
+            date=date,
             unassigned_only=unassigned_only,
             status=status,
             sort_column=sort_column,

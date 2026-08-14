@@ -2,6 +2,8 @@
 app/modules/patients/repository.py's identical module docstring for the
 "persistence only, no policy" rationale."""
 
+from datetime import UTC, date as date_type, datetime, timedelta
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import Sequence, func, select, update
@@ -40,6 +42,8 @@ class VisitRepository(BaseRepository[Visit]):
         *,
         patient_id: UUID | None,
         doctor_user_id: UUID | None,
+        created_by: UUID | None = None,
+        date: date_type | None = None,
         unassigned_only: bool = False,
         status: VisitStatus | None,
         sort_column: InstrumentedAttribute,
@@ -57,7 +61,25 @@ class VisitRepository(BaseRepository[Visit]):
         (fast-registration visits Reception couldn't auto-assign — see
         models.py's `doctor_user_id` docstring) — mutually exclusive
         with `doctor_user_id` in practice, but not enforced here; the
-        caller (VisitService) owns that policy."""
+        caller (VisitService) owns that policy.
+
+        `created_by` is a real, unbounded server-side filter — added so
+        "every visit this specific user has ever registered" (Reception's
+        own "My Registrations" list) never depends on a client-side
+        "fetch N most recent + filter" approximation that could silently
+        drop older rows once hospital-wide volume grows past whatever N
+        was chosen (see this codebase's own prior documented follow-up
+        on that exact gap).
+
+        `date` filters to one UTC calendar day (`[date 00:00, date+1
+        00:00) UTC`) — the same interpretation
+        `MedicineBillRepository.list_for_day` already uses for Pharmacy,
+        not the caller's DISPLAY_TIMEZONE calendar day (see that
+        method's docstring for the identical caveat: a Visit created in
+        the first/last few hours of a Karachi calendar day can appear
+        under the adjacent UTC date near midnight). Added so the Admin
+        Overview day-view is a real, always-accurate server-side query
+        instead of the same "fetch N most recent + filter" shortcut."""
         conditions = [Visit.deleted_at.is_(None)]
         if patient_id is not None:
             conditions.append(Visit.patient_id == patient_id)
@@ -65,6 +87,13 @@ class VisitRepository(BaseRepository[Visit]):
             conditions.append(Visit.doctor_user_id.is_(None))
         elif doctor_user_id is not None:
             conditions.append(Visit.doctor_user_id == doctor_user_id)
+        if created_by is not None:
+            conditions.append(Visit.created_by == created_by)
+        if date is not None:
+            start_of_day = datetime(date.year, date.month, date.day, tzinfo=UTC)
+            end_of_day = start_of_day + timedelta(days=1)
+            conditions.append(Visit.created_at >= start_of_day)
+            conditions.append(Visit.created_at < end_of_day)
         if status is not None:
             conditions.append(Visit.status == status)
 
@@ -111,19 +140,24 @@ class VisitRepository(BaseRepository[Visit]):
         result = await self.session.execute(stmt)
         return dict(result.all())
 
-    async def count_by_creator(self) -> dict[UUID, int]:
+    async def count_and_revenue_by_creator(self) -> dict[UUID, tuple[int, Decimal]]:
         """Backs the Admin "Employee Accounts & Stats" page's per-
-        receptionist "visits registered" figure — one `GROUP BY` query
-        for every creator's count across all Visits, the same N+1-
-        avoidance shape as `count_by_status` above. Visits with a NULL
-        `created_by` (none in practice — VisitService.register_visit
-        always stamps it — but never assumed) are excluded by the
-        `is_not(None)` filter rather than surfacing as a spurious
-        `{None: n}` entry the caller would have to special-case."""
+        receptionist "visits registered" figure AND Reception's own "My
+        Revenue"/"My Slips" tiles (a receptionist's own row, looked up
+        by their own user id, out of this same all-users result) — one
+        `GROUP BY` query for every creator's count and total `amount`
+        across all Visits, the same N+1-avoidance shape as
+        `count_by_status` above, and the same `(count, revenue)` shape
+        `MedicineBillRepository.count_and_revenue_by_creator` already
+        returns for medicine bills. Visits with a NULL `created_by`
+        (none in practice — VisitService.register_visit always stamps
+        it — but never assumed) are excluded by the `is_not(None)`
+        filter rather than surfacing as a spurious `{None: ...}` entry
+        the caller would have to special-case."""
         stmt = (
-            select(Visit.created_by, func.count())
+            select(Visit.created_by, func.count(), func.sum(Visit.amount))
             .where(Visit.deleted_at.is_(None), Visit.created_by.is_not(None))
             .group_by(Visit.created_by)
         )
         result = await self.session.execute(stmt)
-        return dict(result.all())
+        return {created_by: (count, revenue) for created_by, count, revenue in result.all()}

@@ -79,14 +79,19 @@ class VisitSummary(BaseModel):
 
 class VisitCreatorStatOut(BaseModel):
     """One row of `GET /visits/stats/by-creator`'s response — one user's
-    "visits registered" count. Not an ORM-backed schema (constructed
-    directly from `VisitRepository.count_by_creator`'s `{user_id: count}`
-    dict, not `from_attributes`) — same plain-aggregate shape convention
-    as dashboard/schemas.py's `DoctorDashboardOut`. Powers the Admin
-    "Employee Accounts & Stats" page's per-receptionist "visits
-    registered" column."""
+    "visits registered" count and total `amount` across every Visit they
+    created. Not an ORM-backed schema (constructed directly from
+    `VisitRepository.count_and_revenue_by_creator`'s `{user_id: (count,
+    revenue)}` dict, not `from_attributes`) — same plain-aggregate shape
+    convention as dashboard/schemas.py's `DoctorDashboardOut`, and the
+    same `(count, revenue)` pair `MedicineBillCreatorStatOut` already
+    carries for medicine bills. Powers the Admin "Employee Accounts &
+    Stats" page's per-receptionist "visits registered" column AND
+    Reception's own "My Revenue"/"My Slips" tiles (that receptionist's
+    own row, looked up by their own user id)."""
 
     model_config = ConfigDict(strict=True)
 
     user_id: UUID
     count: int
+    revenue: Decimal
