@@ -23,7 +23,7 @@ import {
   TableRow,
 } from '@/shared/components/ui/Table';
 import { useDebouncedValue } from '@/shared/hooks/useDebouncedValue';
-import { formatDisplayTime } from '@/utils/timezone';
+import { displayDayKey, formatDisplayTime } from '@/utils/timezone';
 
 const DISPLAY_PAGE_SIZE = 10;
 // Every registration this receptionist has ever made, fetched in one
@@ -188,7 +188,7 @@ export function MyRegistrations() {
                   return (
                     <TableRow key={visit.id}>
                       <TableCell className="whitespace-nowrap">
-                        {formatDisplayTime(visit.created_at)}
+                        {displayDayKey(visit.created_at)} {formatDisplayTime(visit.created_at)}
                       </TableCell>
                       <TableCell className="whitespace-nowrap font-mono">
                         {visit.queue_token}
@@ -211,10 +211,6 @@ export function MyRegistrations() {
                       <TableCell className="whitespace-nowrap">
                         {patient?.phone_number || '—'}
                       </TableCell>
-                      <TableCell className="max-w-[140px] truncate">
-                        {patient?.guardian_name || '—'}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">{patient?.cnic || '—'}</TableCell>
                       <TableCell
                         className="max-w-[160px] truncate"
                         title={patient?.address || undefined}
