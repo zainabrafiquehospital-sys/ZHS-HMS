@@ -3,7 +3,8 @@
 import { useMemo, useState } from 'react';
 import { Printer, Receipt, Search, Users } from 'lucide-react';
 import {
-  useTodaysRegistrations,
+  useMyRegistrations,
+  useMyRevenueStats,
   usePatientsForVisits,
   usePrintRegistrationSlip,
 } from '@/features/reception/hooks/useReception';
@@ -22,9 +23,18 @@ import {
   TableRow,
 } from '@/shared/components/ui/Table';
 import { useDebouncedValue } from '@/shared/hooks/useDebouncedValue';
-import { formatDisplayTime, getCurrentShift } from '@/utils/timezone';
+import { formatDisplayTime } from '@/utils/timezone';
 
-const PAGE_SIZE = 10;
+const DISPLAY_PAGE_SIZE = 10;
+// Every registration this receptionist has ever made, fetched in one
+// generously-sized page — comfortably above any individual
+// receptionist's realistic lifetime volume today (the server-side
+// filter itself is unbounded — see visitsService.listForCreator — this
+// cap only bounds one screen's single fetch; `meta.total` reveals if it
+// is ever actually insufficient, unlike the old hospital-wide "100
+// recent" cap this replaces, which could silently miss a receptionist's
+// own older slips with no signal at all).
+const FETCH_PAGE_SIZE = 100;
 
 const currencyFormatter = new Intl.NumberFormat('en-US', {
   minimumFractionDigits: 2,
@@ -34,8 +44,6 @@ const currencyFormatter = new Intl.NumberFormat('en-US', {
 function formatPkr(amount) {
   return `PKR ${currencyFormatter.format(Number(amount))}`;
 }
-
-const SHIFT_LABEL = { morning: 'Morning', evening: 'Evening', night: 'Night' };
 
 function matchesSearch(patient, term) {
   if (!term) return true;
@@ -60,8 +68,18 @@ function SummaryTile({ icon: Icon, label, value }) {
   );
 }
 
-export function TodaysRegistrations() {
-  const { visits, shiftVisits, isLoading, isError, error, refetch } = useTodaysRegistrations();
+/** Every visit this receptionist has ever registered — no date or
+ * shift restriction, only creator (see useMyRegistrations). "My
+ * Revenue"/"My Slips" are this receptionist's real all-time totals
+ * (useMyRevenueStats, a server-side aggregate — never a sum of
+ * whatever page happens to be fetched), always accurate regardless of
+ * how the list below is paginated for display. */
+export function MyRegistrations() {
+  const { visits, isLoading, isError, error, refetch } = useMyRegistrations({
+    page: 1,
+    pageSize: FETCH_PAGE_SIZE,
+  });
+  const revenueStats = useMyRevenueStats();
   const patientsById = usePatientsForVisits(visits);
   const printSlip = usePrintRegistrationSlip();
 
@@ -72,30 +90,17 @@ export function TodaysRegistrations() {
 
   const debouncedSearch = useDebouncedValue(searchTerm, 200);
 
-  const totalRevenue = useMemo(
-    () => visits.reduce((sum, visit) => sum + Number(visit.amount), 0),
-    [visits],
-  );
-
-  // Derived live at render time from `getCurrentShift()` — never a
-  // stored value — so this label (and the tiles below it) naturally
-  // reflect the new shift the moment one changes, no explicit "reset"
-  // needed. See useReception.js's `useTodaysRegistrations` docstring
-  // for why `shiftVisits` is safe to sum here without a second fetch.
-  const currentShiftLabel = SHIFT_LABEL[getCurrentShift()];
-  const totalShiftRevenue = useMemo(
-    () => shiftVisits.reduce((sum, visit) => sum + Number(visit.amount), 0),
-    [shiftVisits],
-  );
-
   const filteredVisits = useMemo(() => {
     if (!debouncedSearch) return visits;
     return visits.filter((visit) => matchesSearch(patientsById[visit.patient_id], debouncedSearch));
   }, [visits, patientsById, debouncedSearch]);
 
-  const pageCount = Math.max(1, Math.ceil(filteredVisits.length / PAGE_SIZE));
+  const pageCount = Math.max(1, Math.ceil(filteredVisits.length / DISPLAY_PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
-  const pagedVisits = filteredVisits.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  const pagedVisits = filteredVisits.slice(
+    (currentPage - 1) * DISPLAY_PAGE_SIZE,
+    currentPage * DISPLAY_PAGE_SIZE,
+  );
 
   function handleSearchChange(value) {
     setSearchTerm(value);
@@ -115,32 +120,20 @@ export function TodaysRegistrations() {
     }
   }
 
-  if (isLoading) return <PageLoader label="Loading today's registrations" />;
+  if (isLoading) return <PageLoader label="Loading your registrations" />;
   if (isError) {
-    return (
-      <PageError error={error} reset={refetch} message="Couldn't load today's registrations." />
-    );
+    return <PageError error={error} reset={refetch} message="Couldn't load your registrations." />;
   }
 
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between gap-2">
-        <CardTitle>My Registrations Today</CardTitle>
+        <CardTitle>My Registrations</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <SummaryTile icon={Receipt} label="My Revenue Today" value={formatPkr(totalRevenue)} />
-          <SummaryTile icon={Users} label="My Slips Today" value={visits.length} />
-          <SummaryTile
-            icon={Receipt}
-            label={`My Shift Revenue (${currentShiftLabel})`}
-            value={formatPkr(totalShiftRevenue)}
-          />
-          <SummaryTile
-            icon={Users}
-            label={`My Shift Slips (${currentShiftLabel})`}
-            value={shiftVisits.length}
-          />
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <SummaryTile icon={Receipt} label="My Revenue" value={formatPkr(revenueStats.revenue)} />
+          <SummaryTile icon={Users} label="My Slips" value={revenueStats.count} />
         </div>
 
         <div className="relative sm:max-w-xs">
@@ -161,8 +154,7 @@ export function TodaysRegistrations() {
 
         {visits.length === 0 ? (
           <p className="py-10 text-center text-sm text-muted-foreground">
-            No visits registered by you yet today — new registrations will appear here
-            immediately.
+            No visits registered by you yet — new registrations will appear here immediately.
           </p>
         ) : filteredVisits.length === 0 ? (
           <p className="py-10 text-center text-sm text-muted-foreground">

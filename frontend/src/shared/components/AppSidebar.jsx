@@ -37,6 +37,20 @@ const NAV_ITEMS = [
   { href: ROUTES.VITALS, label: 'Vitals', icon: HeartPulse, permission: 'vitals:read' },
   { href: ROUTES.BILLING, label: 'Billing', icon: Receipt, permission: 'billing:read' },
   { href: ROUTES.PHARMACY, label: 'Pharmacy', icon: Pill, permission: 'pharmacy:bill' },
+  // A genuinely shared screen, not an Admin sub-screen — gated purely on
+  // `patients:read`, which both Admin (full catalog) and Receptionist
+  // (granted directly — see scripts/seed_launch_bootstrap.py's
+  // RECEPTIONIST_PERMISSION_CODES) hold. Its route lives at the
+  // top-level /patients, not nested under /admin, specifically so
+  // Admin's own stricter `users:read` parent gate never blocks a
+  // Receptionist from reaching it (see app/(dashboard)/patients/
+  // layout.jsx's docstring).
+  {
+    href: ROUTES.PATIENTS,
+    label: 'Patient Directory',
+    icon: BookUser,
+    permission: 'patients:read',
+  },
   // Gated on users:read, not a module-specific permission — see
   // core/constants/access.js's identical MODULE_ACCESS entry for why
   // that code specifically (only the admin role holds it).
@@ -54,17 +68,10 @@ const NAV_ITEMS = [
     permission: 'pharmacy:manage',
   },
   // Same "own top-level entry, permission-gated only" shape as Medicines
-  // above — Patient Directory and Employee Accounts & Stats are both
-  // Admin sub-screens, not landing modules (see access.js's
-  // MODULE_ACCESS, which deliberately omits all three for the same
-  // reason), gated on the same read permission their own route's
-  // layout.jsx already enforces server-side.
-  {
-    href: ROUTES.ADMIN_PATIENTS,
-    label: 'Patient Directory',
-    icon: BookUser,
-    permission: 'patients:read',
-  },
+  // above — an Admin sub-screen, not a landing module (see access.js's
+  // MODULE_ACCESS, which deliberately omits it for the same reason),
+  // gated on the same read permission its own route's layout.jsx
+  // already enforces server-side.
   {
     href: ROUTES.ADMIN_EMPLOYEES,
     label: 'Employee Accounts',

@@ -20,6 +20,10 @@ export const ROUTES = {
   ADMIN: '/admin',
   PHARMACY: '/pharmacy',
   ADMIN_MEDICINES: '/admin/medicines',
-  ADMIN_PATIENTS: '/admin/patients',
+  // A top-level route, not nested under /admin — shared by both Admin
+  // and Receptionist (both hold `patients:read`). See
+  // app/(dashboard)/patients/layout.jsx's own docstring for why it
+  // deliberately isn't under the Admin-only /admin/* tree.
+  PATIENTS: '/patients',
   ADMIN_EMPLOYEES: '/admin/employees',
 };

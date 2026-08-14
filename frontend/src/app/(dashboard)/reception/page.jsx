@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { RegisterVisitForm } from '@/features/reception/components/RegisterVisitForm';
 import { RegistrationSummary } from '@/features/reception/components/RegistrationSummary';
-import { TodaysRegistrations } from '@/features/reception/components/TodaysRegistrations';
+import { MyRegistrations } from '@/features/reception/components/MyRegistrations';
 import { ShiftBadge } from '@/shared/components/ShiftBadge';
 
 export default function ReceptionPage() {
@@ -28,7 +28,7 @@ export default function ReceptionPage() {
           <RegistrationSummary result={lastResult} />
         </div>
       </div>
-      <TodaysRegistrations />
+      <MyRegistrations />
     </div>
   );
 }

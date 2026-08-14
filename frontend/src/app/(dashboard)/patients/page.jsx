@@ -1,5 +1,5 @@
 import { PatientDirectory } from '@/features/admin/components/PatientDirectory';
 
-export default function AdminPatientsPage() {
+export default function PatientsPage() {
   return <PatientDirectory />;
 }

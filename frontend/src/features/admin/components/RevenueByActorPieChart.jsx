@@ -52,41 +52,13 @@ function _renderSliceLabel({ label, amount, percent }) {
  * display name/label but never an id). Direct slice labels + a legend
  * with exact PKR amounts + a hover tooltip, so identity and magnitude
  * are never color-alone (see the `dataviz` skill's accessibility
- * rules).
- *
- * Pie geometry (slice size/ranking) is always driven by `amount` alone
- * — unchanged from before. `data` entries MAY additionally carry a
- * `secondaryAmount` (see revenueByActor.js's
- * `computeRevenueByActorWithSecondary`/`resolveActorSlicesWithSecondary`
- * — the current-shift figure shown alongside the existing day/"Today"
- * one); when present, the legend and table rows show both figures
- * clearly labeled via `primaryLabel`/`secondaryLabel` (e.g. "Shift
- * (Night): PKR X · Today: PKR Y"), never just the bare amount. Callers
- * that don't pass `secondaryLabel` get the exact original single-figure
- * rendering — this is a purely additive, backward-compatible change. */
-export function RevenueByActorPieChart({ data, primaryLabel = 'Today', secondaryLabel }) {
+ * rules). */
+export function RevenueByActorPieChart({ data }) {
   const total = data.reduce((sum, entry) => sum + entry.amount, 0);
-  const showSecondary = Boolean(secondaryLabel);
-  // Pie geometry is driven by `amount` (primary) alone, so it's only
-  // ever shown when that total is positive — a fully zero-value Pie
-  // has no meaningful arcs to draw. But a receptionist can genuinely
-  // have zero primary (Today) revenue so far while already having real
-  // secondary (Shift) revenue (e.g. the first hour of a new calendar
-  // day, for a Night shift whose whole contribution is still the
-  // pre-midnight portion) — `hasSecondaryRevenue` keeps the "No revenue
-  // recorded" empty state from contradicting the table below it, which
-  // always shows the real numbers regardless.
   const hasRevenue = total > 0;
-  const hasSecondaryRevenue = showSecondary && data.some((entry) => entry.secondaryAmount > 0);
 
   function colorFor(entry, index) {
     return entry.isOther ? OTHER_COLOR : SLICE_COLOR[index];
-  }
-
-  function amountLabel(entry) {
-    return showSecondary
-      ? `${secondaryLabel}: ${formatPkr(entry.secondaryAmount)} · ${primaryLabel}: ${formatPkr(entry.amount)}`
-      : formatPkr(entry.amount);
   }
 
   return (
@@ -115,19 +87,17 @@ export function RevenueByActorPieChart({ data, primaryLabel = 'Today', secondary
                 <Cell key={entry.actorId} fill={colorFor(entry, index)} />
               ))}
             </Pie>
-            <Tooltip
-              formatter={(value) => [formatPkr(value), showSecondary ? primaryLabel : 'Revenue']}
-            />
+            <Tooltip formatter={(value) => formatPkr(value)} />
             <Legend
               formatter={(_value, entry) => (
                 <span className="text-sm text-foreground">
-                  {entry.payload.label} — {amountLabel(entry.payload)}
+                  {entry.payload.label} — {formatPkr(entry.payload.amount)}
                 </span>
               )}
             />
           </PieChart>
         </ResponsiveContainer>
-      ) : hasSecondaryRevenue ? null : (
+      ) : (
         <p className="py-16 text-center text-sm text-muted-foreground">
           No revenue recorded for this day yet.
         </p>
@@ -150,7 +120,7 @@ export function RevenueByActorPieChart({ data, primaryLabel = 'Today', secondary
                 {entry.label}
               </td>
               <td className="py-1.5 text-right font-medium tabular-nums text-foreground">
-                {amountLabel(entry)}
+                {formatPkr(entry.amount)}
               </td>
             </tr>
           ))}

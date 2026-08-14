@@ -5,13 +5,11 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { ClipboardList, Pill, Printer, Receipt, Search, Wallet } from 'lucide-react';
 import {
-  useAdminVisitsForCurrentShift,
   useAdminVisitsForDay,
   usePatientsForVisits,
   useReceptionistsForVisits,
 } from '@/features/admin/hooks/useAdminOverview';
 import {
-  useMedicineBillsForCurrentShift,
   useMedicineBillsForDay,
   usePrintMedicineBill,
   useRecordMedicineBillPayment,
@@ -23,12 +21,7 @@ import { PendingApprovals } from '@/features/admin/components/PendingApprovals';
 import { DateNavigator } from '@/features/admin/components/DateNavigator';
 import { LeadsSection } from '@/features/admin/components/LeadsSection';
 import { RevenueByActorPieChart } from '@/features/admin/components/RevenueByActorPieChart';
-import {
-  computeRevenueByActor,
-  computeRevenueByActorWithSecondary,
-  resolveActorSlices,
-  resolveActorSlicesWithSecondary,
-} from '@/features/admin/utils/revenueByActor';
+import { computeRevenueByActor, resolveActorSlices } from '@/features/admin/utils/revenueByActor';
 import { Card, CardContent, CardHeader } from '@/shared/components/ui/Card';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
@@ -47,29 +40,13 @@ import {
   TableRow,
 } from '@/shared/components/ui/Table';
 import { useDebouncedValue } from '@/shared/hooks/useDebouncedValue';
-import {
-  formatDisplayDate,
-  formatDisplayTime,
-  getCurrentShift,
-  todayDisplayDayKey,
-} from '@/utils/timezone';
+import { formatDisplayDate, formatDisplayTime, todayDisplayDayKey } from '@/utils/timezone';
 import { VISIT_STATUS_BADGE_VARIANT } from '@/shared/constants/visitStatus';
 
 const OVERVIEW_TABS = [
   { value: 'visits', label: 'Visits' },
   { value: 'medicine_bills', label: 'Medicine Bills' },
 ];
-
-const SHIFT_LABEL = { morning: 'Morning', evening: 'Evening', night: 'Night' };
-
-// "Current shift" is a real-time concept — it only makes sense to show
-// alongside a day-picker's selection when that selection IS today
-// (there is no "currently active shift" for a historical day). Any
-// other selected day keeps the exact original single-figure
-// (Today/day-only) rendering, completely unchanged.
-function currentShiftSecondaryLabel(selectedDate) {
-  return selectedDate === todayDisplayDayKey() ? `Shift (${SHIFT_LABEL[getCurrentShift()]})` : null;
-}
 
 const PAGE_SIZE = 15;
 
@@ -174,16 +151,10 @@ function RecordBillPaymentDialog({ bill, onClose }) {
  * (see app/modules/pharmacy/router.py's `list_bills_for_day`) — a
  * medicine bill is its own entity, not a Visit. */
 function MedicineBillsPanel({ selectedDate }) {
-  const isToday = selectedDate === todayDisplayDayKey();
   const { data: bills, isLoading, isError, error, refetch } = useMedicineBillsForDay(selectedDate);
-  const { bills: shiftBills } = useMedicineBillsForCurrentShift({ enabled: isToday });
   const visitsById = useVisitsForMedicineBills(bills);
   const patientsById = usePatientsForVisits(Object.values(visitsById).filter(Boolean));
-  // Union of the day's own bills and the current-shift's bills — a
-  // receptionist whose only contribution so far is a Night shift's
-  // pre-midnight portion (still "yesterday" by calendar day, so absent
-  // from `bills`) still needs their name resolved for the Shift figure.
-  const usersById = useUsersForMedicineBills(isToday ? [...(bills ?? []), ...shiftBills] : bills);
+  const usersById = useUsersForMedicineBills(bills);
   const printBill = usePrintMedicineBill();
   const [printError, setPrintError] = useState(null);
   const [payingBill, setPayingBill] = useState(null);
@@ -192,21 +163,10 @@ function MedicineBillsPanel({ selectedDate }) {
     () => (bills ?? []).reduce((sum, bill) => sum + Number(bill.total_amount), 0),
     [bills],
   );
-  const secondaryLabel = currentShiftSecondaryLabel(selectedDate);
-  const revenueByActor = useMemo(() => {
-    if (!isToday) {
-      return resolveActorSlices(computeRevenueByActor(bills, 'total_amount'), usersById);
-    }
-    return resolveActorSlicesWithSecondary(
-      computeRevenueByActorWithSecondary({
-        primaryRecords: bills,
-        primaryAmountKey: 'total_amount',
-        secondaryRecords: shiftBills,
-        secondaryAmountKey: 'total_amount',
-      }),
-      usersById,
-    );
-  }, [bills, shiftBills, usersById, isToday]);
+  const revenueByActor = useMemo(
+    () => resolveActorSlices(computeRevenueByActor(bills, 'total_amount'), usersById),
+    [bills, usersById],
+  );
 
   async function handlePrint(billId) {
     setPrintError(null);
@@ -233,7 +193,7 @@ function MedicineBillsPanel({ selectedDate }) {
 
       <div>
         <p className="mb-2 text-xs font-medium text-muted-foreground">Revenue by Receptionist</p>
-        <RevenueByActorPieChart data={revenueByActor} secondaryLabel={secondaryLabel} />
+        <RevenueByActorPieChart data={revenueByActor} />
       </div>
 
       {rows.length === 0 ? (
@@ -333,45 +293,19 @@ export function AdminOverview() {
   const [page, setPage] = useState(1);
   const [activeTab, setActiveTab] = useState('visits');
 
-  const isToday = selectedDate === todayDisplayDayKey();
   const { visits, isLoading, isError, error, refetch } = useAdminVisitsForDay(selectedDate);
-  // Patient names for the visits table + search filter below — always
-  // resolved against `visits` (the day-scoped set actually rendered in
-  // the table), never the shift-extended union: unlike receptionistsById
-  // below, patient names are never shown in the Shift-only figures.
   const patientsById = usePatientsForVisits(visits);
-  // Reuses the exact same underlying ['visits','admin','recent'] query
-  // as useAdminVisitsForDay above (see useAdminVisitsForCurrentShift's
-  // docstring) — free to always call, no extra fetch.
-  const { visits: shiftVisits } = useAdminVisitsForCurrentShift();
-  // Union of the day's own visits and the current-shift's visits — a
-  // receptionist whose only contribution so far is a Night shift's
-  // pre-midnight portion (still "yesterday" by calendar day, so absent
-  // from `visits`) still needs their name resolved for the Shift figure.
-  const receptionistsById = useReceptionistsForVisits(
-    isToday ? [...visits, ...shiftVisits] : visits,
-  );
+  const receptionistsById = useReceptionistsForVisits(visits);
   const debouncedSearch = useDebouncedValue(searchTerm, 200);
 
   const totalRevenue = useMemo(
     () => visits.reduce((sum, visit) => sum + Number(visit.amount), 0),
     [visits],
   );
-  const shiftSecondaryLabel = currentShiftSecondaryLabel(selectedDate);
-  const revenueByActor = useMemo(() => {
-    if (!isToday) {
-      return resolveActorSlices(computeRevenueByActor(visits, 'amount'), receptionistsById);
-    }
-    return resolveActorSlicesWithSecondary(
-      computeRevenueByActorWithSecondary({
-        primaryRecords: visits,
-        primaryAmountKey: 'amount',
-        secondaryRecords: shiftVisits,
-        secondaryAmountKey: 'amount',
-      }),
-      receptionistsById,
-    );
-  }, [visits, shiftVisits, receptionistsById, isToday]);
+  const revenueByActor = useMemo(
+    () => resolveActorSlices(computeRevenueByActor(visits, 'amount'), receptionistsById),
+    [visits, receptionistsById],
+  );
 
   const statusCounts = useMemo(() => {
     const counts = {};
@@ -435,7 +369,7 @@ export function AdminOverview() {
                 <p className="mb-2 text-xs font-medium text-muted-foreground">
                   Revenue by Receptionist
                 </p>
-                <RevenueByActorPieChart data={revenueByActor} secondaryLabel={shiftSecondaryLabel} />
+                <RevenueByActorPieChart data={revenueByActor} />
               </div>
 
               {Object.keys(statusCounts).length > 0 ? (

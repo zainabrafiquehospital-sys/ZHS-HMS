@@ -93,7 +93,7 @@ export function EmployeeAccounts() {
   // every OTHER status by default (pending/locked/etc. — the original
   // "every user account" requirement), so this is a client-side filter
   // of the already-fetched page, the same "search filter" shape
-  // TodaysRegistrations/AdminOverview already client-filter a fetched
+  // MyRegistrations/AdminOverview already client-filter a fetched
   // page by — never a separate unpaginated fetch. Pagination math still
   // reflects the server's real counts across all statuses; hiding a few
   // inactive rows from an already-tiny (20-ish) employee table is a
