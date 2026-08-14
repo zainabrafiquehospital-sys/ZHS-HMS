@@ -3,7 +3,7 @@
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { visitsService } from '@/features/visits/api/visitsService';
 import { adminUsersService } from '@/features/admin/api/adminUsersService';
-import { displayDayKey } from '@/utils/timezone';
+import { displayDayKey, isWithinCurrentShiftWindow } from '@/utils/timezone';
 
 export { usePatientsForVisits } from '@/features/patients/hooks/usePatientsForVisits';
 
@@ -38,6 +38,23 @@ export function useAdminRecentVisits() {
 export function useAdminVisitsForDay(dayKey) {
   const query = useAdminRecentVisits();
   const visits = (query.data ?? []).filter((visit) => displayDayKey(visit.created_at) === dayKey);
+  return { ...query, visits };
+}
+
+/** Every Visit registered hospital-wide during the CURRENTLY-ACTIVE
+ * shift's real window — the Admin Overview's shift-aware sibling of
+ * `useAdminVisitsForDay`, added alongside it rather than replacing it.
+ * Reuses the exact same `useAdminRecentVisits()` fetch: that feed is
+ * already unscoped by calendar date (the 100 most recent Visits
+ * hospital-wide), so it already covers a Night shift's pre-midnight
+ * portion without any second network call — the same reasoning
+ * Reception's `useTodaysRegistrations` shift figure relies on (see
+ * that hook's docstring). `isWithinCurrentShiftWindow` (utils/
+ * timezone.js) is real-start/end-instant based, not hour-of-day
+ * bucketing, so this is correct across the midnight rollover. */
+export function useAdminVisitsForCurrentShift() {
+  const query = useAdminRecentVisits();
+  const visits = (query.data ?? []).filter((visit) => isWithinCurrentShiftWindow(visit.created_at));
   return { ...query, visits };
 }
 

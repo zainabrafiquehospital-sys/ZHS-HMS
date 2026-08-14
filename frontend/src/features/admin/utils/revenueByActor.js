@@ -55,6 +55,82 @@ export function computeRevenueByActor(records, amountKey) {
   return [...named, { actorId: OTHER_ACTOR_ID, amount: otherAmount }];
 }
 
+/** Sums `records` into per-actor totals — the un-ranked, un-capped
+ * building block `computeRevenueByActor` itself uses internally, also
+ * exported for `computeRevenueByActorWithSecondary` below (a second
+ * metric doesn't need ranking of its own, just a lookup by actor). */
+function sumByActor(records, amountKey) {
+  const totals = new Map();
+  for (const record of records ?? []) {
+    const actorId = record.created_by ?? null;
+    totals.set(actorId, (totals.get(actorId) ?? 0) + Number(record[amountKey]));
+  }
+  return totals;
+}
+
+/** Like `computeRevenueByActor`, but attaches a second, supplementary
+ * per-actor total (e.g. current-shift revenue alongside the existing
+ * day/"Today" figure) to each entry — added for the Admin Overview's
+ * "show both a receptionist's current-shift revenue AND their 24-hour
+ * total together" requirement, without disturbing `computeRevenueByActor`
+ * itself (kept fully unchanged; every existing caller is unaffected).
+ *
+ * `primaryRecords`/`primaryAmountKey` are exactly `computeRevenueByActor`'s
+ * own arguments — they alone decide ranking, the top-`MAX_NAMED_SLICES`
+ * cutoff, and "Other"-folding (unchanged pie geometry: the secondary
+ * metric never re-ranks or re-folds anything).
+ *
+ * Ranking is computed over the UNION of actors appearing in EITHER
+ * record set, not just the primary one — an actor with secondary
+ * (shift) revenue but zero primary (today) records must still surface
+ * somewhere (named with a 0 primary amount, or folded into "Other"),
+ * never silently dropped just because today's own record set doesn't
+ * mention them yet. This is what makes a Night-shift receptionist's
+ * pre-midnight contribution (still "yesterday" by calendar day, so
+ * absent from today's own primary records) show up correctly even if
+ * they have made zero visits/bills so far today. The "Other" bucket's
+ * `secondaryAmount` is the sum of the secondary metric across every
+ * actor NOT individually named — so the full secondary total always
+ * reconciles exactly across the returned breakdown, the same
+ * reconciliation guarantee `computeRevenueByActor` itself provides for
+ * the primary metric. */
+export function computeRevenueByActorWithSecondary({
+  primaryRecords,
+  primaryAmountKey,
+  secondaryRecords,
+  secondaryAmountKey,
+}) {
+  const primaryTotals = sumByActor(primaryRecords, primaryAmountKey);
+  const secondaryTotals = sumByActor(secondaryRecords, secondaryAmountKey);
+  const allActorIds = new Set([...primaryTotals.keys(), ...secondaryTotals.keys()]);
+
+  const sorted = [...allActorIds]
+    .map((actorId) => ({ actorId, amount: primaryTotals.get(actorId) ?? 0 }))
+    .sort((a, b) => b.amount - a.amount);
+
+  const withSecondary = (actorId, amount) => ({
+    actorId,
+    amount,
+    secondaryAmount: secondaryTotals.get(actorId) ?? 0,
+  });
+
+  if (sorted.length <= MAX_NAMED_SLICES) {
+    return sorted.map((entry) => withSecondary(entry.actorId, entry.amount));
+  }
+
+  const named = sorted.slice(0, MAX_NAMED_SLICES).map((entry) => withSecondary(entry.actorId, entry.amount));
+  const otherEntries = sorted.slice(MAX_NAMED_SLICES);
+  const otherAmount = otherEntries.reduce((sum, entry) => sum + entry.amount, 0);
+  const otherSecondaryAmount = otherEntries.reduce(
+    (sum, entry) => sum + (secondaryTotals.get(entry.actorId) ?? 0),
+    0,
+  );
+  return [
+    ...named,
+    { actorId: OTHER_ACTOR_ID, amount: otherAmount, secondaryAmount: otherSecondaryAmount },
+  ];
+}
+
 /** Resolves `computeRevenueByActor`'s output to what
  * RevenueByActorPieChart actually renders: `[{ actorId, label, amount,
  * isOther }]`. `usersById` is whatever the caller's own join hook
@@ -80,5 +156,42 @@ export function resolveActorSlices(breakdown, usersById) {
     const user = usersById?.[entry.actorId];
     const label = user?.full_name || user?.email || '…';
     return { actorId: entry.actorId, label, amount: entry.amount, isOther: false };
+  });
+}
+
+/** `resolveActorSlices`'s sibling for `computeRevenueByActorWithSecondary`'s
+ * output — identical label-resolution rules (Other/Unknown/user lookup),
+ * threading `secondaryAmount` through unchanged alongside `amount`. Kept
+ * as its own function rather than a shared internal helper so
+ * `resolveActorSlices` itself stays completely untouched. */
+export function resolveActorSlicesWithSecondary(breakdown, usersById) {
+  return (breakdown ?? []).map((entry) => {
+    if (entry.actorId === OTHER_ACTOR_ID) {
+      return {
+        actorId: OTHER_ACTOR_ID,
+        label: 'Other',
+        amount: entry.amount,
+        secondaryAmount: entry.secondaryAmount,
+        isOther: true,
+      };
+    }
+    if (entry.actorId === null) {
+      return {
+        actorId: 'unknown',
+        label: 'Unknown',
+        amount: entry.amount,
+        secondaryAmount: entry.secondaryAmount,
+        isOther: false,
+      };
+    }
+    const user = usersById?.[entry.actorId];
+    const label = user?.full_name || user?.email || '…';
+    return {
+      actorId: entry.actorId,
+      label,
+      amount: entry.amount,
+      secondaryAmount: entry.secondaryAmount,
+      isOther: false,
+    };
   });
 }

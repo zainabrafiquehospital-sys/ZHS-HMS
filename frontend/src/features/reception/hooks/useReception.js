@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { receptionService } from '@/features/reception/api/receptionService';
 import { visitsService } from '@/features/visits/api/visitsService';
 import { useAuth } from '@/features/auth/hooks/useAuth';
-import { selectOwnSlipsToday } from '@/features/reception/utils/ownSlips';
+import { selectOwnSlipsCurrentShift, selectOwnSlipsToday } from '@/features/reception/utils/ownSlips';
 import { todayDisplayDayKey } from '@/utils/timezone';
 import { openAndPrintHtml } from '@/utils/printWindow';
 
@@ -89,7 +89,19 @@ export function useCancelVisit() {
  * utils/ownSlips.js) — a plain, dependency-free function so it's
  * directly unit-testable for the two properties that actually matter
  * here (scoped to creator+today, provably unaffected by session
- * state) without any React/DOM test machinery. */
+ * state) without any React/DOM test machinery.
+ *
+ * Also returns `shiftVisits` — the same receptionist's own visits
+ * within the CURRENTLY-ACTIVE shift's real window instead of the
+ * calendar day, via `selectOwnSlipsCurrentShift` (added alongside
+ * `selectOwnSlipsToday`, not replacing it — see that module for why
+ * the calendar-day selector is deliberately kept as the primary "My
+ * Revenue Today"/"My Slips Today" figures). Both selectors run against
+ * this SAME already-fetched `query.data` — the 100-most-recent,
+ * hospital-wide, unfiltered-by-date fetch already covers a Night
+ * shift's pre-midnight portion (it isn't scoped to "today" at all), so
+ * no second fetch is needed to compute this correctly across a
+ * midnight rollover. `visits` itself is completely unchanged. */
 export function useTodaysRegistrations() {
   const { user } = useAuth();
   const query = useQuery({
@@ -99,8 +111,9 @@ export function useTodaysRegistrations() {
   });
 
   const visits = selectOwnSlipsToday(query.data, user?.id, todayDisplayDayKey());
+  const shiftVisits = selectOwnSlipsCurrentShift(query.data, user?.id);
 
-  return { ...query, visits };
+  return { ...query, visits, shiftVisits };
 }
 
 /** Fetches the registration slip as an HTML document and opens it in a

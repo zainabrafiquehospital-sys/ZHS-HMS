@@ -22,7 +22,7 @@ import {
   TableRow,
 } from '@/shared/components/ui/Table';
 import { useDebouncedValue } from '@/shared/hooks/useDebouncedValue';
-import { formatDisplayTime } from '@/utils/timezone';
+import { formatDisplayTime, getCurrentShift } from '@/utils/timezone';
 
 const PAGE_SIZE = 10;
 
@@ -34,6 +34,8 @@ const currencyFormatter = new Intl.NumberFormat('en-US', {
 function formatPkr(amount) {
   return `PKR ${currencyFormatter.format(Number(amount))}`;
 }
+
+const SHIFT_LABEL = { morning: 'Morning', evening: 'Evening', night: 'Night' };
 
 function matchesSearch(patient, term) {
   if (!term) return true;
@@ -59,7 +61,7 @@ function SummaryTile({ icon: Icon, label, value }) {
 }
 
 export function TodaysRegistrations() {
-  const { visits, isLoading, isError, error, refetch } = useTodaysRegistrations();
+  const { visits, shiftVisits, isLoading, isError, error, refetch } = useTodaysRegistrations();
   const patientsById = usePatientsForVisits(visits);
   const printSlip = usePrintRegistrationSlip();
 
@@ -73,6 +75,17 @@ export function TodaysRegistrations() {
   const totalRevenue = useMemo(
     () => visits.reduce((sum, visit) => sum + Number(visit.amount), 0),
     [visits],
+  );
+
+  // Derived live at render time from `getCurrentShift()` — never a
+  // stored value — so this label (and the tiles below it) naturally
+  // reflect the new shift the moment one changes, no explicit "reset"
+  // needed. See useReception.js's `useTodaysRegistrations` docstring
+  // for why `shiftVisits` is safe to sum here without a second fetch.
+  const currentShiftLabel = SHIFT_LABEL[getCurrentShift()];
+  const totalShiftRevenue = useMemo(
+    () => shiftVisits.reduce((sum, visit) => sum + Number(visit.amount), 0),
+    [shiftVisits],
   );
 
   const filteredVisits = useMemo(() => {
@@ -115,9 +128,19 @@ export function TodaysRegistrations() {
         <CardTitle>My Registrations Today</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <SummaryTile icon={Receipt} label="My Revenue Today" value={formatPkr(totalRevenue)} />
           <SummaryTile icon={Users} label="My Slips Today" value={visits.length} />
+          <SummaryTile
+            icon={Receipt}
+            label={`My Shift Revenue (${currentShiftLabel})`}
+            value={formatPkr(totalShiftRevenue)}
+          />
+          <SummaryTile
+            icon={Users}
+            label={`My Shift Slips (${currentShiftLabel})`}
+            value={shiftVisits.length}
+          />
         </div>
 
         <div className="relative sm:max-w-xs">
