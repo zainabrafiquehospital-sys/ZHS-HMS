@@ -202,6 +202,17 @@ class PermissionInUseError(ConflictError):
         )
 
 
+class LastAdminCannotBeDeactivatedError(ConflictError):
+    code = "LAST_ADMIN_CANNOT_BE_DEACTIVATED"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "This is the last active user who can manage account status — deactivating them "
+            "would leave no one able to undo an account lockout, including their own. "
+            "Grant another active user this ability first."
+        )
+
+
 # ---------------------------------------------------------------------
 # Self-Service Signup / OTP
 # ---------------------------------------------------------------------

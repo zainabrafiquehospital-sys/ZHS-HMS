@@ -1,6 +1,6 @@
 'use client';
 
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { adminUsersService } from '@/features/admin/api/adminUsersService';
 import { adminStatsService } from '@/features/admin/api/adminStatsService';
 import { mergeEmployeeStats, toLookup } from '@/features/admin/utils/employeeStats';
@@ -24,6 +24,37 @@ export function useEmployeeAccountsList({ page, pageSize, search, sortBy, sortOr
     users: query.data?.users ?? [],
     meta: query.data?.meta ?? null,
   };
+}
+
+function invalidateEmployeeAccounts(queryClient) {
+  // Broad ['admin', 'users'] prefix, not just ['admin', 'users',
+  // 'directory'] — a status change is also relevant to anything else
+  // reading a user by id in the same session (e.g. useReceptionistsForVisits'
+  // per-id cache), matching useReception.js's identical broad-prefix
+  // invalidation rationale.
+  queryClient.invalidateQueries({ queryKey: ['admin', 'users'] });
+}
+
+/** Deactivates (soft-delete, status -> INACTIVE) a user account — see
+ * adminUsersService.deactivate's docstring for what the backend already
+ * enforces (self-guard, last-admin guard, session revocation, audit
+ * log). This hook only wires the mutation + cache invalidation; it adds
+ * no client-side policy of its own. */
+export function useDeactivateUser() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (userId) => adminUsersService.deactivate(userId),
+    onSuccess: () => invalidateEmployeeAccounts(queryClient),
+  });
+}
+
+/** Reactivates a previously-deactivated account (status -> ACTIVE). */
+export function useActivateUser() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (userId) => adminUsersService.activate(userId),
+    onSuccess: () => invalidateEmployeeAccounts(queryClient),
+  });
 }
 
 /** Every user's real, role-appropriate activity counts (visits

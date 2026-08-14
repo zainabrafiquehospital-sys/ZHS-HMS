@@ -48,4 +48,21 @@ export const adminUsersService = {
       },
     });
   },
+
+  // Soft-deactivation (status -> INACTIVE), not a hard delete — reverses
+  // via `activate` below. Backend already handles the self-action guard,
+  // immediate session revocation (blocks login right away — see
+  // AuthService.login's status check), the last-active-admin lockout
+  // guard, and audit logging (see backend/app/modules/auth/user_service.py's
+  // `deactivate_user`); this is a thin wrapper around the existing
+  // `POST /users/{id}/deactivate` endpoint, not new backend behavior.
+  deactivate(userId) {
+    return httpClient.post(`/users/${userId}/deactivate`);
+  },
+
+  // Reverses `deactivate` — status -> ACTIVE via the existing
+  // `POST /users/{id}/activate` endpoint (also already audit-logged).
+  activate(userId) {
+    return httpClient.post(`/users/${userId}/activate`);
+  },
 };

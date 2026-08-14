@@ -89,6 +89,46 @@ class UserRepository(BaseRepository[User]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def count_active_holders_of_permission(
+        self, permission_code: str, *, now: datetime, exclude_user_id: UUID | None = None
+    ) -> int:
+        """Counts DISTINCT `ACTIVE` users who currently hold
+        `permission_code` through any active role — the exact same
+        "which grants count as active" criteria `AuthService.
+        _active_roles`/`effective_permission_codes` apply (not soft-
+        deleted, not expired, the role itself active and not soft-
+        deleted, the permission itself not soft-deleted), expressed as
+        a direct query instead of re-walking each user's loaded
+        relationships in Python. Used by `UserService.deactivate_user`
+        to block deactivating the last user who could ever undo an
+        account lockout — see that method and
+        `LastAdminCannotBeDeactivatedError`. `exclude_user_id` lets the
+        caller ask "how many holders would remain *besides* this one",
+        the question that actually matters before deactivating them."""
+        conditions = [
+            User.status == UserStatus.ACTIVE,
+            UserRole.deleted_at.is_(None),
+            or_(UserRole.expires_at.is_(None), UserRole.expires_at > now),
+            Role.deleted_at.is_(None),
+            Role.is_active.is_(True),
+            RolePermission.deleted_at.is_(None),
+            Permission.deleted_at.is_(None),
+            Permission.code == permission_code,
+        ]
+        if exclude_user_id is not None:
+            conditions.append(User.id != exclude_user_id)
+        stmt = (
+            select(func.count(func.distinct(User.id)))
+            .select_from(User)
+            .join(UserRole, UserRole.user_id == User.id)
+            .join(Role, Role.id == UserRole.role_id)
+            .join(RolePermission, RolePermission.role_id == Role.id)
+            .join(Permission, Permission.id == RolePermission.permission_id)
+            .where(*conditions)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
+
     async def get_by_phone_number(self, phone_number: str) -> User | None:
         stmt = self._exclude_soft_deleted(
             select(User).where(User.phone_number == phone_number),

@@ -41,9 +41,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ValidationError
+from app.modules.auth.constants import PERMISSION_USERS_MANAGE_STATUS
 from app.modules.auth.exceptions import (
     EmailAlreadyRegisteredError,
     InvalidUserStatusTransitionError,
+    LastAdminCannotBeDeactivatedError,
     PhoneNumberAlreadyRegisteredError,
     RoleInactiveError,
     RoleNotFoundError,
@@ -440,6 +442,21 @@ class UserService:
             raise InvalidUserStatusTransitionError("User is already inactive.")
 
         now = datetime.now(UTC)
+        # Never deactivate the last user who could still undo an account
+        # lockout — including reactivating whoever gets deactivated here.
+        # Counts *other* active holders of the exact permission that
+        # gates activate/deactivate/lock/unlock (permission-based, not a
+        # hardcoded role-name check — see UserRepository.
+        # count_active_holders_of_permission's docstring). Runs
+        # unconditionally, not only when `user` itself holds this
+        # permission: the question is always "how many would remain",
+        # never "does this specific user matter".
+        remaining_holders = await self._user_repo.count_active_holders_of_permission(
+            PERMISSION_USERS_MANAGE_STATUS, now=now, exclude_user_id=user.id
+        )
+        if remaining_holders == 0:
+            raise LastAdminCannotBeDeactivatedError
+
         user.status = UserStatus.INACTIVE
         user.updated_by = actor.id
         await self._user_repo.add(user)

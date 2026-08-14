@@ -1,6 +1,9 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from app.modules.auth.models import User, UserStatus
+from sqlalchemy import select
+
+from app.modules.auth.constants import PERMISSION_USERS_MANAGE_STATUS
+from app.modules.auth.models import User, UserRole, UserStatus
 from app.modules.auth.repository import USER_SORTABLE_COLUMNS, UserRepository
 from tests.conftest import make_test_email
 
@@ -142,3 +145,86 @@ async def test_soft_delete_records_deleted_by(db_session):
     deleted = await repo.soft_delete(user, deleted_at=datetime.now(UTC), deleted_by=actor.id)
 
     assert deleted.updated_by == actor.id
+
+
+# ---------------------------------------------------------------------
+# count_active_holders_of_permission — backs UserService.deactivate_user's
+# last-admin lockout guard.
+# ---------------------------------------------------------------------
+
+
+async def test_count_active_holders_of_permission_reflects_new_grants(
+    real_session, grant_permission
+):
+    """Asserts a delta, not an absolute count — same rationale as
+    app/modules/visits' `test_count_by_status_reflects_new_visits` (the
+    shared test database already holds real active holders of
+    `users:manage_status` — the actual admin accounts)."""
+    repo = UserRepository(real_session)
+    now = datetime.now(UTC)
+    baseline = await repo.count_active_holders_of_permission(
+        PERMISSION_USERS_MANAGE_STATUS, now=now
+    )
+    holder = await _make_user(real_session, "count-holders-new-grant")
+    await grant_permission(holder, PERMISSION_USERS_MANAGE_STATUS)
+
+    after = await repo.count_active_holders_of_permission(PERMISSION_USERS_MANAGE_STATUS, now=now)
+
+    assert after == baseline + 1
+
+
+async def test_count_active_holders_of_permission_excludes_given_user(
+    real_session, grant_permission
+):
+    repo = UserRepository(real_session)
+    now = datetime.now(UTC)
+    holder = await _make_user(real_session, "count-holders-exclude")
+    await grant_permission(holder, PERMISSION_USERS_MANAGE_STATUS)
+    baseline = await repo.count_active_holders_of_permission(
+        PERMISSION_USERS_MANAGE_STATUS, now=now
+    )
+
+    excluded = await repo.count_active_holders_of_permission(
+        PERMISSION_USERS_MANAGE_STATUS, now=now, exclude_user_id=holder.id
+    )
+
+    assert excluded == baseline - 1
+
+
+async def test_count_active_holders_of_permission_ignores_inactive_users(
+    real_session, grant_permission
+):
+    repo = UserRepository(real_session)
+    now = datetime.now(UTC)
+    baseline = await repo.count_active_holders_of_permission(
+        PERMISSION_USERS_MANAGE_STATUS, now=now
+    )
+    holder = await _make_user(real_session, "count-holders-inactive", status=UserStatus.INACTIVE)
+    await grant_permission(holder, PERMISSION_USERS_MANAGE_STATUS)
+
+    after = await repo.count_active_holders_of_permission(PERMISSION_USERS_MANAGE_STATUS, now=now)
+
+    assert after == baseline
+
+
+async def test_count_active_holders_of_permission_ignores_expired_role_assignment(
+    real_session, grant_permission
+):
+    repo = UserRepository(real_session)
+    now = datetime.now(UTC)
+    baseline = await repo.count_active_holders_of_permission(
+        PERMISSION_USERS_MANAGE_STATUS, now=now
+    )
+    holder = await _make_user(real_session, "count-holders-expired")
+    await grant_permission(holder, PERMISSION_USERS_MANAGE_STATUS)
+    user_role = (
+        (await real_session.execute(select(UserRole).where(UserRole.user_id == holder.id)))
+        .scalars()
+        .first()
+    )
+    user_role.expires_at = now - timedelta(minutes=1)
+    await real_session.commit()
+
+    after = await repo.count_active_holders_of_permission(PERMISSION_USERS_MANAGE_STATUS, now=now)
+
+    assert after == baseline

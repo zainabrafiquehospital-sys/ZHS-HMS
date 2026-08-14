@@ -3,14 +3,18 @@
 import { useState } from 'react';
 import { Search } from 'lucide-react';
 import {
+  useActivateUser,
+  useDeactivateUser,
   useEmployeeAccountsList,
   useEmployeeActivityStats,
 } from '@/features/admin/hooks/useEmployeeAccounts';
 import { computePageCount } from '@/features/admin/utils/pagination';
+import { useAuth } from '@/features/auth/hooks/useAuth';
 import { useDebouncedValue } from '@/shared/hooks/useDebouncedValue';
 import { displayDayKey, formatDisplayDate } from '@/utils/timezone';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
+import { ConfirmDialog } from '@/shared/components/ui/ConfirmDialog';
 import { Input } from '@/shared/components/ui/Input';
 import { Select } from '@/shared/components/ui/Select';
 import { Badge } from '@/shared/components/ui/Badge';
@@ -62,13 +66,17 @@ function dateLabel(isoTimestamp) {
  * check-in/late/overtime figures: no Attendance module exists yet, so
  * none are shown rather than invented. */
 export function EmployeeAccounts() {
+  const { user: currentUser } = useAuth();
   const [page, setPage] = useState(1);
   const [searchInput, setSearchInput] = useState('');
   const [sortBy, setSortBy] = useState('created_at');
   const [sortOrder, setSortOrder] = useState('desc');
+  const [showInactive, setShowInactive] = useState(false);
+  const [confirmingDeactivate, setConfirmingDeactivate] = useState(null);
+  const [actionError, setActionError] = useState(null);
   const debouncedSearch = useDebouncedValue(searchInput, 300);
 
-  const { users, meta, isLoading, isError, error, refetch } = useEmployeeAccountsList({
+  const { users: fetchedUsers, meta, isLoading, isError, error, refetch } = useEmployeeAccountsList({
     page,
     pageSize: PAGE_SIZE,
     search: debouncedSearch || undefined,
@@ -76,6 +84,21 @@ export function EmployeeAccounts() {
     sortOrder,
   });
   const stats = useEmployeeActivityStats();
+  const deactivateUser = useDeactivateUser();
+  const activateUser = useActivateUser();
+
+  // `GET /users` has no "everything except inactive" filter (only an
+  // exact single-status match or none at all — see backend/app/modules/
+  // auth/user_router.py's `list_users`), and this page must keep showing
+  // every OTHER status by default (pending/locked/etc. — the original
+  // "every user account" requirement), so this is a client-side filter
+  // of the already-fetched page, the same "search filter" shape
+  // TodaysRegistrations/AdminOverview already client-filter a fetched
+  // page by — never a separate unpaginated fetch. Pagination math still
+  // reflects the server's real counts across all statuses; hiding a few
+  // inactive rows from an already-tiny (20-ish) employee table is a
+  // cosmetic trade-off, not a data-correctness one.
+  const users = showInactive ? fetchedUsers : fetchedUsers.filter((user) => user.status !== 'inactive');
 
   const pageCount = computePageCount(meta?.total, PAGE_SIZE);
 
@@ -92,6 +115,27 @@ export function EmployeeAccounts() {
   function handleSortOrderChange(value) {
     setSortOrder(value);
     setPage(1);
+  }
+
+  async function handleReactivate(userId) {
+    setActionError(null);
+    try {
+      await activateUser.mutateAsync(userId);
+    } catch (err) {
+      setActionError(err.message || 'Unable to reactivate this account.');
+    }
+  }
+
+  async function handleConfirmDeactivate() {
+    if (!confirmingDeactivate) return;
+    setActionError(null);
+    try {
+      await deactivateUser.mutateAsync(confirmingDeactivate.id);
+      setConfirmingDeactivate(null);
+    } catch (err) {
+      setActionError(err.message || 'Unable to deactivate this account.');
+      setConfirmingDeactivate(null);
+    }
   }
 
   return (
@@ -139,17 +183,39 @@ export function EmployeeAccounts() {
                   <option value="asc">Oldest</option>
                 </Select>
               </div>
+              <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={showInactive}
+                  onChange={(event) => setShowInactive(event.target.checked)}
+                  className="h-4 w-4 rounded border-input"
+                />
+                Show inactive
+              </label>
             </div>
           </div>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
+          {actionError ? <p className="text-sm text-destructive">{actionError}</p> : null}
           {isLoading ? (
             <PageLoader label="Loading employee accounts" />
           ) : isError ? (
             <PageError error={error} reset={refetch} message="Couldn't load employee accounts." />
-          ) : users.length === 0 ? (
+          ) : fetchedUsers.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               {debouncedSearch ? 'No employees match this search.' : 'No user accounts yet.'}
+            </p>
+          ) : users.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Every account on this page is inactive —{' '}
+              <button
+                type="button"
+                className="underline underline-offset-2"
+                onClick={() => setShowInactive(true)}
+              >
+                show inactive
+              </button>{' '}
+              to see them.
             </p>
           ) : (
             <>
@@ -173,11 +239,13 @@ export function EmployeeAccounts() {
                       <TableHead className="text-right">Revenue Billed</TableHead>
                       <TableHead className="text-right">Consultations</TableHead>
                       <TableHead className="text-right">Vitals</TableHead>
+                      <TableHead />
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {users.map((user) => {
                       const userStats = stats.isLoading ? null : stats.statsFor(user.id);
+                      const isSelf = user.id === currentUser?.id;
                       return (
                         <TableRow key={user.id}>
                           <TableCell className="font-medium text-foreground">
@@ -226,6 +294,28 @@ export function EmployeeAccounts() {
                           <TableCell className="text-right tabular-nums">
                             {userStats ? userStats.vitals : '…'}
                           </TableCell>
+                          <TableCell>
+                            {user.status === 'active' ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={isSelf}
+                                title={isSelf ? 'You cannot deactivate your own account' : undefined}
+                                onClick={() => setConfirmingDeactivate(user)}
+                              >
+                                Deactivate
+                              </Button>
+                            ) : user.status === 'inactive' ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={activateUser.isPending}
+                                onClick={() => handleReactivate(user.id)}
+                              >
+                                Reactivate
+                              </Button>
+                            ) : null}
+                          </TableCell>
                         </TableRow>
                       );
                     })}
@@ -262,6 +352,20 @@ export function EmployeeAccounts() {
           )}
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={Boolean(confirmingDeactivate)}
+        variant="destructive"
+        title={`Deactivate ${confirmingDeactivate?.full_name ?? 'this account'}?`}
+        description={
+          'This immediately signs them out and blocks login. It does not delete any of their ' +
+          'records — every visit, bill, and consultation they created stays attributed to them, ' +
+          'and you can reactivate this account at any time from "Show inactive".'
+        }
+        confirmLabel={deactivateUser.isPending ? 'Deactivating…' : 'Deactivate'}
+        onCancel={() => setConfirmingDeactivate(null)}
+        onConfirm={handleConfirmDeactivate}
+      />
     </div>
   );
 }

@@ -1,8 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { Printer, Search } from 'lucide-react';
+import { History, Printer, Search } from 'lucide-react';
 import { usePatientDirectory } from '@/features/admin/hooks/usePatientDirectory';
+import { PatientVisitHistoryDialog } from '@/features/admin/components/PatientVisitHistoryDialog';
 import { printPatientDirectory } from '@/features/admin/utils/printPatientDirectory';
 import { computePageCount } from '@/features/admin/utils/pagination';
 import { patientsService } from '@/features/patients/api/patientsService';
@@ -53,6 +54,7 @@ export function PatientDirectory() {
   const [sortOrder, setSortOrder] = useState('desc');
   const [printError, setPrintError] = useState(null);
   const [isPrinting, setIsPrinting] = useState(false);
+  const [historyPatient, setHistoryPatient] = useState(null);
   const debouncedSearch = useDebouncedValue(searchInput, 300);
 
   const { patients, meta, isLoading, isError, error, refetch } = usePatientDirectory({
@@ -178,11 +180,16 @@ export function PatientDirectory() {
                     <TableHead className="text-right">Age</TableHead>
                     <TableHead>Phone</TableHead>
                     <TableHead>Registered On</TableHead>
+                    <TableHead />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {patients.map((patient) => (
-                    <TableRow key={patient.id}>
+                    <TableRow
+                      key={patient.id}
+                      className="cursor-pointer"
+                      onClick={() => setHistoryPatient(patient)}
+                    >
                       <TableCell className="font-medium text-foreground">
                         {patient.mr_number}
                       </TableCell>
@@ -193,6 +200,19 @@ export function PatientDirectory() {
                       <TableCell>{patient.phone_number}</TableCell>
                       <TableCell className="whitespace-nowrap text-muted-foreground">
                         {registeredOnLabel(patient.created_at)}
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={(event) => {
+                            event.stopPropagation(); // the row itself opens the same dialog
+                            setHistoryPatient(patient);
+                          }}
+                        >
+                          <History className="h-3.5 w-3.5" />
+                          Visit History
+                        </Button>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -228,6 +248,13 @@ export function PatientDirectory() {
           )}
         </CardContent>
       </Card>
+
+      {historyPatient ? (
+        <PatientVisitHistoryDialog
+          patient={historyPatient}
+          onClose={() => setHistoryPatient(null)}
+        />
+      ) : null}
     </div>
   );
 }

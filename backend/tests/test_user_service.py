@@ -1,11 +1,14 @@
 import pytest
+from sqlalchemy import select
 from uuid6 import uuid7
 
 from app.core.exceptions import ValidationError
+from app.modules.auth.constants import PERMISSION_USERS_MANAGE_STATUS
 from app.modules.auth.exceptions import (
     AccountLockedError,
     EmailAlreadyRegisteredError,
     InvalidUserStatusTransitionError,
+    LastAdminCannotBeDeactivatedError,
     PhoneNumberAlreadyRegisteredError,
     RoleInactiveError,
     RoleNotFoundError,
@@ -13,7 +16,7 @@ from app.modules.auth.exceptions import (
     TokenInvalidError,
     UserNotFoundError,
 )
-from app.modules.auth.models import Role, UserStatus
+from app.modules.auth.models import AuditEventType, AuditLog, Role, UserStatus
 from app.modules.auth.repository import RoleRepository
 from tests.conftest import TEST_ROLE_PREFIX, make_test_email
 
@@ -254,6 +257,93 @@ async def test_deactivate_revokes_active_sessions(user_service, auth_service):
         await auth_service.refresh(
             raw_refresh_token=login.raw_refresh_token, ip_address=None, user_agent=None
         )
+
+
+async def test_deactivate_blocked_when_it_would_leave_no_one_able_to_manage_status(
+    user_service, auth_service, monkeypatch
+):
+    """The genuinely-last-admin scenario can't be constructed naturally
+    against this shared, never-reset test database (it already holds
+    real active admin accounts, and test data is only ever additive —
+    see test_user_repository.py's delta-based
+    `count_active_holders_of_permission` tests for how that's worked
+    around elsewhere). Monkeypatching the repository's count for this
+    one call isolates the unit from that uncontrollable global
+    precondition — the same technique test_auth_service.py's
+    `test_replay_outside_grace_window_revokes_the_family` already uses
+    for an equally hard-to-construct-naturally scenario."""
+    actor = await _register(auth_service, "last-admin-actor")
+    target = await _register(auth_service, "last-admin-target")
+
+    async def _zero_remaining(*args, **kwargs):
+        return 0
+
+    monkeypatch.setattr(
+        user_service._user_repo, "count_active_holders_of_permission", _zero_remaining
+    )
+
+    with pytest.raises(LastAdminCannotBeDeactivatedError):
+        await user_service.deactivate_user(actor=actor, user_id=target.id)
+
+    # Never partially applied — the account is exactly as before the
+    # blocked attempt.
+    unchanged = await user_service.get_user(target.id)
+    assert unchanged.status == UserStatus.ACTIVE
+
+
+async def test_deactivate_allowed_when_another_active_holder_remains(
+    user_service, auth_service, grant_permission
+):
+    """Deterministic, not dependent on the shared database's real admin
+    count — grants `users:manage_status` to a dedicated "keeper" user
+    first, so at least one other holder is guaranteed to remain no
+    matter what else is in the database."""
+    actor = await _register(auth_service, "keeper-actor")
+    keeper = await _register(auth_service, "keeper-holder")
+    await grant_permission(keeper, PERMISSION_USERS_MANAGE_STATUS)
+    target = await _register(auth_service, "keeper-target")
+
+    deactivated = await user_service.deactivate_user(actor=actor, user_id=target.id)
+
+    assert deactivated.status == UserStatus.INACTIVE
+
+
+async def test_deactivate_and_activate_are_audit_logged(user_service, auth_service, real_session):
+    actor = await _register(auth_service, "audit-actor")
+    target = await _register(auth_service, "audit-target")
+
+    await user_service.deactivate_user(actor=actor, user_id=target.id)
+    await user_service.activate_user(actor=actor, user_id=target.id)
+
+    deactivated_logs = (
+        (
+            await real_session.execute(
+                select(AuditLog).where(
+                    AuditLog.event_type == AuditEventType.USER_DEACTIVATED,
+                    AuditLog.target_user_id == target.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    activated_logs = (
+        (
+            await real_session.execute(
+                select(AuditLog).where(
+                    AuditLog.event_type == AuditEventType.USER_ACTIVATED,
+                    AuditLog.target_user_id == target.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    assert len(deactivated_logs) == 1
+    assert deactivated_logs[0].actor_user_id == actor.id
+    assert len(activated_logs) == 1
+    assert activated_logs[0].actor_user_id == actor.id
 
 
 async def test_lock_rejects_self(user_service, auth_service):

@@ -7,6 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { CheckCircle2 } from 'lucide-react';
 import { useAuth } from '@/features/auth/hooks/useAuth';
+import { useResendSignupOtp } from '@/features/auth/hooks/useSignup';
 import { loginSchema } from '@/features/auth/schemas/loginSchema';
 import { resolveLandingRoute } from '@/core/constants/access';
 import { ROUTES } from '@/core/constants/routes';
@@ -27,6 +28,17 @@ export function LoginForm() {
   // error means email verification was never finished, not "wrong
   // password").
   const [pendingVerificationEmail, setPendingVerificationEmail] = useState(null);
+  // Reuses the exact same resend-OTP mutation/endpoint SignupOtpForm's
+  // own "Resend code" button does (features/auth/hooks/useSignup.js's
+  // `useResendSignupOtp` -> `POST /auth/resend-otp`, already rate-
+  // limited per-source-IP and already rejecting anything but a
+  // genuinely PENDING_EMAIL_VERIFICATION account server-side — see
+  // SignupService.resend_signup_otp) — not a parallel mechanism, just a
+  // second, lower-friction place to trigger the identical flow for
+  // someone who landed here by trying to log in rather than by
+  // following the post-signup verification link.
+  const resendOtp = useResendSignupOtp();
+  const [resendResult, setResendResult] = useState(null); // null | 'sent' | { error }
   const {
     register,
     handleSubmit,
@@ -36,9 +48,21 @@ export function LoginForm() {
     defaultValues: { email: '', password: '', rememberMe: false },
   });
 
+  async function handleResendVerification() {
+    if (!pendingVerificationEmail) return;
+    setResendResult(null);
+    try {
+      await resendOtp.mutateAsync({ email: pendingVerificationEmail });
+      setResendResult('sent');
+    } catch (error) {
+      setResendResult({ error: error.message || 'Unable to resend the verification email.' });
+    }
+  }
+
   async function onSubmit(values) {
     setSubmitError(null);
     setPendingVerificationEmail(null);
+    setResendResult(null);
     try {
       const loggedInUser = await login(values);
       // Every user logs in from this one page and is routed straight to
@@ -109,12 +133,30 @@ export function LoginForm() {
         <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <p>{submitError}</p>
           {pendingVerificationEmail ? (
-            <Link
-              href={`${ROUTES.VERIFY_EMAIL}?email=${encodeURIComponent(pendingVerificationEmail)}`}
-              className="mt-1 inline-block font-medium underline-offset-4 hover:underline"
-            >
-              Continue email verification
-            </Link>
+            <div className="mt-2 flex flex-col items-start gap-2">
+              <Link
+                href={`${ROUTES.VERIFY_EMAIL}?email=${encodeURIComponent(pendingVerificationEmail)}`}
+                className="font-medium underline-offset-4 hover:underline"
+              >
+                Continue email verification
+              </Link>
+              {resendResult === 'sent' ? (
+                <p className="text-emerald-700">
+                  A new verification code has been sent to {pendingVerificationEmail}.
+                </p>
+              ) : (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleResendVerification}
+                  disabled={resendOtp.isPending}
+                >
+                  {resendOtp.isPending ? 'Sending…' : 'Resend verification email'}
+                </Button>
+              )}
+              {resendResult?.error ? <p>{resendResult.error}</p> : null}
+            </div>
           ) : null}
         </div>
       ) : null}
