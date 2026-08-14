@@ -57,6 +57,19 @@ export function useActivateUser() {
   });
 }
 
+/** Deletes (soft-delete via deleted_at) a still-pending/rejected user
+ * account — see adminUsersService.deleteUser's docstring for what the
+ * backend already enforces (self-guard, session revocation, audit
+ * log). This hook only wires the mutation + cache invalidation; it adds
+ * no client-side policy of its own. */
+export function useDeleteUser() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (userId) => adminUsersService.deleteUser(userId),
+    onSuccess: () => invalidateEmployeeAccounts(queryClient),
+  });
+}
+
 /** Every user's real, role-appropriate activity counts (visits
  * registered, medicine bills created + revenue billed, consultations
  * completed, vitals recorded) — one `GROUP BY` query per module,

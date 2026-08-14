@@ -5,6 +5,7 @@ import { Search } from 'lucide-react';
 import {
   useActivateUser,
   useDeactivateUser,
+  useDeleteUser,
   useEmployeeAccountsList,
   useEmployeeActivityStats,
 } from '@/features/admin/hooks/useEmployeeAccounts';
@@ -50,6 +51,22 @@ const STATUS_BADGE_VARIANT = {
   pending_admin_approval: 'warning',
 };
 
+// Statuses that never reached ACTIVE — incomplete signups (still
+// awaiting email verification or admin approval) or a signup an admin
+// already rejected. None of these has any real activity to preserve
+// the way an already-active account does, so "Delete" (a real soft-
+// delete via deleted_at, see UserService.delete_user) is offered
+// instead of "Deactivate", which only makes sense for an account that
+// was actually active. Deliberately excludes LOCKED/SUSPENDED — those
+// statuses are only ever reached from an already-active account with
+// real activity behind it, not an incomplete signup.
+const DELETABLE_PENDING_STATUSES = [
+  'pending_verification',
+  'pending_email_verification',
+  'pending_admin_approval',
+  'rejected',
+];
+
 function money(amount) {
   return `Rs. ${Number(amount).toFixed(2)}`;
 }
@@ -73,6 +90,7 @@ export function EmployeeAccounts() {
   const [sortOrder, setSortOrder] = useState('desc');
   const [showInactive, setShowInactive] = useState(false);
   const [confirmingDeactivate, setConfirmingDeactivate] = useState(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(null);
   const [actionError, setActionError] = useState(null);
   const debouncedSearch = useDebouncedValue(searchInput, 300);
 
@@ -86,6 +104,7 @@ export function EmployeeAccounts() {
   const stats = useEmployeeActivityStats();
   const deactivateUser = useDeactivateUser();
   const activateUser = useActivateUser();
+  const deleteUser = useDeleteUser();
 
   // `GET /users` has no "everything except inactive" filter (only an
   // exact single-status match or none at all — see backend/app/modules/
@@ -135,6 +154,18 @@ export function EmployeeAccounts() {
     } catch (err) {
       setActionError(err.message || 'Unable to deactivate this account.');
       setConfirmingDeactivate(null);
+    }
+  }
+
+  async function handleConfirmDelete() {
+    if (!confirmingDelete) return;
+    setActionError(null);
+    try {
+      await deleteUser.mutateAsync(confirmingDelete.id);
+      setConfirmingDelete(null);
+    } catch (err) {
+      setActionError(err.message || 'Unable to delete this account.');
+      setConfirmingDelete(null);
     }
   }
 
@@ -314,6 +345,14 @@ export function EmployeeAccounts() {
                               >
                                 Reactivate
                               </Button>
+                            ) : DELETABLE_PENDING_STATUSES.includes(user.status) ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setConfirmingDelete(user)}
+                              >
+                                Delete
+                              </Button>
                             ) : null}
                           </TableCell>
                         </TableRow>
@@ -365,6 +404,21 @@ export function EmployeeAccounts() {
         confirmLabel={deactivateUser.isPending ? 'Deactivating…' : 'Deactivate'}
         onCancel={() => setConfirmingDeactivate(null)}
         onConfirm={handleConfirmDeactivate}
+      />
+
+      <ConfirmDialog
+        open={Boolean(confirmingDelete)}
+        variant="destructive"
+        title={`Delete ${confirmingDelete?.full_name ?? 'this account'}?`}
+        description={
+          'This removes the account, not just deactivates it — it never completed sign-up ' +
+          '(or was rejected), so there is no real activity attributed to it. This is a soft ' +
+          'delete, not permanent erasure, but there is no "Reactivate" for it afterward the ' +
+          'way there is for a deactivated account.'
+        }
+        confirmLabel={deleteUser.isPending ? 'Deleting…' : 'Delete'}
+        onCancel={() => setConfirmingDelete(null)}
+        onConfirm={handleConfirmDelete}
       />
     </div>
   );

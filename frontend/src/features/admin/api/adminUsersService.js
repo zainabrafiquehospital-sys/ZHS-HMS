@@ -65,4 +65,15 @@ export const adminUsersService = {
   activate(userId) {
     return httpClient.post(`/users/${userId}/activate`);
   },
+
+  // Removes a still-pending/rejected account outright (the Employee
+  // Accounts & Stats page's "Delete" action — for signups that never
+  // reached ACTIVE, where "Deactivate" doesn't apply). A soft delete,
+  // not a hard one — reuses the existing `DELETE /users/{id}` endpoint/
+  // `UserService.delete_user` exactly (deleted_at, session revocation,
+  // self-action guard, USER_DELETED audit log — all already built),
+  // not new backend behavior.
+  deleteUser(userId) {
+    return httpClient.delete(`/users/${userId}`);
+  },
 };

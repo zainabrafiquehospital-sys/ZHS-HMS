@@ -16,8 +16,9 @@ from app.modules.auth.exceptions import (
     TokenInvalidError,
     UserNotFoundError,
 )
-from app.modules.auth.models import AuditEventType, AuditLog, Role, UserStatus
-from app.modules.auth.repository import RoleRepository
+from app.modules.auth.models import AuditEventType, AuditLog, Role, User, UserStatus
+from app.modules.auth.password_service import PasswordService
+from app.modules.auth.repository import RoleRepository, UserRepository
 from tests.conftest import TEST_ROLE_PREFIX, make_test_email
 
 _PASSWORD = "Str0ng!Passw0rd#2026"
@@ -211,6 +212,32 @@ async def test_delete_user_rejects_self_deletion(user_service, auth_service):
 
     with pytest.raises(SelfActionNotAllowedError):
         await user_service.delete_user(actor=actor, user_id=actor.id)
+
+
+async def test_delete_user_works_on_a_still_pending_account(
+    user_service, auth_service, real_session
+):
+    """delete_user carries no status restriction — it must work just as
+    well on an incomplete signup (never reached ACTIVE) as on an
+    already-active account, which `test_delete_user_soft_deletes_and_
+    revokes_sessions` above already covers. Backs the Employee Accounts
+    & Stats page's new "Delete" action for PENDING_*/REJECTED rows."""
+    actor = await _register(auth_service, "delete-pending-actor")
+    password_hash = await PasswordService().hash(_PASSWORD)
+    target = await UserRepository(real_session).add(
+        User(
+            email=make_test_email("delete-pending-target"),
+            password_hash=password_hash,
+            full_name="Delete Pending Target",
+            status=UserStatus.PENDING_EMAIL_VERIFICATION,
+        )
+    )
+    await real_session.commit()
+
+    await user_service.delete_user(actor=actor, user_id=target.id)
+
+    with pytest.raises(UserNotFoundError):
+        await user_service.get_user(target.id)
 
 
 # ---------------------------------------------------------------------
