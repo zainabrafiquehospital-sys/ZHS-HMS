@@ -9,6 +9,6 @@ PERMISSION_VISITS_READ = "visits:read"
 # zero-padded sequence value. See VisitRepository.next_queue_token_value
 # for the race-safe generation (a real Postgres SEQUENCE, mirroring
 # app/modules/patients/constants.py's identical MR-number rationale).
-QUEUE_TOKEN_PREFIX = "GYN"
+QUEUE_TOKEN_PREFIX = "Token #"
 QUEUE_TOKEN_SEQUENCE_NAME = "visit_queue_token_seq"
 QUEUE_TOKEN_PAD_WIDTH = 6

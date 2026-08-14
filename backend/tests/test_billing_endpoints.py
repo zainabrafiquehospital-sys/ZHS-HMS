@@ -153,7 +153,7 @@ async def test_full_billing_lifecycle_via_http(api_client, real_session, grant_p
     assert print_resp.status_code == 200
     assert print_resp.headers["content-type"].startswith("text/html")
     assert "2,500.00" in print_resp.text
-    assert "GYN-" in print_resp.text
+    assert "Token #" in print_resp.text
 
 
 async def test_partial_invoice_payments_via_http_sum_correctly_and_reject_overpay(

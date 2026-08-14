@@ -62,8 +62,14 @@ class VisitService:
         self._audit_repo = audit_repository
 
     async def _generate_queue_token(self) -> str:
+        # No separator between prefix and digits: QUEUE_TOKEN_PREFIX
+        # ("Token #") already ends in "#", which reads as the number
+        # marker itself — a trailing "-" would be redundant (e.g.
+        # "Token #-000123"). Old GYN-prefixed tokens (which did use a
+        # hyphen) are untouched in the DB; this only affects the format
+        # of newly generated tokens going forward.
         value = await self._visit_repo.next_queue_token_value()
-        return f"{QUEUE_TOKEN_PREFIX}-{value:0{QUEUE_TOKEN_PAD_WIDTH}d}"
+        return f"{QUEUE_TOKEN_PREFIX}{value:0{QUEUE_TOKEN_PAD_WIDTH}d}"
 
     async def register_visit(
         self,

@@ -52,7 +52,7 @@ async def test_register_visit_generates_queue_token_and_routes_to_vitals(
         vitals_required=True,
     )
 
-    assert visit.queue_token.startswith("GYN-")
+    assert visit.queue_token.startswith("Token #")
     assert visit.status == VisitStatus.WAITING_VITALS
 
 
