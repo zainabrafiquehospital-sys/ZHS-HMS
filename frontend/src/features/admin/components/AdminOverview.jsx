@@ -335,6 +335,11 @@ export function AdminOverview() {
 
   const isToday = selectedDate === todayDisplayDayKey();
   const { visits, isLoading, isError, error, refetch } = useAdminVisitsForDay(selectedDate);
+  // Patient names for the visits table + search filter below — always
+  // resolved against `visits` (the day-scoped set actually rendered in
+  // the table), never the shift-extended union: unlike receptionistsById
+  // below, patient names are never shown in the Shift-only figures.
+  const patientsById = usePatientsForVisits(visits);
   // Reuses the exact same underlying ['visits','admin','recent'] query
   // as useAdminVisitsForDay above (see useAdminVisitsForCurrentShift's
   // docstring) — free to always call, no extra fetch.
