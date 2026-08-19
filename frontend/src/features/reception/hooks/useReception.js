@@ -81,12 +81,22 @@ export function useMyRegistrations({ page, pageSize }) {
 }
 
 /** This receptionist's own revenue — visits and medicine bills broken
- * out separately, plus a combined total — since her last "Clear
- * Revenue" action, or all-time if she's never cleared (2026-08-19
- * addition, replacing the old `useMyRevenueStats`). Backed by `GET
- * /reception/revenue` (see receptionService.getMyRevenue), which is
- * hard-scoped server-side to the calling receptionist — there is no
- * user id involved on the frontend at all, unlike the old
+ * out separately, plus a combined total — always capped to roughly the
+ * last 24 hours (2026-08-19 fix; originally "since her last Clear
+ * Revenue action, or all-time if she's never cleared", which in
+ * practice meant an ever-growing cumulative total for receptionists
+ * who never pressed Clear Revenue day to day). `clearedAt` reflects
+ * the effective window start — `max(last manual clear, now - 24h)` —
+ * computed server-side on every request, so it is always a real, recent
+ * timestamp. `refetchInterval` keeps the tiles live without requiring a
+ * manual reload: the 24h auto-clear needs no button press and no
+ * background job (see ReceptionService.get_own_revenue's own
+ * docstring), but the browser still only *sees* that recomputed value
+ * the next time this query runs.
+ *
+ * Backed by `GET /reception/revenue` (see receptionService.getMyRevenue),
+ * which is hard-scoped server-side to the calling receptionist — there
+ * is no user id involved on the frontend at all, unlike the old
  * implementation, which fetched *every* receptionist's row from `GET
  * /visits/stats/by-creator` and picked out one client-side (the same
  * endpoint any receptionist could otherwise call directly to see
@@ -97,6 +107,7 @@ export function useMyRevenue() {
     queryKey: ['reception', 'revenue', 'own', user?.id],
     queryFn: () => receptionService.getMyRevenue().then((res) => res.data),
     enabled: Boolean(user?.id),
+    refetchInterval: 30000,
   });
   return {
     ...query,

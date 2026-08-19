@@ -72,13 +72,15 @@ function SummaryTile({ icon: Icon, label, value }) {
 
 /** Every visit this receptionist has ever registered — no date or
  * shift restriction, only creator (see useMyRegistrations); this list
- * is never affected by "Clear Revenue" (her full history stays fully
- * visible here regardless — only the summary tiles above it reset).
- * "My Revenue" breaks out visits vs. medicine bills plus a combined
- * total, since her last "Clear Revenue" action or all-time if she's
- * never cleared (useMyRevenue, a server-side aggregate hard-scoped to
- * her own id — see that hook's own docstring — never a sum of whatever
- * page happens to be fetched). */
+ * is never affected by "Clear Revenue" or the 24h auto-window (her
+ * full history stays fully visible here regardless — only the summary
+ * tiles above it reset/roll over). "My Revenue" breaks out visits vs.
+ * medicine bills plus a combined total, always capped to roughly the
+ * last 24 hours — reset early by pressing "Clear Revenue", or
+ * automatically once a slip turns 24 hours old, whichever is more
+ * recent (useMyRevenue, a server-side aggregate hard-scoped to her own
+ * id — see that hook's own docstring — never a sum of whatever page
+ * happens to be fetched). */
 export function MyRegistrations() {
   const { visits, isLoading, isError, error, refetch } = useMyRegistrations({
     page: 1,
@@ -165,8 +167,8 @@ export function MyRegistrations() {
               <span>
                 {revenue.visitsCount} slip{revenue.visitsCount === 1 ? '' : 's'}
                 {revenue.clearedAt
-                  ? ` · since your last clear (${displayDayKey(revenue.clearedAt)} ${formatDisplayTime(revenue.clearedAt)})`
-                  : ' · all-time'}
+                  ? ` · since ${displayDayKey(revenue.clearedAt)} ${formatDisplayTime(revenue.clearedAt)} (auto-resets every 24h)`
+                  : ''}
               </span>
             </div>
             <Button size="sm" variant="outline" onClick={() => setConfirmingClear(true)}>
@@ -337,8 +339,9 @@ export function MyRegistrations() {
               Your Visits Revenue, Medicines Revenue, and Total Revenue figures above will reset to
               PKR 0.00 going forward. This does not delete or change anything — every visit,
               invoice, and medicine bill you&apos;ve ever created stays exactly as it is, still
-              fully visible in your registrations list below and in Admin&apos;s records. This
-              cannot be undone from here.
+              fully visible in your registrations list below and in Admin&apos;s records. These
+              figures already roll over automatically every 24 hours on their own — use this only
+              if you want to reset them sooner. This cannot be undone from here.
             </p>
             {clearError ? <p className="text-destructive">{clearError}</p> : null}
           </div>

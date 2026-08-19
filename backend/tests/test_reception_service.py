@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -12,7 +13,10 @@ from app.modules.pharmacy.models import MedicineCategory
 from app.modules.queue.models import QueueDestination, QueueEntryStatus
 from app.modules.reception.exceptions import VisitHasSettledInvoiceError
 from app.modules.visits.exceptions import VisitNotFoundError
-from app.modules.visits.models import VisitStatus
+from app.modules.visits.models import Visit, VisitStatus
+from app.modules.visits.repository import VisitRepository
+from app.shared.audit.models import AuditEntry
+from app.shared.audit.repository import AuditLogRepository
 from tests.conftest import TEST_MEDICINE_NAME_PREFIX, TEST_PATIENT_NAME_PREFIX, make_test_email
 
 
@@ -402,13 +406,16 @@ async def test_get_own_revenue_is_scoped_to_the_caller_only(
         vitals_required=False,
     )
 
-    visits_count, visits_revenue, _med_count, _med_revenue, cleared_at = (
+    visits_count, visits_revenue, _med_count, _med_revenue, window_since = (
         await reception_service.get_own_revenue(actor=receptionist_a)
     )
 
     assert visits_count == 1
     assert visits_revenue == Decimal("1500.00")
-    assert cleared_at is None
+    # Never cleared, so the window falls back to the 24h auto-window
+    # alone — a real, recent timestamp, never None/all-time (2026-08-19
+    # fix). Sanity-check it's roughly "now - 24h", not some other value.
+    assert datetime.now(UTC) - timedelta(hours=24, minutes=1) < window_since < datetime.now(UTC)
 
 
 async def test_get_own_revenue_includes_medicine_bills_in_breakdown(
@@ -522,9 +529,220 @@ async def test_clear_own_revenue_only_affects_the_caller(real_session, reception
 
     await reception_service.clear_own_revenue(actor=receptionist_b)
 
-    a_count, a_revenue, _mc, _mr, a_cleared_at = await reception_service.get_own_revenue(
+    a_count, a_revenue, _mc, _mr, a_window_since = await reception_service.get_own_revenue(
         actor=receptionist_a
     )
     assert a_count == 1
     assert a_revenue == Decimal("1500.00")
-    assert a_cleared_at is None
+    # A never cleared, so her window is still just the 24h auto-window —
+    # unaffected by B's own clear (2026-08-19 fix).
+    assert datetime.now(UTC) - timedelta(hours=24, minutes=1) < a_window_since < datetime.now(UTC)
+
+
+# ---------------------------------------------------------------------
+# 24h auto-window fix (2026-08-19) — "My Revenue" no longer shows an
+# ever-growing all-time cumulative total for receptionists who never
+# press "Clear Revenue" day to day (see ReceptionService.get_own_revenue's
+# own docstring for the full `since = max(last_manual_clear, now - 24h)`
+# mechanism). Backdated rows are constructed directly with an explicit
+# `created_at` at insert time — the same pattern
+# test_visits_repository.py already uses — rather than mutating a row's
+# `created_at` after the fact: this codebase has a documented
+# MissingGreenlet hazard reading a server-generated timestamp column
+# back after add()/flush() without an explicit refresh (see
+# ReceptionService.clear_own_revenue's own docstring for why it returns
+# a Python-computed `now` instead of reading `entry.created_at` back),
+# and no code path in this app can otherwise produce a >24h-old row for
+# a still-logged-in actor.
+# ---------------------------------------------------------------------
+
+
+def _unique_token() -> str:
+    return f"GYN-{uuid7().hex[-8:]}"
+
+
+async def _make_backdated_visit(
+    real_session, *, patient_id, creator_id, amount: Decimal, hours_ago: float
+) -> Visit:
+    visit = Visit(
+        patient_id=patient_id,
+        doctor_user_id=creator_id,
+        queue_token=_unique_token(),
+        procedure="Consultation",
+        amount=amount,
+        vitals_required=False,
+        status=VisitStatus.REGISTERED,
+        created_by=creator_id,
+        created_at=datetime.now(UTC) - timedelta(hours=hours_ago),
+    )
+    return await VisitRepository(real_session).add(visit)
+
+
+async def _make_backdated_clear_marker(real_session, *, receptionist_id, hours_ago: float) -> AuditEntry:
+    entry = AuditEntry(
+        module="reception",
+        action="reception.revenue_cleared",
+        entity_type="user",
+        entity_id=receptionist_id,
+        actor_user_id=receptionist_id,
+        created_at=datetime.now(UTC) - timedelta(hours=hours_ago),
+    )
+    return await AuditLogRepository(real_session).add(entry)
+
+
+async def test_get_own_revenue_excludes_visits_older_than_24h_even_without_manual_clear(
+    real_session, reception_service
+):
+    """The core bug fix: a receptionist who has never pressed "Clear
+    Revenue" must still only see roughly the last 24h, never a
+    cumulative all-time total."""
+    receptionist = await _make_actor(real_session, "revenue-24h-old")
+    patient, _visit, _entry = await reception_service.register_visit(
+        actor=receptionist,
+        patient_id=None,
+        new_patient=_new_patient_payload("Revenue24hOld"),
+        doctor_user_id=receptionist.id,
+        procedure="Consultation",
+        amount=Decimal("100.00"),
+        vitals_required=False,
+    )
+    old_visit = await _make_backdated_visit(
+        real_session,
+        patient_id=patient.id,
+        creator_id=receptionist.id,
+        amount=Decimal("5000.00"),
+        hours_ago=25,
+    )
+    recent_visit = await _make_backdated_visit(
+        real_session,
+        patient_id=patient.id,
+        creator_id=receptionist.id,
+        amount=Decimal("750.00"),
+        hours_ago=1,
+    )
+
+    visits_count, visits_revenue, _mc, _mr, window_since = await reception_service.get_own_revenue(
+        actor=receptionist
+    )
+
+    # 100.00 (fresh, from register_visit) + 750.00 (backdated 1h) — the
+    # 5000.00 backdated 25h is excluded.
+    assert visits_count == 2
+    assert visits_revenue == Decimal("850.00")
+    assert window_since > old_visit.created_at
+    assert window_since < recent_visit.created_at
+
+
+async def test_get_own_revenue_manual_clear_within_24h_still_narrows_the_window(
+    real_session, reception_service
+):
+    """A manual clear that happened recently (well within the last 24h)
+    must still take effect exactly as before — the 24h auto-window is a
+    ceiling on how far back "My Revenue" ever looks, not a replacement
+    for the manual clear."""
+    receptionist = await _make_actor(real_session, "revenue-24h-manual-recent")
+    await reception_service.register_visit(
+        actor=receptionist,
+        patient_id=None,
+        new_patient=_new_patient_payload("Revenue24hBeforeClear"),
+        doctor_user_id=receptionist.id,
+        procedure="Consultation",
+        amount=Decimal("1000.00"),
+        vitals_required=False,
+    )
+
+    await reception_service.clear_own_revenue(actor=receptionist)
+
+    await reception_service.register_visit(
+        actor=receptionist,
+        patient_id=None,
+        new_patient=_new_patient_payload("Revenue24hAfterClear"),
+        doctor_user_id=receptionist.id,
+        procedure="Consultation",
+        amount=Decimal("500.00"),
+        vitals_required=False,
+    )
+
+    visits_count, visits_revenue, _mc, _mr, _ws = await reception_service.get_own_revenue(
+        actor=receptionist
+    )
+
+    assert visits_count == 1
+    assert visits_revenue == Decimal("500.00")
+
+
+async def test_get_own_revenue_manual_clear_older_than_24h_is_superseded_by_auto_window(
+    real_session, reception_service
+):
+    """A manual clear the receptionist made more than 24h ago is no
+    longer doing anything useful — the 24h auto-window has already
+    moved past it on its own, so a visit from 20h ago must still show
+    up even though it predates that stale clear marker."""
+    receptionist = await _make_actor(real_session, "revenue-24h-stale-clear")
+    stale_clear = await _make_backdated_clear_marker(
+        real_session, receptionist_id=receptionist.id, hours_ago=30
+    )
+
+    patient, _visit, _entry = await reception_service.register_visit(
+        actor=receptionist,
+        patient_id=None,
+        new_patient=_new_patient_payload("Revenue24hStaleClearSeed"),
+        doctor_user_id=receptionist.id,
+        procedure="Consultation",
+        amount=Decimal("0.01"),
+        vitals_required=False,
+    )
+    visit = await _make_backdated_visit(
+        real_session,
+        patient_id=patient.id,
+        creator_id=receptionist.id,
+        amount=Decimal("1200.00"),
+        hours_ago=20,
+    )
+
+    visits_count, visits_revenue, _mc, _mr, window_since = await reception_service.get_own_revenue(
+        actor=receptionist
+    )
+
+    # 0.01 (fresh seed visit, unaffected — it postdates the auto window
+    # too) + 1200.00 (backdated 20h, inside the 24h auto-window despite
+    # predating the 30h-old stale clear).
+    assert visits_count == 2
+    assert visits_revenue == Decimal("1200.01")
+    # The effective window is the 24h auto-window, not the 30h-old clear.
+    assert window_since > stale_clear.created_at
+    assert window_since < visit.created_at
+
+
+async def test_get_own_revenue_24h_window_does_not_affect_admins_alltime_view(
+    real_session, reception_service, visit_service
+):
+    """Even a visit the 24h auto-window has already excluded from a
+    receptionist's own display must still count in Admin's all-time
+    aggregate — the fix changes nothing about what Admin sees."""
+    receptionist = await _make_actor(real_session, "revenue-24h-admin-view")
+    patient, _visit, _entry = await reception_service.register_visit(
+        actor=receptionist,
+        patient_id=None,
+        new_patient=_new_patient_payload("Revenue24hAdminViewSeed"),
+        doctor_user_id=receptionist.id,
+        procedure="Consultation",
+        amount=Decimal("0.01"),
+        vitals_required=False,
+    )
+    await _make_backdated_visit(
+        real_session,
+        patient_id=patient.id,
+        creator_id=receptionist.id,
+        amount=Decimal("2500.00"),
+        hours_ago=48,
+    )
+
+    visits_count, visits_revenue, _mc, _mr, _ws = await reception_service.get_own_revenue(
+        actor=receptionist
+    )
+    assert visits_count == 1  # only the fresh 0.01 seed visit
+    assert visits_revenue == Decimal("0.01")
+
+    all_time = await visit_service.count_and_revenue_by_creator()
+    assert all_time[receptionist.id] == (2, Decimal("2500.01"))

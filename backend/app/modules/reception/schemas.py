@@ -107,12 +107,16 @@ class AdminUpdateVisitResponse(BaseModel):
 
 class ReceptionRevenueOut(BaseModel):
     """A receptionist's own revenue — visits and medicine bills broken
-    out separately plus a combined total, computed since her last
-    "Clear Revenue" action (`cleared_at`, `None` if she's never
-    cleared). Never anyone else's — this response shape carries no
-    `user_id` field at all, since the caller can only ever be asking
-    about themselves (see ReceptionService.get_own_revenue: always
-    `actor.id`, never a request parameter)."""
+    out separately plus a combined total, always capped to roughly the
+    last 24 hours (2026-08-19 fix). `cleared_at` reports the effective
+    window start — `max(last manual "Clear Revenue" action, now - 24h)`
+    — so it is always a real, recent timestamp, never `None` and never
+    an all-time cumulative view (see ReceptionService.get_own_revenue's
+    own docstring for the full mechanism). Never anyone else's revenue
+    — this response shape carries no `user_id` field at all, since the
+    caller can only ever be asking about themselves (see
+    ReceptionService.get_own_revenue: always `actor.id`, never a
+    request parameter)."""
 
     model_config = ConfigDict(strict=True)
 
@@ -121,7 +125,7 @@ class ReceptionRevenueOut(BaseModel):
     medicine_bill_count: int
     medicine_revenue: Decimal
     total_revenue: Decimal
-    cleared_at: datetime | None
+    cleared_at: datetime
 
 
 class ClearRevenueResponse(BaseModel):

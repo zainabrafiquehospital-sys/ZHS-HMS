@@ -21,7 +21,7 @@ infrastructure faults, not validation failures. No compensating-
 transaction/saga logic is implemented for that narrow case — an
 explicit, documented scope decision for this build, not an oversight."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -54,6 +54,11 @@ _SETTLED_INVOICE_STATUSES = (InvoiceStatus.PAID, InvoiceStatus.PARTIALLY_PAID)
 # own docstring for the full mechanism.
 _REVENUE_CLEARED_ENTITY_TYPE = "user"
 _REVENUE_CLEARED_ACTION = "reception.revenue_cleared"
+
+# The rolling window "My Revenue" now always caps itself to (2026-08-19
+# fix) — see get_own_revenue's own docstring for why this replaced the
+# original "since last clear, or all-time if never cleared" behavior.
+_REVENUE_AUTO_WINDOW = timedelta(hours=24)
 
 
 class ReceptionService:
@@ -287,38 +292,52 @@ class ReceptionService:
     # revenue through either method below.
     # ------------------------------------------------------------------
 
-    async def get_own_revenue(self, *, actor: User) -> tuple[int, Decimal, int, Decimal, datetime | None]:
+    async def get_own_revenue(self, *, actor: User) -> tuple[int, Decimal, int, Decimal, datetime]:
         """This receptionist's own revenue — visits and medicine bills
-        counted separately, since her last "Clear Revenue" action (or
-        all-time, if she's never cleared). Returns `(visits_count,
-        visits_revenue, medicine_bill_count, medicine_revenue,
-        cleared_at)`; the router adds the two revenue figures together
-        for `total_revenue` rather than this method doing it twice.
+        counted separately, always capped to roughly the last 24 hours.
+        Returns `(visits_count, visits_revenue, medicine_bill_count,
+        medicine_revenue, window_since)`; the router adds the two
+        revenue figures together for `total_revenue` rather than this
+        method doing it twice.
 
-        Mechanism: "Clear Revenue" (see `clear_own_revenue` below)
-        writes one `reception.revenue_cleared` entry to the existing,
-        generic `audit_log` table (`shared/audit` — already depended on
-        by every module, already indexed on exactly
-        `(entity_type, entity_id, created_at)`) rather than adding a new
-        column or table. This was chosen specifically because `User`
-        lives in the `auth` module, which is permanently frozen (see
-        this project's own working rules) — adding a column there was
-        not an option. The *most recent* such entry for this actor is
-        treated as her reset point: both revenue queries below simply
-        add `created_at > cleared_at` as an extra filter — no visit,
-        invoice, or medicine_bill row is ever touched, modified, or
-        excluded from anything other than this one receptionist's own
-        forward-looking total. Admin's own all-time views
+        Mechanism (2026-08-19 fix): the effective cutoff is
+        `since = max(last_manual_clear_at, now - 24h)`, computed fresh
+        on every call — never a stored value, so it self-corrects
+        without a background job. This replaces the original
+        "since her last Clear Revenue action, or all-time if she's
+        never cleared" behavior, which in practice meant most
+        receptionists (who never press Clear Revenue day to day) saw
+        an ever-growing cumulative total since account creation rather
+        than anything resembling "today's revenue". Manual "Clear
+        Revenue" (see `clear_own_revenue` below) still works exactly as
+        before and still writes one `reception.revenue_cleared` entry
+        to the generic `audit_log` table (`shared/audit` — chosen
+        originally because `User` lives in the permanently-frozen
+        `auth` module, so a new column there was never an option); the
+        *most recent* such entry, if more recent than `now - 24h`, is
+        what actually moves the window forward — a clear a receptionist
+        made 30 hours ago is no longer doing anything useful, since the
+        24h auto-window has already moved past it on its own. No new
+        table, column, or scheduled job: both revenue queries below add
+        `created_at > since` as an extra filter — no visit, invoice, or
+        medicine_bill row is ever touched, modified, or excluded from
+        anything other than this one receptionist's own forward-looking
+        total. Admin's own all-time views
         (VisitService.count_and_revenue_by_creator,
         MedicineBillRepository.count_and_revenue_by_creator) never
-        apply this filter and are completely unaffected by any
-        receptionist ever clearing her own display."""
+        apply this filter and are completely unaffected by either the
+        24h auto-window or any receptionist's own manual clear."""
         cleared_entry = await self._audit_repo.get_latest_for_entity(
             entity_type=_REVENUE_CLEARED_ENTITY_TYPE,
             entity_id=actor.id,
             action=_REVENUE_CLEARED_ACTION,
         )
-        since = cleared_entry.created_at if cleared_entry is not None else None
+        auto_window_start = datetime.now(UTC) - _REVENUE_AUTO_WINDOW
+        since = (
+            max(cleared_entry.created_at, auto_window_start)
+            if cleared_entry is not None
+            else auto_window_start
+        )
 
         visits_count, visits_revenue = await self._visit_service.count_and_revenue_for_creator(
             actor.id, since=since

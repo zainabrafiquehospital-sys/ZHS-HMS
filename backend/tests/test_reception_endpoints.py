@@ -454,7 +454,9 @@ async def test_get_own_revenue_success_via_http(api_client, real_session, grant_
     assert body["visits_count"] == 1
     assert body["visits_revenue"] == "1500.00"
     assert body["total_revenue"] == "1500.00"
-    assert body["cleared_at"] is None
+    # Never cleared, so this is the 24h auto-window's own timestamp — a
+    # real, recent value, never null/all-time (2026-08-19 fix).
+    assert body["cleared_at"]
 
 
 async def test_clear_own_revenue_requires_permission(api_client, real_session, grant_permission):
