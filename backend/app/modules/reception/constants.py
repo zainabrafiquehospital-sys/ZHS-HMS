@@ -24,3 +24,13 @@ PERMISSION_RECEPTION_CANCEL_VISIT = "reception:cancel_visit"
 # (a status transition, not a correction/removal tool) remains theirs.
 PERMISSION_RECEPTION_UPDATE_VISIT = "reception:update_visit"
 PERMISSION_RECEPTION_DELETE_VISIT = "reception:delete_visit"
+
+# "My Revenue" (2026-08-19 addition) — reading a receptionist's own
+# revenue reuses PERMISSION_RECEPTION_REGISTER_VISIT (every receptionist
+# already holds it; it's the base "you can work the front desk"
+# permission, the same implicit gate "My Revenue"/"My Slips" already
+# relied on via visits:read before this endpoint existed — see
+# reception/service.py's get_own_revenue). Clearing it is a real,
+# separate mutating action and gets its own atomic permission, matching
+# this module's existing register/cancel/update/delete convention.
+PERMISSION_RECEPTION_CLEAR_OWN_REVENUE = "reception:clear_own_revenue"

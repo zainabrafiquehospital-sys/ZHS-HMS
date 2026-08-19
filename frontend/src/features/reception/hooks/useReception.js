@@ -1,7 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { receptionService } from '@/features/reception/api/receptionService';
 import { visitsService } from '@/features/visits/api/visitsService';
-import { adminStatsService } from '@/features/admin/api/adminStatsService';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import { openAndPrintHtml } from '@/utils/printWindow';
 
@@ -81,29 +80,52 @@ export function useMyRegistrations({ page, pageSize }) {
   };
 }
 
-/** This receptionist's own all-time revenue + slip count — the "My
- * Revenue"/"My Slips" tiles. A real server-side aggregate (`GET
- * /visits/stats/by-creator`, this receptionist's own row looked up by
- * their own user id — see adminStatsService.getVisitStatsByCreator and
- * backend/app/modules/visits/repository.py's
- * `count_and_revenue_by_creator`), never derived by summing a
- * paginated page of `useMyRegistrations` client-side, which would only
- * ever reflect whatever page happens to be on screen. Reuses the exact
- * same endpoint the Admin "Employee Accounts & Stats" page already
- * calls (gated on `visits:read`, which every receptionist already
- * holds) rather than adding a second one. */
-export function useMyRevenueStats() {
+/** This receptionist's own revenue — visits and medicine bills broken
+ * out separately, plus a combined total — since her last "Clear
+ * Revenue" action, or all-time if she's never cleared (2026-08-19
+ * addition, replacing the old `useMyRevenueStats`). Backed by `GET
+ * /reception/revenue` (see receptionService.getMyRevenue), which is
+ * hard-scoped server-side to the calling receptionist — there is no
+ * user id involved on the frontend at all, unlike the old
+ * implementation, which fetched *every* receptionist's row from `GET
+ * /visits/stats/by-creator` and picked out one client-side (the same
+ * endpoint any receptionist could otherwise call directly to see
+ * everyone else's revenue too). */
+export function useMyRevenue() {
   const { user } = useAuth();
   const query = useQuery({
-    queryKey: ['visits', 'stats', 'by-creator'],
-    queryFn: () => adminStatsService.getVisitStatsByCreator().then((res) => res.data),
+    queryKey: ['reception', 'revenue', 'own', user?.id],
+    queryFn: () => receptionService.getMyRevenue().then((res) => res.data),
+    enabled: Boolean(user?.id),
   });
-  const own = query.data?.find((row) => row.user_id === user?.id);
   return {
     ...query,
-    revenue: own?.revenue ?? '0.00',
-    count: own?.count ?? 0,
+    visitsCount: query.data?.visits_count ?? 0,
+    visitsRevenue: query.data?.visits_revenue ?? '0.00',
+    medicineBillCount: query.data?.medicine_bill_count ?? 0,
+    medicineRevenue: query.data?.medicine_revenue ?? '0.00',
+    totalRevenue: query.data?.total_revenue ?? '0.00',
+    clearedAt: query.data?.cleared_at ?? null,
   };
+}
+
+/** "Clear Revenue" (2026-08-19 addition) — resets the calling
+ * receptionist's own `useMyRevenue` display to zero going forward; see
+ * receptionService.clearMyRevenue's and the backend's
+ * ReceptionService.clear_own_revenue's docstrings for the full
+ * mechanism (an audit-log entry, never a deletion — every underlying
+ * visit/medicine bill stays completely untouched). Requires the
+ * caller's own explicit confirmation step in the UI before this is
+ * ever invoked — see MyRegistrations.jsx's ConfirmDialog usage. */
+export function useClearMyRevenue() {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+  return useMutation({
+    mutationFn: () => receptionService.clearMyRevenue(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['reception', 'revenue', 'own', user?.id] });
+    },
+  });
 }
 
 /** Fetches the registration slip as an HTML document and opens it in a

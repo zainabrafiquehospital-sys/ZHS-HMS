@@ -7,6 +7,7 @@ from app.modules.auth.repository import UserRepository
 from app.modules.consultation.constants import PERMISSION_CONSULTATION_START
 from app.modules.reception.constants import (
     PERMISSION_RECEPTION_CANCEL_VISIT,
+    PERMISSION_RECEPTION_CLEAR_OWN_REVENUE,
     PERMISSION_RECEPTION_DELETE_VISIT,
     PERMISSION_RECEPTION_REGISTER_VISIT,
     PERMISSION_RECEPTION_UPDATE_VISIT,
@@ -420,3 +421,92 @@ async def test_delete_visit_success_removes_it_from_get(api_client, real_session
 # fail for a reason that has nothing to do with what it's meant to
 # verify. The service-layer test pins the doctor explicitly at
 # registration and is fully deterministic.
+
+
+# ---------------------------------------------------------------------
+# "My Revenue" (2026-08-19 addition) — RBAC over HTTP: reading requires
+# the base reception:register_visit permission every receptionist
+# already holds; clearing requires the new, separately-grantable
+# reception:clear_own_revenue. Own-only scoping itself is proven at the
+# service layer (test_reception_service.py) — these confirm the HTTP
+# permission gates are wired correctly.
+# ---------------------------------------------------------------------
+
+
+async def test_get_own_revenue_requires_permission(api_client, real_session):
+    _actor, access_token = await _create_and_login(api_client, real_session, "revenue-read-no-perm")
+
+    resp = await api_client.get("/api/v1/reception/revenue", headers=_auth_header(access_token))
+
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "PERMISSION_DENIED"
+
+
+async def test_get_own_revenue_success_via_http(api_client, real_session, grant_permission):
+    actor, access_token = await _create_and_login(api_client, real_session, "revenue-read-success")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await _register_visit_http(api_client, access_token, "RevenueHttpRead")
+
+    resp = await api_client.get("/api/v1/reception/revenue", headers=_auth_header(access_token))
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["visits_count"] == 1
+    assert body["visits_revenue"] == "1500.00"
+    assert body["total_revenue"] == "1500.00"
+    assert body["cleared_at"] is None
+
+
+async def test_clear_own_revenue_requires_permission(api_client, real_session, grant_permission):
+    """Holding reception:register_visit alone (every receptionist's
+    baseline) must not be enough to clear — clearing needs its own,
+    separately-grantable permission."""
+    actor, access_token = await _create_and_login(api_client, real_session, "revenue-clear-no-perm")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+
+    resp = await api_client.post(
+        "/api/v1/reception/revenue/clear", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "PERMISSION_DENIED"
+
+
+async def test_clear_own_revenue_success_via_http(api_client, real_session, grant_permission):
+    actor, access_token = await _create_and_login(api_client, real_session, "revenue-clear-success")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(actor, PERMISSION_RECEPTION_CLEAR_OWN_REVENUE)
+    await _register_visit_http(api_client, access_token, "RevenueHttpClear")
+
+    clear_resp = await api_client.post(
+        "/api/v1/reception/revenue/clear", headers=_auth_header(access_token)
+    )
+    assert clear_resp.status_code == 200
+    assert clear_resp.json()["data"]["cleared_at"]
+
+    after_resp = await api_client.get("/api/v1/reception/revenue", headers=_auth_header(access_token))
+    body = after_resp.json()["data"]
+    assert body["visits_count"] == 0
+    assert body["total_revenue"] == "0.00"
+    assert body["cleared_at"]
+
+
+async def test_get_own_revenue_never_reflects_another_receptionists_visits(
+    api_client, real_session, grant_permission
+):
+    """There is no user-id parameter on this endpoint at all — this
+    confirms two different receptionists calling it get two different,
+    correctly-isolated answers, the way the endpoint's own hard-scoping
+    to the caller is meant to guarantee."""
+    receptionist_a, token_a = await _create_and_login(api_client, real_session, "revenue-http-a")
+    await grant_permission(receptionist_a, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await _register_visit_http(api_client, token_a, "RevenueHttpIsolationA")
+
+    receptionist_b, token_b = await _create_and_login(api_client, real_session, "revenue-http-b")
+    await grant_permission(receptionist_b, PERMISSION_RECEPTION_REGISTER_VISIT)
+
+    resp_b = await api_client.get("/api/v1/reception/revenue", headers=_auth_header(token_b))
+
+    assert resp_b.status_code == 200
+    assert resp_b.json()["data"]["visits_count"] == 0
+    assert resp_b.json()["data"]["total_revenue"] == "0.00"

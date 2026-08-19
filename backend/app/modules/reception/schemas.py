@@ -7,6 +7,9 @@ destination. There is deliberately no doctor-selection field — doctor
 assignment is always automatic (see ReceptionService.register_visit's
 docstring)."""
 
+from datetime import datetime
+from decimal import Decimal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.modules.patients.models import PatientGender
@@ -94,3 +97,34 @@ class AdminUpdateVisitResponse(BaseModel):
 
     patient: PatientOut
     visit: VisitOut
+
+
+# ---------------------------------------------------------------------
+# "My Revenue" (2026-08-19 addition) — own-scoped only, see this
+# module's router.py/service.py for the full RBAC/mechanism story.
+# ---------------------------------------------------------------------
+
+
+class ReceptionRevenueOut(BaseModel):
+    """A receptionist's own revenue — visits and medicine bills broken
+    out separately plus a combined total, computed since her last
+    "Clear Revenue" action (`cleared_at`, `None` if she's never
+    cleared). Never anyone else's — this response shape carries no
+    `user_id` field at all, since the caller can only ever be asking
+    about themselves (see ReceptionService.get_own_revenue: always
+    `actor.id`, never a request parameter)."""
+
+    model_config = ConfigDict(strict=True)
+
+    visits_count: int
+    visits_revenue: Decimal
+    medicine_bill_count: int
+    medicine_revenue: Decimal
+    total_revenue: Decimal
+    cleared_at: datetime | None
+
+
+class ClearRevenueResponse(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    cleared_at: datetime

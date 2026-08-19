@@ -145,9 +145,23 @@ class VisitService:
 
     async def count_and_revenue_by_creator(self) -> dict[UUID, tuple[int, Decimal]]:
         """Read-only aggregate for the Admin "Employee Accounts & Stats"
-        page and Reception's own "My Revenue"/"My Slips" tiles — see
-        VisitRepository.count_and_revenue_by_creator."""
+        page — see VisitRepository.count_and_revenue_by_creator. Not
+        used by Reception's own "My Revenue" tile as of 2026-08-19 (see
+        `count_and_revenue_for_creator` below) — that used to look up
+        its own row out of this same all-users result, which also
+        exposed every other receptionist's revenue to anyone who called
+        this endpoint directly."""
         return await self._visit_repo.count_and_revenue_by_creator()
+
+    async def count_and_revenue_for_creator(
+        self, user_id: UUID, *, since: datetime | None = None
+    ) -> tuple[int, Decimal]:
+        """Read-only, single-user aggregate backing Reception's own "My
+        Revenue" tile (2026-08-19 addition) — see VisitRepository.
+        count_and_revenue_for_creator. `since`, when given, is that
+        receptionist's own "Clear Revenue" reset point; never excludes
+        or touches any row, only narrows the count."""
+        return await self._visit_repo.count_and_revenue_for_creator(user_id, since=since)
 
     async def list_visits(
         self,

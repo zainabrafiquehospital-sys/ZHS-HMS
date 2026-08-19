@@ -21,6 +21,7 @@ infrastructure faults, not validation failures. No compensating-
 transaction/saga logic is implemented for that narrow case — an
 explicit, documented scope decision for this build, not an oversight."""
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -32,6 +33,7 @@ from app.modules.billing.models import InvoiceStatus
 from app.modules.billing.repository import InvoiceRepository
 from app.modules.patients.models import Patient
 from app.modules.patients.service import PatientService
+from app.modules.pharmacy.repository import MedicineBillRepository
 from app.modules.queue.models import QueueDestination, QueueEntry
 from app.modules.queue.service import QueueService
 from app.modules.reception.exceptions import VisitHasSettledInvoiceError
@@ -46,6 +48,13 @@ from app.shared.audit.repository import AuditLogRepository
 # two and no others.
 _SETTLED_INVOICE_STATUSES = (InvoiceStatus.PAID, InvoiceStatus.PARTIALLY_PAID)
 
+# The generic audit_log `(entity_type, entity_id, action)` this module's
+# "Clear Revenue" feature (2026-08-19) reuses as a receptionist's own
+# revenue-counter reset point — see ReceptionService.get_own_revenue's
+# own docstring for the full mechanism.
+_REVENUE_CLEARED_ENTITY_TYPE = "user"
+_REVENUE_CLEARED_ACTION = "reception.revenue_cleared"
+
 
 class ReceptionService:
     def __init__(
@@ -57,6 +66,7 @@ class ReceptionService:
         audit_repository: AuditLogRepository,
         reception_repository: ReceptionRepository,
         invoice_repository: InvoiceRepository,
+        medicine_bill_repository: MedicineBillRepository,
     ) -> None:
         """`session` here must be the exact same `AsyncSession` instance
         `audit_repository` was built with (see dependencies.py) — this
@@ -75,7 +85,12 @@ class ReceptionService:
         justified, read-only cross-module check as ReceptionRepository.
         find_least_busy_available_doctor already makes into Auth's own
         tables — it never writes to an Invoice, and it changes nothing
-        about how Billing itself works."""
+        about how Billing itself works.
+
+        `medicine_bill_repository` (2026-08-19 addition, same shape as
+        `invoice_repository` above) — narrow, strictly read-only,
+        added solely so `get_own_revenue` can include the "Medicines"
+        half of a receptionist's own revenue tile alongside visits."""
         self._session = session
         self._patient_service = patient_service
         self._visit_service = visit_service
@@ -83,6 +98,7 @@ class ReceptionService:
         self._audit_repo = audit_repository
         self._reception_repo = reception_repository
         self._invoice_repo = invoice_repository
+        self._medicine_bill_repo = medicine_bill_repository
 
     async def register_visit(
         self,
@@ -262,3 +278,72 @@ class ReceptionService:
             metadata={"queue_token": visit.queue_token},
         )
         await self._session.commit()
+
+    # ------------------------------------------------------------------
+    # "My Revenue" (2026-08-19 addition) — always `actor.id`, never a
+    # request-suppliable target user id, the same hard-scoping shape
+    # DashboardService.get_doctor_summary already uses for the Doctor
+    # dashboard. There is structurally no way to ask for someone else's
+    # revenue through either method below.
+    # ------------------------------------------------------------------
+
+    async def get_own_revenue(self, *, actor: User) -> tuple[int, Decimal, int, Decimal, datetime | None]:
+        """This receptionist's own revenue — visits and medicine bills
+        counted separately, since her last "Clear Revenue" action (or
+        all-time, if she's never cleared). Returns `(visits_count,
+        visits_revenue, medicine_bill_count, medicine_revenue,
+        cleared_at)`; the router adds the two revenue figures together
+        for `total_revenue` rather than this method doing it twice.
+
+        Mechanism: "Clear Revenue" (see `clear_own_revenue` below)
+        writes one `reception.revenue_cleared` entry to the existing,
+        generic `audit_log` table (`shared/audit` — already depended on
+        by every module, already indexed on exactly
+        `(entity_type, entity_id, created_at)`) rather than adding a new
+        column or table. This was chosen specifically because `User`
+        lives in the `auth` module, which is permanently frozen (see
+        this project's own working rules) — adding a column there was
+        not an option. The *most recent* such entry for this actor is
+        treated as her reset point: both revenue queries below simply
+        add `created_at > cleared_at` as an extra filter — no visit,
+        invoice, or medicine_bill row is ever touched, modified, or
+        excluded from anything other than this one receptionist's own
+        forward-looking total. Admin's own all-time views
+        (VisitService.count_and_revenue_by_creator,
+        MedicineBillRepository.count_and_revenue_by_creator) never
+        apply this filter and are completely unaffected by any
+        receptionist ever clearing her own display."""
+        cleared_entry = await self._audit_repo.get_latest_for_entity(
+            entity_type=_REVENUE_CLEARED_ENTITY_TYPE,
+            entity_id=actor.id,
+            action=_REVENUE_CLEARED_ACTION,
+        )
+        since = cleared_entry.created_at if cleared_entry is not None else None
+
+        visits_count, visits_revenue = await self._visit_service.count_and_revenue_for_creator(
+            actor.id, since=since
+        )
+        medicine_count, medicine_revenue = await self._medicine_bill_repo.count_and_revenue_for_creator(
+            actor.id, since=since
+        )
+        return visits_count, visits_revenue, medicine_count, medicine_revenue, since
+
+    async def clear_own_revenue(self, *, actor: User) -> datetime:
+        """Resets this receptionist's own "My Revenue" display to zero
+        going forward — see `get_own_revenue`'s own docstring for the
+        full mechanism. Deletes, modifies, or soft-deletes nothing:
+        every visit, invoice, payment, and medicine bill she has ever
+        created remains fully intact, unchanged, and fully visible in
+        Admin's own all-time history/audit views exactly as before —
+        this only ever adds one new, permanent audit_log row recording
+        that the clear happened and when."""
+        now = datetime.now(UTC)
+        await self._audit_repo.record(
+            module="reception",
+            action=_REVENUE_CLEARED_ACTION,
+            entity_type=_REVENUE_CLEARED_ENTITY_TYPE,
+            entity_id=actor.id,
+            actor_user_id=actor.id,
+        )
+        await self._session.commit()
+        return now

@@ -1,9 +1,11 @@
 """HTTP endpoints for the Reception module — the composite "register a
 visit" and "cancel a visit" actions (Phase 6 architecture §6), the
-fast-registration slip print endpoint (§6/§7), and (2026-08-19 addition)
-admin-only "update"/"delete" data-correction actions for a mistakenly-
-entered visit — see AdminUpdateVisitRequest's and ReceptionService.
-admin_delete_visit's own docstrings."""
+fast-registration slip print endpoint (§6/§7), admin-only "update"/
+"delete" data-correction actions for a mistakenly-entered visit (see
+AdminUpdateVisitRequest's and ReceptionService.admin_delete_visit's own
+docstrings), and (2026-08-19 addition) a receptionist's own "My Revenue"
+read/clear actions — see ReceptionRevenueOut's and ReceptionService.
+get_own_revenue's own docstrings."""
 
 from uuid import UUID
 
@@ -20,6 +22,7 @@ from app.modules.patients.service import PatientService
 from app.modules.queue.schemas import QueueEntryOut
 from app.modules.reception.constants import (
     PERMISSION_RECEPTION_CANCEL_VISIT,
+    PERMISSION_RECEPTION_CLEAR_OWN_REVENUE,
     PERMISSION_RECEPTION_DELETE_VISIT,
     PERMISSION_RECEPTION_REGISTER_VISIT,
     PERMISSION_RECEPTION_UPDATE_VISIT,
@@ -29,6 +32,8 @@ from app.modules.reception.schemas import (
     AdminUpdateVisitRequest,
     AdminUpdateVisitResponse,
     CancelVisitRequest,
+    ClearRevenueResponse,
+    ReceptionRevenueOut,
     RegisterVisitRequest,
     RegisterVisitResponse,
 )
@@ -160,3 +165,49 @@ async def delete_visit(
     visits on file."""
     await reception_service.admin_delete_visit(actor=actor, visit_id=visit_id)
     return success_envelope(None)
+
+
+# ------------------------------------------------------------------
+# "My Revenue" (2026-08-19 addition) — always the calling receptionist's
+# own figures, structurally: neither endpoint below accepts a target
+# user id at all, matching how GET /dashboard/doctor is hard-scoped to
+# `actor.id` and never a request parameter. Reading is gated on
+# reception:register_visit (every receptionist already holds it — the
+# same base permission "My Revenue"/"My Slips" implicitly relied on via
+# visits:read before this endpoint existed); clearing gets its own
+# atomic permission, matching this module's register/cancel/update/
+# delete convention.
+# ------------------------------------------------------------------
+
+
+@router.get("/revenue")
+async def get_own_revenue(
+    reception_service: ReceptionService = Depends(get_reception_service),
+    actor: User = Depends(require_permission(PERMISSION_RECEPTION_REGISTER_VISIT)),
+) -> dict:
+    visits_count, visits_revenue, medicine_count, medicine_revenue, cleared_at = (
+        await reception_service.get_own_revenue(actor=actor)
+    )
+    body = ReceptionRevenueOut(
+        visits_count=visits_count,
+        visits_revenue=visits_revenue,
+        medicine_bill_count=medicine_count,
+        medicine_revenue=medicine_revenue,
+        total_revenue=visits_revenue + medicine_revenue,
+        cleared_at=cleared_at,
+    )
+    return success_envelope(body.model_dump(mode="json"))
+
+
+@router.post("/revenue/clear")
+async def clear_own_revenue(
+    reception_service: ReceptionService = Depends(get_reception_service),
+    actor: User = Depends(require_permission(PERMISSION_RECEPTION_CLEAR_OWN_REVENUE)),
+) -> dict:
+    """Resets the calling receptionist's own "My Revenue" display to
+    zero going forward — see ReceptionService.clear_own_revenue's own
+    docstring: no visit, invoice, payment, or medicine bill is ever
+    touched, only a new audit_log row recording that this happened."""
+    cleared_at = await reception_service.clear_own_revenue(actor=actor)
+    body = ClearRevenueResponse(cleared_at=cleared_at)
+    return success_envelope(body.model_dump(mode="json"))

@@ -111,6 +111,25 @@ class MedicineBillRepository(BaseRepository[MedicineBill]):
             created_by: (count, revenue) for created_by, count, revenue in result.all()
         }
 
+    async def count_and_revenue_for_creator(
+        self, user_id: UUID, *, since: datetime | None = None
+    ) -> tuple[int, Decimal]:
+        """The single-user, optionally-since-a-cutoff sibling of
+        `count_and_revenue_by_creator` above — see app/modules/visits/
+        repository.py's identical `count_and_revenue_for_creator` for
+        the full rationale (this backs the "Medicines" half of
+        Reception's own "My Revenue" tile, 2026-08-19 addition). Also
+        sums `total_amount` ("revenue billed"), matching
+        `count_and_revenue_by_creator`'s own documented convention, not
+        `amount_paid`."""
+        conditions = [MedicineBill.deleted_at.is_(None), MedicineBill.created_by == user_id]
+        if since is not None:
+            conditions.append(MedicineBill.created_at > since)
+        stmt = select(func.count(), func.sum(MedicineBill.total_amount)).where(*conditions)
+        result = await self.session.execute(stmt)
+        count, revenue = result.one()
+        return count, (revenue if revenue is not None else Decimal("0.00"))
+
     async def list_for_day(self, day: datetime) -> list[MedicineBill]:
         """Every medicine bill created on `day`'s UTC calendar date — the
         Admin Overview's Medicine Bills tab, the same UTC-calendar-day

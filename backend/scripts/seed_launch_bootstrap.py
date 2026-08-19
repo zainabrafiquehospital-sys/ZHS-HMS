@@ -108,6 +108,7 @@ from app.modules.pharmacy.constants import (
 from app.modules.queue.constants import PERMISSION_QUEUE_MANAGE, PERMISSION_QUEUE_READ
 from app.modules.reception.constants import (
     PERMISSION_RECEPTION_CANCEL_VISIT,
+    PERMISSION_RECEPTION_CLEAR_OWN_REVENUE,
     PERMISSION_RECEPTION_DELETE_VISIT,
     PERMISSION_RECEPTION_REGISTER_VISIT,
     PERMISSION_RECEPTION_UPDATE_VISIT,
@@ -215,6 +216,12 @@ PERMISSION_CATALOG: list[tuple[str, str, str]] = [
         "Admin-only: soft-delete a mistakenly-registered visit. Blocked if the visit has a "
         "paid or partially-paid invoice. Not granted to Receptionist.",
     ),
+    (
+        PERMISSION_RECEPTION_CLEAR_OWN_REVENUE,
+        "Clear Own Revenue",
+        "Reset a receptionist's own 'My Revenue' display to zero going forward. Never "
+        "deletes or modifies any visit, invoice, or medicine bill row.",
+    ),
     (PERMISSION_SEARCH_READ, "Search", "Cross-module patient/visit search."),
     (
         PERMISSION_VISITS_CREATE,
@@ -270,6 +277,11 @@ RECEPTIONIST_PERMISSION_CODES: list[str] = [
     # Admin-only (see app/modules/pharmacy/constants.py's module docstring).
     PERMISSION_PHARMACY_READ,
     PERMISSION_PHARMACY_BILL,
+    # "My Revenue" (2026-08-19 addition) — GET /reception/revenue reuses
+    # PERMISSION_RECEPTION_REGISTER_VISIT above (no separate read
+    # permission was added, see reception/constants.py's own docstring),
+    # so only the "Clear Revenue" mutation needs its own grant here.
+    PERMISSION_RECEPTION_CLEAR_OWN_REVENUE,  # POST /reception/revenue/clear
 ]
 # Deliberately NOT included, despite being in the originally proposed set —
 # not exercised by any reception UI code path as of this build, so excluded

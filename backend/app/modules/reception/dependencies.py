@@ -15,6 +15,8 @@ from app.modules.billing.dependencies import get_invoice_repository
 from app.modules.billing.repository import InvoiceRepository
 from app.modules.patients.dependencies import get_patient_service
 from app.modules.patients.service import PatientService
+from app.modules.pharmacy.dependencies import get_medicine_bill_repository
+from app.modules.pharmacy.repository import MedicineBillRepository
 from app.modules.queue.dependencies import get_queue_service
 from app.modules.queue.service import QueueService
 from app.modules.reception.repository import ReceptionRepository
@@ -42,6 +44,9 @@ def get_reception_service(
     # re-declared, the same "compose the already-existing provider"
     # convention this file's own module docstring already states.
     invoice_repository: InvoiceRepository = Depends(get_invoice_repository),
+    # 2026-08-19 addition, same shape/rationale as invoice_repository
+    # above — reused directly from pharmacy/dependencies.py.
+    medicine_bill_repository: MedicineBillRepository = Depends(get_medicine_bill_repository),
 ) -> ReceptionService:
     return ReceptionService(
         session=db,
@@ -51,4 +56,5 @@ def get_reception_service(
         audit_repository=audit_repository,
         reception_repository=reception_repository,
         invoice_repository=invoice_repository,
+        medicine_bill_repository=medicine_bill_repository,
     )

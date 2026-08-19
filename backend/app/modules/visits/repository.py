@@ -142,9 +142,8 @@ class VisitRepository(BaseRepository[Visit]):
 
     async def count_and_revenue_by_creator(self) -> dict[UUID, tuple[int, Decimal]]:
         """Backs the Admin "Employee Accounts & Stats" page's per-
-        receptionist "visits registered" figure AND Reception's own "My
-        Revenue"/"My Slips" tiles (a receptionist's own row, looked up
-        by their own user id, out of this same all-users result) — one
+        receptionist "visits registered" figure — every creator's real,
+        all-time, never-reset total, exactly as recorded — one
         `GROUP BY` query for every creator's count and total `amount`
         across all Visits, the same N+1-avoidance shape as
         `count_by_status` above, and the same `(count, revenue)` shape
@@ -153,7 +152,15 @@ class VisitRepository(BaseRepository[Visit]):
         (none in practice — VisitService.register_visit always stamps
         it — but never assumed) are excluded by the `is_not(None)`
         filter rather than surfacing as a spurious `{None: ...}` entry
-        the caller would have to special-case."""
+        the caller would have to special-case.
+
+        Deliberately never scoped/filtered by a receptionist's own
+        "Clear Revenue" action (see ReceptionService.get_own_revenue) —
+        this is Admin's own all-time audit view of everyone, and must
+        keep showing the true, complete history regardless of what any
+        individual receptionist has cleared from her own display.
+        `count_and_revenue_for_creator` below is the single-user,
+        clear-aware sibling this method deliberately isn't."""
         stmt = (
             select(Visit.created_by, func.count(), func.sum(Visit.amount))
             .where(Visit.deleted_at.is_(None), Visit.created_by.is_not(None))
@@ -161,3 +168,23 @@ class VisitRepository(BaseRepository[Visit]):
         )
         result = await self.session.execute(stmt)
         return {created_by: (count, revenue) for created_by, count, revenue in result.all()}
+
+    async def count_and_revenue_for_creator(
+        self, user_id: UUID, *, since: datetime | None = None
+    ) -> tuple[int, Decimal]:
+        """The single-user, optionally-since-a-cutoff sibling of
+        `count_and_revenue_by_creator` above — backs Reception's own "My
+        Revenue" tile (2026-08-19 addition). `since`, when given, is a
+        receptionist's own "Clear Revenue" reset point (see
+        ReceptionService.get_own_revenue) — never touches or excludes
+        any row, purely narrows which of her *own* already-intact rows
+        count toward what she currently sees. Returns `(0, Decimal("0.00"))`
+        rather than `(0, None)` for "no matching visits", so callers never
+        need a None-check on the revenue half specifically."""
+        conditions = [Visit.deleted_at.is_(None), Visit.created_by == user_id]
+        if since is not None:
+            conditions.append(Visit.created_at > since)
+        stmt = select(func.count(), func.sum(Visit.amount)).where(*conditions)
+        result = await self.session.execute(stmt)
+        count, revenue = result.one()
+        return count, (revenue if revenue is not None else Decimal("0.00"))

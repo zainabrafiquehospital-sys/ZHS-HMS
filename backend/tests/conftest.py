@@ -572,6 +572,9 @@ def reception_service(
         # 2026-08-19 addition — see ReceptionService.__init__'s own
         # docstring for why this one read-only Billing dependency exists.
         invoice_repository=InvoiceRepository(real_session),
+        # Same shape/rationale, added the same day for "My Revenue"'s
+        # medicine-bill breakdown.
+        medicine_bill_repository=MedicineBillRepository(real_session),
     )
 
 

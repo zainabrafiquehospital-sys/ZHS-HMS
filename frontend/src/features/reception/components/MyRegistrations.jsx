@@ -1,16 +1,18 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Printer, Receipt, Search, Users } from 'lucide-react';
+import { Eraser, Printer, Receipt, Search, Users } from 'lucide-react';
 import {
+  useClearMyRevenue,
   useMyRegistrations,
-  useMyRevenueStats,
+  useMyRevenue,
   usePatientsForVisits,
   usePrintRegistrationSlip,
 } from '@/features/reception/hooks/useReception';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
+import { ConfirmDialog } from '@/shared/components/ui/ConfirmDialog';
 import { Input } from '@/shared/components/ui/Input';
 import { PageLoader } from '@/shared/components/PageLoader';
 import { PageError } from '@/shared/components/PageError';
@@ -69,17 +71,21 @@ function SummaryTile({ icon: Icon, label, value }) {
 }
 
 /** Every visit this receptionist has ever registered — no date or
- * shift restriction, only creator (see useMyRegistrations). "My
- * Revenue"/"My Slips" are this receptionist's real all-time totals
- * (useMyRevenueStats, a server-side aggregate — never a sum of
- * whatever page happens to be fetched), always accurate regardless of
- * how the list below is paginated for display. */
+ * shift restriction, only creator (see useMyRegistrations); this list
+ * is never affected by "Clear Revenue" (her full history stays fully
+ * visible here regardless — only the summary tiles above it reset).
+ * "My Revenue" breaks out visits vs. medicine bills plus a combined
+ * total, since her last "Clear Revenue" action or all-time if she's
+ * never cleared (useMyRevenue, a server-side aggregate hard-scoped to
+ * her own id — see that hook's own docstring — never a sum of whatever
+ * page happens to be fetched). */
 export function MyRegistrations() {
   const { visits, isLoading, isError, error, refetch } = useMyRegistrations({
     page: 1,
     pageSize: FETCH_PAGE_SIZE,
   });
-  const revenueStats = useMyRevenueStats();
+  const revenue = useMyRevenue();
+  const clearRevenue = useClearMyRevenue();
   const patientsById = usePatientsForVisits(visits);
   const printSlip = usePrintRegistrationSlip();
 
@@ -87,6 +93,8 @@ export function MyRegistrations() {
   const [page, setPage] = useState(1);
   const [printingVisitId, setPrintingVisitId] = useState(null);
   const [printError, setPrintError] = useState(null);
+  const [confirmingClear, setConfirmingClear] = useState(false);
+  const [clearError, setClearError] = useState(null);
 
   const debouncedSearch = useDebouncedValue(searchTerm, 200);
 
@@ -120,6 +128,16 @@ export function MyRegistrations() {
     }
   }
 
+  async function handleConfirmClear() {
+    setClearError(null);
+    try {
+      await clearRevenue.mutateAsync();
+      setConfirmingClear(false);
+    } catch (err) {
+      setClearError(err.message || 'Unable to clear your revenue — you can try again.');
+    }
+  }
+
   if (isLoading) return <PageLoader label="Loading your registrations" />;
   if (isError) {
     return <PageError error={error} reset={refetch} message="Couldn't load your registrations." />;
@@ -131,9 +149,31 @@ export function MyRegistrations() {
         <CardTitle>My Registrations</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <SummaryTile icon={Receipt} label="My Revenue" value={formatPkr(revenueStats.revenue)} />
-          <SummaryTile icon={Users} label="My Slips" value={revenueStats.count} />
+        <div className="flex flex-col gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <SummaryTile icon={Receipt} label="Visits Revenue" value={formatPkr(revenue.visitsRevenue)} />
+            <SummaryTile
+              icon={Receipt}
+              label="Medicines Revenue"
+              value={formatPkr(revenue.medicineRevenue)}
+            />
+            <SummaryTile icon={Receipt} label="Total Revenue" value={formatPkr(revenue.totalRevenue)} />
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-dashed border-border p-3">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Users className="h-3.5 w-3.5" />
+              <span>
+                {revenue.visitsCount} slip{revenue.visitsCount === 1 ? '' : 's'}
+                {revenue.clearedAt
+                  ? ` · since your last clear (${displayDayKey(revenue.clearedAt)} ${formatDisplayTime(revenue.clearedAt)})`
+                  : ' · all-time'}
+              </span>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => setConfirmingClear(true)}>
+              <Eraser className="h-3.5 w-3.5" />
+              Clear Revenue
+            </Button>
+          </div>
         </div>
 
         <div className="relative sm:max-w-xs">
@@ -279,6 +319,31 @@ export function MyRegistrations() {
           </>
         )}
       </CardContent>
+
+      <ConfirmDialog
+        open={confirmingClear}
+        variant="destructive"
+        title="Clear your revenue?"
+        confirmLabel={clearRevenue.isPending ? 'Clearing…' : 'Clear Revenue'}
+        cancelLabel="Cancel"
+        onCancel={() => {
+          setConfirmingClear(false);
+          setClearError(null);
+        }}
+        onConfirm={handleConfirmClear}
+        description={
+          <div className="flex flex-col gap-2">
+            <p>
+              Your Visits Revenue, Medicines Revenue, and Total Revenue figures above will reset to
+              PKR 0.00 going forward. This does not delete or change anything — every visit,
+              invoice, and medicine bill you&apos;ve ever created stays exactly as it is, still
+              fully visible in your registrations list below and in Admin&apos;s records. This
+              cannot be undone from here.
+            </p>
+            {clearError ? <p className="text-destructive">{clearError}</p> : null}
+          </div>
+        }
+      />
     </Card>
   );
 }

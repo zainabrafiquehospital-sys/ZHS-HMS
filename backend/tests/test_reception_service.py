@@ -8,11 +8,12 @@ from app.modules.auth.repository import LoginSessionRepository, UserRepository
 from app.modules.consultation.constants import PERMISSION_CONSULTATION_START
 from app.modules.patients.exceptions import PatientNotFoundError
 from app.modules.patients.models import PatientGender
+from app.modules.pharmacy.models import MedicineCategory
 from app.modules.queue.models import QueueDestination, QueueEntryStatus
 from app.modules.reception.exceptions import VisitHasSettledInvoiceError
 from app.modules.visits.exceptions import VisitNotFoundError
 from app.modules.visits.models import VisitStatus
-from tests.conftest import TEST_PATIENT_NAME_PREFIX, make_test_email
+from tests.conftest import TEST_MEDICINE_NAME_PREFIX, TEST_PATIENT_NAME_PREFIX, make_test_email
 
 
 async def _make_actor(real_session, suffix: str) -> User:
@@ -355,3 +356,175 @@ async def test_admin_delete_visit_allowed_when_invoice_unpaid(
 
     with pytest.raises(VisitNotFoundError):
         await visit_service.get_visit(visit.id)
+
+
+# ---------------------------------------------------------------------
+# "My Revenue" (2026-08-19 addition) — own-only scoping, medicine bills
+# included, and the audit-log-based clear mechanism (see
+# ReceptionService.get_own_revenue's own docstring for the full design).
+# ---------------------------------------------------------------------
+
+
+async def _make_medicine(pharmacy_service, actor, suffix: str, price: str = "50.00"):
+    return await pharmacy_service.create_medicine(
+        actor=actor,
+        name=f"{TEST_MEDICINE_NAME_PREFIX}Reception{suffix}",
+        category=MedicineCategory.TABLET,
+        unit_price=Decimal(price),
+    )
+
+
+async def test_get_own_revenue_is_scoped_to_the_caller_only(
+    real_session, reception_service, pharmacy_service
+):
+    """The core requirement: receptionist A's own-revenue figure must
+    never include receptionist B's visits/medicine bills, even though
+    both are registered in the same database at the same time."""
+    receptionist_a = await _make_actor(real_session, "revenue-a")
+    receptionist_b = await _make_actor(real_session, "revenue-b")
+
+    await reception_service.register_visit(
+        actor=receptionist_a,
+        patient_id=None,
+        new_patient=_new_patient_payload("RevenueOwnA"),
+        doctor_user_id=receptionist_a.id,
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=False,
+    )
+    await reception_service.register_visit(
+        actor=receptionist_b,
+        patient_id=None,
+        new_patient=_new_patient_payload("RevenueOwnB"),
+        doctor_user_id=receptionist_b.id,
+        procedure="Consultation",
+        amount=Decimal("9999.00"),
+        vitals_required=False,
+    )
+
+    visits_count, visits_revenue, _med_count, _med_revenue, cleared_at = (
+        await reception_service.get_own_revenue(actor=receptionist_a)
+    )
+
+    assert visits_count == 1
+    assert visits_revenue == Decimal("1500.00")
+    assert cleared_at is None
+
+
+async def test_get_own_revenue_includes_medicine_bills_in_breakdown(
+    real_session, reception_service, pharmacy_service
+):
+    receptionist = await _make_actor(real_session, "revenue-medicine")
+    medicine = await _make_medicine(pharmacy_service, receptionist, "Breakdown", price="100.00")
+
+    await reception_service.register_visit(
+        actor=receptionist,
+        patient_id=None,
+        new_patient=_new_patient_payload("RevenueMedVisit"),
+        doctor_user_id=receptionist.id,
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=False,
+    )
+    await pharmacy_service.create_bill(
+        actor=receptionist, visit_id=None, items=[(medicine.id, 2)]
+    )
+
+    visits_count, visits_revenue, med_count, med_revenue, _cleared_at = (
+        await reception_service.get_own_revenue(actor=receptionist)
+    )
+
+    assert visits_count == 1
+    assert visits_revenue == Decimal("1500.00")
+    assert med_count == 1
+    assert med_revenue == Decimal("200.00")  # 2 x 100.00
+
+
+async def test_clear_own_revenue_resets_display_but_leaves_data_intact(
+    real_session, reception_service, visit_service
+):
+    receptionist = await _make_actor(real_session, "revenue-clear")
+    _patient, visit, _entry = await reception_service.register_visit(
+        actor=receptionist,
+        patient_id=None,
+        new_patient=_new_patient_payload("RevenueClear"),
+        doctor_user_id=receptionist.id,
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=False,
+    )
+
+    before_count, before_revenue, _mc, _mr, _ca = await reception_service.get_own_revenue(
+        actor=receptionist
+    )
+    assert before_count == 1
+    assert before_revenue == Decimal("1500.00")
+
+    cleared_at = await reception_service.clear_own_revenue(actor=receptionist)
+    assert cleared_at is not None
+
+    after_count, after_revenue, _mc2, _mr2, reported_cleared_at = (
+        await reception_service.get_own_revenue(actor=receptionist)
+    )
+    assert after_count == 0
+    assert after_revenue == Decimal("0.00")
+    assert reported_cleared_at is not None
+
+    # The non-negotiable part: the underlying Visit row is completely
+    # untouched — same id, same amount, not soft-deleted, still fully
+    # visible — "clearing" only narrowed what counts toward this one
+    # receptionist's own forward-looking display.
+    still_there = await visit_service.get_visit(visit.id)
+    assert still_there.id == visit.id
+    assert still_there.amount == Decimal("1500.00")
+    assert still_there.deleted_at is None
+
+
+async def test_clear_own_revenue_does_not_affect_admins_alltime_view(
+    real_session, reception_service, visit_service
+):
+    """Admin's own all-time aggregate (Employee Accounts & Stats, and
+    Admin Overview's revenue-by-receptionist chart) must keep showing
+    the true, complete history regardless of any receptionist's own
+    clear — this is what makes "clear" a display-scope operation, not a
+    data-deletion one."""
+    receptionist = await _make_actor(real_session, "revenue-admin-view")
+    await reception_service.register_visit(
+        actor=receptionist,
+        patient_id=None,
+        new_patient=_new_patient_payload("RevenueAdminView"),
+        doctor_user_id=receptionist.id,
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=False,
+    )
+
+    await reception_service.clear_own_revenue(actor=receptionist)
+
+    all_time = await visit_service.count_and_revenue_by_creator()
+    assert all_time[receptionist.id] == (1, Decimal("1500.00"))
+
+
+async def test_clear_own_revenue_only_affects_the_caller(real_session, reception_service):
+    """Receptionist B clearing her own revenue must never touch
+    receptionist A's — each has an independent reset point."""
+    receptionist_a = await _make_actor(real_session, "revenue-independent-a")
+    receptionist_b = await _make_actor(real_session, "revenue-independent-b")
+    await reception_service.register_visit(
+        actor=receptionist_a,
+        patient_id=None,
+        new_patient=_new_patient_payload("RevenueIndepA"),
+        doctor_user_id=receptionist_a.id,
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=False,
+    )
+
+    await reception_service.clear_own_revenue(actor=receptionist_b)
+
+    a_count, a_revenue, _mc, _mr, a_cleared_at = await reception_service.get_own_revenue(
+        actor=receptionist_a
+    )
+    assert a_count == 1
+    assert a_revenue == Decimal("1500.00")
+    assert a_cleared_at is None

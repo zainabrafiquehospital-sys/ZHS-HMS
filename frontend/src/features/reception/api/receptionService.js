@@ -24,6 +24,18 @@ export const receptionService = {
     return httpClient.delete(`/reception/visits/${visitId}`);
   },
 
+  // "My Revenue" (2026-08-19 addition) — always the calling
+  // receptionist's own figures; there is no user-id parameter on
+  // either call, matching how the backend hard-scopes both to
+  // `actor.id` (see backend/app/modules/reception/router.py).
+  getMyRevenue() {
+    return httpClient.get('/reception/revenue');
+  },
+
+  clearMyRevenue() {
+    return httpClient.post('/reception/revenue/clear');
+  },
+
   // Returns a raw HTML document (not the JSON envelope) — see
   // billingService.fetchInvoiceReceiptHtml's identical docstring for
   // why this is fetched rather than a plain <a href>.
