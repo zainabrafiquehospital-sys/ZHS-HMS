@@ -217,6 +217,186 @@ async def test_print_registration_slip_requires_permission(api_client, real_sess
     assert resp.status_code == 403
 
 
+# ---------------------------------------------------------------------
+# Registration-time discount (2026-08-19 addition) — an optional flat
+# discount off `amount`, applied directly on the Register Visit form.
+# `Visit.amount` ends up already post-discount, so this section also
+# proves the design goal: the discount flows through to "My Revenue"
+# automatically, with no extra code path — see VisitService.
+# register_visit's own docstring for the full mechanism.
+# ---------------------------------------------------------------------
+
+
+async def test_register_visit_with_discount_computes_post_discount_amount(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "discount-basic")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+
+    resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("DiscountBasic"),
+            "procedure": "Consultation",
+            "amount": "2000.00",
+            "vitals_required": False,
+            "discount_amount": "500.00",
+            "discount_reason": "Referral",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 201, resp.text
+    visit = resp.json()["data"]["visit"]
+    assert visit["amount"] == "1500.00"
+    assert visit["discount_amount"] == "500.00"
+    assert visit["discount_reason"] == "Referral"
+
+
+async def test_register_visit_discount_reason_is_optional(api_client, real_session, grant_permission):
+    actor, access_token = await _create_and_login(api_client, real_session, "discount-no-reason")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+
+    resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("DiscountNoReason"),
+            "procedure": "Consultation",
+            "amount": "1000.00",
+            "vitals_required": False,
+            "discount_amount": "100.00",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 201, resp.text
+    visit = resp.json()["data"]["visit"]
+    assert visit["amount"] == "900.00"
+    assert visit["discount_reason"] is None
+
+
+async def test_register_visit_discount_exceeding_amount_rejected(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "discount-exceeds")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+
+    resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("DiscountExceeds"),
+            "procedure": "Consultation",
+            "amount": "500.00",
+            "vitals_required": False,
+            "discount_amount": "500.01",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "VISIT_DISCOUNT_EXCEEDS_AMOUNT"
+
+
+async def test_print_registration_slip_with_discount_shows_lines_in_correct_order(
+    api_client, real_session, grant_permission
+):
+    """The printed slip must show, in order: the original (pre-discount)
+    amount, then the Discount line, then the final Net Amount."""
+    actor, access_token = await _create_and_login(api_client, real_session, "discount-print-order")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+
+    register_resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("DiscountPrintOrder"),
+            "procedure": "Consultation",
+            "amount": "2000.00",
+            "vitals_required": False,
+            "discount_amount": "300.00",
+            "discount_reason": "Staff discount",
+        },
+        headers=_auth_header(access_token),
+    )
+    assert register_resp.status_code == 201, register_resp.text
+    visit_id = register_resp.json()["data"]["visit"]["id"]
+
+    resp = await api_client.get(
+        f"/api/v1/reception/visits/{visit_id}/slip/print", headers=_auth_header(access_token)
+    )
+    assert resp.status_code == 200
+    html = resp.text
+    assert "2,000.00" in html
+    assert "Discount (Staff discount)" in html
+    assert "1,700.00" in html
+
+    amount_idx = html.index(">Amount<")
+    discount_idx = html.index("Discount (Staff discount)")
+    net_idx = html.index("Net Amount")
+    assert amount_idx < discount_idx < net_idx
+
+
+async def test_print_registration_slip_without_discount_omits_discount_line(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "no-discount-print")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+
+    register_resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("PlainPrintSlip"),
+            "procedure": "Consultation",
+            "amount": "800.00",
+            "vitals_required": False,
+        },
+        headers=_auth_header(access_token),
+    )
+    visit_id = register_resp.json()["data"]["visit"]["id"]
+
+    resp = await api_client.get(
+        f"/api/v1/reception/visits/{visit_id}/slip/print", headers=_auth_header(access_token)
+    )
+    assert resp.status_code == 200
+    assert "Discount" not in resp.text
+    assert "Net Amount" not in resp.text
+
+
+async def test_register_visit_discount_flows_through_to_my_revenue(
+    api_client, real_session, grant_permission
+):
+    """The core design goal: a registration-time discount must actually
+    reduce what "My Revenue" reports, not just be a cosmetic field on
+    the printed slip — proves Visit.amount being stored already
+    post-discount is what makes this automatic, with no separate
+    revenue-recompute logic anywhere."""
+    actor, access_token = await _create_and_login(api_client, real_session, "discount-revenue-flow")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+
+    register_resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("DiscountRevenueFlow"),
+            "procedure": "Consultation",
+            "amount": "3000.00",
+            "vitals_required": False,
+            "discount_amount": "1000.00",
+            "discount_reason": "Loyalty",
+        },
+        headers=_auth_header(access_token),
+    )
+    assert register_resp.status_code == 201, register_resp.text
+
+    revenue_resp = await api_client.get(
+        "/api/v1/reception/revenue", headers=_auth_header(access_token)
+    )
+    assert revenue_resp.status_code == 200
+    body = revenue_resp.json()["data"]
+    assert body["visits_count"] == 1
+    # Not 3000.00 — the discount must already be reflected here.
+    assert body["visits_revenue"] == "2000.00"
+    assert body["total_revenue"] == "2000.00"
+
+
 async def test_cancel_visit_requires_permission(api_client, real_session, grant_permission):
     actor, access_token = await _create_and_login(api_client, real_session, "cancel-no-perm")
     await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)

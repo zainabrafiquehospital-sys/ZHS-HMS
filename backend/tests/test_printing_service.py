@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from app.shared.printing.service import render_invoice_receipt
+from app.shared.printing.service import render_invoice_receipt, render_registration_slip
 
 
 def _render(**overrides) -> str:
@@ -20,6 +20,24 @@ def _render(**overrides) -> str:
     )
     defaults.update(overrides)
     return render_invoice_receipt(**defaults)
+
+
+def _render_slip(**overrides) -> str:
+    defaults = dict(
+        hospital_name="ZRH Hospital",
+        display_timezone="Asia/Karachi",
+        patient_full_name="Jane Doe",
+        patient_mr_number="MR-000001",
+        patient_age_years=30,
+        patient_phone_number="03001234567",
+        visit_queue_token="Token #001",
+        visit_procedure="Consultation",
+        visit_amount=Decimal("1500.00"),
+        visit_created_at=datetime(2026, 1, 1, 10, 30, tzinfo=UTC),
+        assigned_doctor_full_name=None,
+    )
+    defaults.update(overrides)
+    return render_registration_slip(**defaults)
 
 
 def test_render_includes_all_core_fields():
@@ -92,3 +110,44 @@ def test_render_without_discount_omits_discount_row_but_keeps_net_amount():
     total_idx = html_document.index("Total Amount")
     net_idx = html_document.index("Net Amount")
     assert total_idx < net_idx
+
+
+def test_render_slip_without_discount_shows_single_amount_row():
+    """The common case (2026-08-19 addition) must be byte-for-byte the
+    same shape this template has always produced — a single "Amount"
+    row, no Discount/Net Amount rows at all."""
+    html_document = _render_slip()
+
+    assert ">Amount<" in html_document
+    assert "Discount" not in html_document
+    assert "Net Amount" not in html_document
+    assert "1,500.00" in html_document
+
+
+def test_render_slip_with_discount_shows_amount_discount_net_amount_in_order():
+    html_document = _render_slip(
+        visit_amount=Decimal("1500.00"),
+        visit_discount_amount=Decimal("500.00"),
+        visit_discount_reason="Referral",
+    )
+
+    assert "Discount (Referral)" in html_document
+    assert "Net Amount" in html_document
+    # subtotal (2000.00, recovered) -> discount -> net amount (1500.00)
+    assert "2,000.00" in html_document
+    assert "1,500.00" in html_document
+
+    amount_idx = html_document.index(">Amount<")
+    discount_idx = html_document.index("Discount (Referral)")
+    net_idx = html_document.index("Net Amount")
+    assert amount_idx < discount_idx < net_idx
+
+
+def test_render_slip_escapes_html_in_discount_reason():
+    html_document = _render_slip(
+        visit_discount_amount=Decimal("100.00"),
+        visit_discount_reason="<script>alert(1)</script>",
+    )
+
+    assert "<script>alert(1)</script>" not in html_document
+    assert "&lt;script&gt;" in html_document

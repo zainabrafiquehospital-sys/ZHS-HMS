@@ -20,3 +20,18 @@ class InvalidVisitStatusTransitionError(ValidationError):
             f"Cannot move a Visit from '{current}' to '{target}'.",
             {"current_status": current, "target_status": target},
         )
+
+
+class VisitDiscountExceedsAmountError(ValidationError):
+    """Mirrors app/modules/pharmacy/exceptions.py's identical
+    `MedicineBillDiscountExceedsSubtotalError` — there is deliberately
+    no `VisitDiscountReasonRequiredError` sibling: a registration-time
+    discount's reason is always optional (2026-08-19 addition), the
+    same product decision the medicine-bill discount already made."""
+
+    code = "VISIT_DISCOUNT_EXCEEDS_AMOUNT"
+
+    def __init__(self, amount: str) -> None:
+        super().__init__(
+            f"Discount exceeds the entered amount of {amount}.", {"amount": amount}
+        )

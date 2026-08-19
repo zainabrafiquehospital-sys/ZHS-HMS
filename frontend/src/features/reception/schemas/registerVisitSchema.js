@@ -25,8 +25,27 @@ const positiveAmount = z
     message: 'Enter an amount greater than 0',
   });
 
+// Blank/zero/untouched all mean "no discount" — same convention as
+// features/pharmacy/schemas/pharmacySchemas.js's identical
+// nonNegativeAmount (duplicated locally rather than imported cross-
+// feature, matching this codebase's per-feature schema-file
+// independence).
+const nonNegativeAmount = z
+  .union([z.string(), z.number()])
+  .transform((value) => (value === '' || value === null || value === undefined ? 0 : Number(value)))
+  .refine((value) => Number.isFinite(value) && value >= 0, {
+    message: 'Amount must be zero or greater',
+  });
+
 // No doctor-selection field at all — doctor assignment is always
 // automatic (Phase 6 fast-registration §4), never a receptionist choice.
+// discountAmount/discountReason (2026-08-19 addition) — an optional
+// flat discount off `amount`, applied at registration time; reason is
+// always optional here, same product decision as the medicine-bill
+// discount (no cross-field "reason required" refine, unlike Billing's
+// own generateInvoiceSchema). Whether these fields are shown/applied
+// at all is owned by the "Apply Discount" checkbox in
+// RegisterVisitForm.jsx, not by this schema.
 export const registerVisitSchema = z
   .object({
     patientMode: z.enum(['new', 'existing']),
@@ -36,6 +55,8 @@ export const registerVisitSchema = z
     procedure: z.string().min(1, 'Procedure is required').max(200),
     amount: positiveAmount,
     vitalsRequired: z.boolean().default(false),
+    discountAmount: nonNegativeAmount,
+    discountReason: z.string().max(200).optional(),
   })
   .refine((data) => data.patientMode !== 'existing' || Boolean(data.existingPatientId), {
     message: 'Search and select an existing patient',

@@ -115,6 +115,8 @@ class ReceptionService:
         procedure: str,
         amount: Decimal,
         vitals_required: bool,
+        discount_amount: Decimal = Decimal("0.00"),
+        discount_reason: str | None = None,
     ) -> tuple[Patient, Visit, QueueEntry]:
         """`patient_id` XOR `new_patient` is enforced at the schema layer
         (RegisterVisitRequest) before this is ever called — this method
@@ -131,7 +133,14 @@ class ReceptionService:
         available, registration proceeds with the Visit unassigned
         rather than blocking (Phase 6 fast-registration §4) — any doctor
         claims it the moment they start its consultation (see
-        consultation/service.py's `start_consultation`)."""
+        consultation/service.py's `start_consultation`).
+
+        `discount_amount`/`discount_reason` (both optional, 2026-08-19
+        addition) pass straight through to VisitService.register_visit,
+        which owns the actual validation and the amount/discount
+        arithmetic — see that method's own docstring for the full
+        mechanism and why it makes a registration-time discount actually
+        flow through to Billing and every revenue read."""
         if patient_id is not None:
             patient = await self._patient_service.get_patient(patient_id)
         else:
@@ -148,6 +157,8 @@ class ReceptionService:
             procedure=procedure,
             amount=amount,
             vitals_required=vitals_required,
+            discount_amount=discount_amount,
+            discount_reason=discount_reason,
         )
 
         destination = QueueDestination.VITALS if vitals_required else QueueDestination.DOCTOR

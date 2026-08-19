@@ -3,10 +3,15 @@ from decimal import Decimal
 import pytest
 from uuid6 import uuid7
 
+from app.core.exceptions import ValidationError
 from app.modules.auth.models import User, UserStatus
 from app.modules.auth.repository import UserRepository
 from app.modules.patients.models import PatientGender
-from app.modules.visits.exceptions import InvalidVisitStatusTransitionError, VisitNotFoundError
+from app.modules.visits.exceptions import (
+    InvalidVisitStatusTransitionError,
+    VisitDiscountExceedsAmountError,
+    VisitNotFoundError,
+)
 from app.modules.visits.models import VisitStatus
 from tests.conftest import TEST_PATIENT_NAME_PREFIX, make_test_email
 
@@ -78,6 +83,115 @@ async def test_register_visit_amount_is_quantized_to_two_decimal_places(
 
     assert visit.amount == Decimal("20000.00")
     assert str(visit.amount) == "20000.00"
+
+
+async def test_register_visit_without_discount_has_zero_discount_fields(
+    real_session, patient_service, visit_service
+):
+    """The common, no-discount case must be byte-for-byte the same
+    behavior as before this feature — amount stored exactly as entered,
+    discount_amount 0.00, discount_reason None."""
+    actor = await _make_actor(real_session, "no-discount")
+    patient = await _make_patient(real_session, patient_service, actor, "NoDiscount")
+
+    visit = await visit_service.register_visit(
+        actor=actor,
+        patient_id=patient.id,
+        doctor_user_id=actor.id,
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=False,
+    )
+
+    assert visit.amount == Decimal("1500.00")
+    assert visit.discount_amount == Decimal("0.00")
+    assert visit.discount_reason is None
+
+
+async def test_register_visit_with_discount_stores_post_discount_amount(
+    real_session, patient_service, visit_service
+):
+    """The core requirement: `amount` on the stored Visit ends up
+    already post-discount — the same column every existing reader
+    (Billing's Generate Invoice prefill, every revenue aggregate)
+    already treats as "the real amount", so this is what makes the
+    discount actually flow through everywhere else in the system."""
+    actor = await _make_actor(real_session, "with-discount")
+    patient = await _make_patient(real_session, patient_service, actor, "WithDiscount")
+
+    visit = await visit_service.register_visit(
+        actor=actor,
+        patient_id=patient.id,
+        doctor_user_id=actor.id,
+        procedure="Consultation",
+        amount=Decimal("2000.00"),
+        vitals_required=False,
+        discount_amount=Decimal("500.00"),
+        discount_reason="Referral",
+    )
+
+    assert visit.amount == Decimal("1500.00")
+    assert visit.discount_amount == Decimal("500.00")
+    assert visit.discount_reason == "Referral"
+
+
+async def test_register_visit_discount_reason_is_optional(
+    real_session, patient_service, visit_service
+):
+    """Deliberate difference from Invoice's discount, which requires a
+    reason — a registration-time discount reason may be left blank,
+    the same product decision the medicine-bill discount already made."""
+    actor = await _make_actor(real_session, "discount-no-reason")
+    patient = await _make_patient(real_session, patient_service, actor, "DiscountNoReason")
+
+    visit = await visit_service.register_visit(
+        actor=actor,
+        patient_id=patient.id,
+        doctor_user_id=actor.id,
+        procedure="Consultation",
+        amount=Decimal("1000.00"),
+        vitals_required=False,
+        discount_amount=Decimal("100.00"),
+    )
+
+    assert visit.amount == Decimal("900.00")
+    assert visit.discount_reason is None
+
+
+async def test_register_visit_discount_exceeding_amount_rejected(
+    real_session, patient_service, visit_service
+):
+    actor = await _make_actor(real_session, "discount-exceeds")
+    patient = await _make_patient(real_session, patient_service, actor, "DiscountExceeds")
+
+    with pytest.raises(VisitDiscountExceedsAmountError):
+        await visit_service.register_visit(
+            actor=actor,
+            patient_id=patient.id,
+            doctor_user_id=actor.id,
+            procedure="Consultation",
+            amount=Decimal("500.00"),
+            vitals_required=False,
+            discount_amount=Decimal("500.01"),
+        )
+
+
+async def test_register_visit_negative_discount_rejected(
+    real_session, patient_service, visit_service
+):
+    actor = await _make_actor(real_session, "discount-negative")
+    patient = await _make_patient(real_session, patient_service, actor, "DiscountNegative")
+
+    with pytest.raises(ValidationError):
+        await visit_service.register_visit(
+            actor=actor,
+            patient_id=patient.id,
+            doctor_user_id=actor.id,
+            procedure="Consultation",
+            amount=Decimal("500.00"),
+            vitals_required=False,
+            discount_amount=Decimal("-10.00"),
+        )
 
 
 async def test_register_visit_routes_directly_to_doctor_when_vitals_not_required(

@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { registerVisitSchema } from '@/features/reception/schemas/registerVisitSchema';
@@ -30,9 +31,11 @@ const DEFAULT_VALUES = {
   procedure: '',
   amount: '',
   vitalsRequired: false,
+  discountAmount: '',
+  discountReason: '',
 };
 
-function buildPayload(values) {
+function buildPayload(values, applyDiscount) {
   const isNew = values.patientMode === 'new';
   return {
     patient_id: isNew ? null : values.existingPatientId,
@@ -50,6 +53,11 @@ function buildPayload(values) {
     procedure: values.procedure,
     amount: Number(values.amount),
     vitals_required: values.vitalsRequired,
+    // Belt-and-suspenders with handleApplyDiscountToggle's own
+    // clearing (below): even if a stale value somehow survived, an
+    // unticked checkbox always sends no discount at all.
+    discount_amount: applyDiscount ? values.discountAmount : 0,
+    discount_reason: applyDiscount ? values.discountReason || null : null,
   };
 }
 
@@ -71,11 +79,29 @@ export function RegisterVisitForm({ onRegistered }) {
 
   const patientMode = watch('patientMode');
   const existingPatientLabel = watch('existingPatientLabel');
+  // Mirrors MedicineBillingWorkspace.jsx's "Apply Discount" checkbox
+  // exactly (2026-08-19 addition): unticked, the two discount fields
+  // stay hidden and no discount is ever sent, regardless of any stale
+  // value typed before unticking (see handleApplyDiscountToggle below).
+  const [applyDiscount, setApplyDiscount] = useState(false);
+  const watchedAmount = watch('amount');
+  const watchedDiscount = watch('discountAmount');
+  const netAmountPreview =
+    Number(watchedAmount || 0) - (applyDiscount ? Number(watchedDiscount || 0) : 0);
+
+  function handleApplyDiscountToggle(checked) {
+    setApplyDiscount(checked);
+    if (!checked) {
+      setValue('discountAmount', '');
+      setValue('discountReason', '');
+    }
+  }
 
   async function onSubmit(values) {
     try {
-      const response = await registerVisit.mutateAsync(buildPayload(values));
+      const response = await registerVisit.mutateAsync(buildPayload(values, applyDiscount));
       reset(DEFAULT_VALUES);
+      setApplyDiscount(false);
       onRegistered?.(response.data);
       // RegistrationSummary (rendered by the parent via onRegistered)
       // stays as the persistent, referenceable receipt-like panel —
@@ -252,6 +278,59 @@ export function RegisterVisitForm({ onRegistered }) {
               </label>
             )}
           />
+
+          {/* Optional flat discount off Amount (2026-08-19 addition) —
+              same toggle shape as the "Vitals required" checkbox above:
+              unticked, no discount fields show and none is applied;
+              ticked, it reveals the amount + optional reason and a live
+              Net Amount preview. Flows through to Billing's Generate
+              Invoice prefill and every revenue figure automatically —
+              see VisitService.register_visit's own docstring — since
+              the Visit's stored `amount` ends up already post-discount.
+              Plain local state, not a registered form field — mirrors
+              MedicineBillingWorkspace.jsx's own applyDiscount toggle. */}
+          <label className="flex items-center gap-2 text-sm text-foreground">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-input"
+              checked={applyDiscount}
+              onChange={(event) => handleApplyDiscountToggle(event.target.checked)}
+            />
+            Apply Discount
+          </label>
+          {applyDiscount ? (
+            <>
+              <div className="flex flex-col gap-4 rounded-md border border-dashed border-border p-3 sm:flex-row sm:flex-wrap">
+                <div className="flex flex-col gap-1.5 sm:w-40">
+                  <Label htmlFor="discountAmount">Discount (Rs.)</Label>
+                  <Input
+                    id="discountAmount"
+                    type="number"
+                    step="0.01"
+                    placeholder="0.00"
+                    {...register('discountAmount')}
+                  />
+                  {errors.discountAmount ? (
+                    <p className="text-xs text-destructive">{errors.discountAmount.message}</p>
+                  ) : null}
+                </div>
+                <div className="flex flex-1 flex-col gap-1.5 sm:min-w-[12rem]">
+                  <Label htmlFor="discountReason">Discount Reason (optional)</Label>
+                  <Input
+                    id="discountReason"
+                    placeholder="e.g. Referral, staff discount"
+                    {...register('discountReason')}
+                  />
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold text-foreground">Net Amount</span>
+                <span className="text-lg font-bold tabular-nums text-foreground">
+                  {Number.isFinite(netAmountPreview) ? netAmountPreview.toFixed(2) : '0.00'}
+                </span>
+              </div>
+            </>
+          ) : null}
 
           <Button type="submit" disabled={isSubmitting} className="w-full sm:w-auto">
             {isSubmitting ? 'Registering…' : 'Register Visit'}

@@ -61,6 +61,8 @@ async def register_visit(
         procedure=payload.procedure,
         amount=payload.amount,
         vitals_required=payload.vitals_required,
+        discount_amount=payload.discount_amount,
+        discount_reason=payload.discount_reason,
     )
     response = RegisterVisitResponse(
         patient=PatientOut.from_patient(patient),
@@ -101,6 +103,8 @@ async def print_registration_slip(
         visit_queue_token=visit.queue_token,
         visit_procedure=visit.procedure,
         visit_amount=visit.amount,
+        visit_discount_amount=visit.discount_amount,
+        visit_discount_reason=visit.discount_reason,
         visit_created_at=visit.created_at,
         assigned_doctor_full_name=doctor_full_name,
     )

@@ -69,6 +69,7 @@ class Visit(BaseEntity):
         Index("ix_visit_doctor_user_id", "doctor_user_id"),
         Index("ix_visit_status", "status"),
         CheckConstraint("amount > 0", name="ck_visit_amount_positive"),
+        CheckConstraint("discount_amount >= 0", name="ck_visit_discount_amount_non_negative"),
     )
 
     patient_id: Mapped[UUID] = mapped_column(ForeignKey("patient.id"), nullable=False)
@@ -86,7 +87,30 @@ class Visit(BaseEntity):
     # Billing later reads this value as the invoice's starting line item
     # rather than asking Reception to type the same amount a second time
     # (see billing's GenerateInvoiceRequest usage in the frontend).
+    # Already post-discount (2026-08-19 addition, see discount_amount's
+    # own docstring below) — every existing reader of this column
+    # (Billing's prefill, every revenue aggregate) already treats it as
+    # "the real amount", so keeping that meaning here is what makes a
+    # registration-time discount actually flow through everywhere else
+    # in the system for free, rather than needing every such call site
+    # updated to separately subtract a discount.
     amount: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)
+    # A fixed-amount discount applied once, at registration time only
+    # (2026-08-19 addition) — same shape and rationale as
+    # app/modules/pharmacy/models.py's MedicineBill.discount_amount/
+    # discount_reason (itself mirroring Invoice's original convention):
+    # `amount` above is already post-discount, the pre-discount original
+    # is never stored separately (always cheaply recoverable as `amount
+    # + discount_amount`). `discount_reason` is always optional, even
+    # when `discount_amount > 0` — same product decision as the
+    # medicine-bill discount, not Invoice's own required-reason rule.
+    # Independent of, and stacks with, Billing's own separate Invoice-
+    # level discount applied later at Generate Invoice time — see
+    # VisitService.register_visit's docstring for the full mechanism.
+    discount_amount: Mapped[Decimal] = mapped_column(
+        _MONEY, nullable=False, default=Decimal("0.00")
+    )
+    discount_reason: Mapped[str | None] = mapped_column(String(200))
     vitals_required: Mapped[bool] = mapped_column(Boolean, nullable=False)
     status: Mapped[VisitStatus] = mapped_column(
         Enum(

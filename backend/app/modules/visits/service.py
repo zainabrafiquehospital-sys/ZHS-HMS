@@ -16,13 +16,20 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.exceptions import ValidationError
 from app.modules.auth.models import User
 from app.modules.visits.constants import QUEUE_TOKEN_PAD_WIDTH, QUEUE_TOKEN_PREFIX
-from app.modules.visits.exceptions import InvalidVisitStatusTransitionError, VisitNotFoundError
+from app.modules.visits.exceptions import (
+    InvalidVisitStatusTransitionError,
+    VisitDiscountExceedsAmountError,
+    VisitNotFoundError,
+)
 from app.modules.visits.models import Visit, VisitStatus
 from app.modules.visits.repository import VISIT_SORTABLE_COLUMNS, VisitRepository
 from app.shared.audit.repository import AuditLogRepository
 from app.shared.money import quantize_money
+
+_ZERO = Decimal("0.00")
 
 # Phase 6 architecture §4.1's Visit Lifecycle State Machine, plus the
 # `COMPLETED -> PAYMENT_PENDING` reopening transition added by the
@@ -80,6 +87,8 @@ class VisitService:
         procedure: str,
         amount: Decimal,
         vitals_required: bool,
+        discount_amount: Decimal = _ZERO,
+        discount_reason: str | None = None,
     ) -> Visit:
         """Creates a new Visit in `REGISTERED` status. Called by the
         Reception module's registration flow (§6) — Reception's own
@@ -94,13 +103,45 @@ class VisitService:
         auto-assign — registration proceeds anyway (never blocked on
         doctor availability); the Visit is claimed by whichever doctor
         starts its consultation first (see
-        consultation/service.py's `start_consultation`)."""
+        consultation/service.py's `start_consultation`).
+
+        `discount_amount` (optional, defaults to none, 2026-08-19
+        addition) is a flat discount off the entered `amount` — same
+        shape as `PharmacyService.create_bill`'s identical parameter:
+        validated here against `amount` (`VisitDiscountExceedsAmountError`
+        if it exceeds it), never against the already-discounted stored
+        value. The stored `Visit.amount` ends up already post-discount
+        (`amount - discount_amount`) — deliberately the same column,
+        same meaning it always had to every existing reader (Billing's
+        Generate Invoice prefill, every revenue aggregate), so a
+        registration-time discount flows through to what's ultimately
+        billed and reported without any of those call sites needing to
+        know a discount happened at all. `discount_reason` is always
+        optional here, even when `discount_amount > 0` — the same
+        product decision the medicine-bill discount already made, not
+        Invoice's own required-reason rule. Independent of Billing's own
+        separate Invoice-level discount, applied later at Generate
+        Invoice time against whatever `Visit.amount` is by then — the
+        two stack rather than conflict."""
+        discount_amount = quantize_money(discount_amount) if discount_amount else _ZERO
+        if discount_amount < _ZERO:
+            raise ValidationError("discount_amount cannot be negative.")
+        discount_reason = discount_reason.strip() if discount_reason else None
+        if discount_amount == _ZERO:
+            discount_reason = None
+        amount = quantize_money(amount)
+        if discount_amount > amount:
+            raise VisitDiscountExceedsAmountError(str(amount))
+        net_amount = amount - discount_amount
+
         visit = Visit(
             patient_id=patient_id,
             doctor_user_id=doctor_user_id,
             queue_token=await self._generate_queue_token(),
             procedure=procedure,
-            amount=quantize_money(amount),
+            amount=net_amount,
+            discount_amount=discount_amount,
+            discount_reason=discount_reason,
             vitals_required=vitals_required,
             status=VisitStatus.REGISTERED,
             created_by=actor.id,
@@ -118,6 +159,7 @@ class VisitService:
                 "patient_id": str(patient_id),
                 "doctor_user_id": str(doctor_user_id) if doctor_user_id else None,
                 "vitals_required": vitals_required,
+                "discount_amount": str(discount_amount),
             },
         )
         target = VisitStatus.WAITING_VITALS if vitals_required else VisitStatus.WAITING_DOCTOR

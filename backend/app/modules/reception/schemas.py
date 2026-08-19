@@ -27,6 +27,15 @@ class RegisterVisitRequest(BaseModel):
     procedure: str = Field(min_length=1, max_length=200)
     amount: LaxDecimal = Field(gt=0)
     vitals_required: bool
+    # Optional flat discount off `amount`, applied at registration time
+    # only (2026-08-19 addition) — same shape as
+    # app/modules/pharmacy/schemas.py's CreateMedicineBillRequest.
+    # discount_amount/discount_reason: `discount_reason` is always
+    # optional here too, even when `discount_amount > 0` (see
+    # VisitService.register_visit's docstring for the full mechanism —
+    # `amount` ends up already post-discount on the stored Visit).
+    discount_amount: LaxDecimal = Field(default=Decimal("0"), ge=0)
+    discount_reason: str | None = Field(default=None, max_length=200)
 
     @model_validator(mode="after")
     def _exactly_one_patient_source(self) -> "RegisterVisitRequest":

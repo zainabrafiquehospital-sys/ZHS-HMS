@@ -39,6 +39,8 @@ class VisitOut(BaseModel):
     doctor_user_id: UUID | None
     procedure: str
     amount: Decimal
+    discount_amount: Decimal
+    discount_reason: str | None
     vitals_required: bool
     status: VisitStatus
     # Who registered this Visit — BaseEntity's own audit-on-write column
@@ -62,6 +64,8 @@ class VisitOut(BaseModel):
             doctor_user_id=visit.doctor_user_id,
             procedure=visit.procedure,
             amount=visit.amount,
+            discount_amount=visit.discount_amount,
+            discount_reason=visit.discount_reason,
             vitals_required=visit.vitals_required,
             status=visit.status,
             created_by=visit.created_by,

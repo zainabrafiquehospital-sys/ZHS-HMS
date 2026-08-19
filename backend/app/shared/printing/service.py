@@ -195,6 +195,8 @@ def render_registration_slip(
     visit_amount: Decimal,
     visit_created_at: datetime,
     assigned_doctor_full_name: str | None,
+    visit_discount_amount: Decimal = Decimal("0.00"),
+    visit_discount_reason: str | None = None,
 ) -> str:
     """Renders Reception's fast-registration slip (Phase 6
     fast-registration §6/§7) — printed immediately after a visit is
@@ -217,7 +219,19 @@ def render_registration_slip(
     `display_timezone` is an IANA zone name (e.g. `"Asia/Karachi"`,
     supplied by the caller from `settings.display_timezone`) — see
     `_to_local_time`'s docstring for why `visit_created_at` must be
-    converted, not formatted as-is."""
+    converted, not formatted as-is.
+
+    `visit_discount_amount`/`visit_discount_reason` (2026-08-19
+    addition) mirror `render_invoice_receipt`'s/
+    `render_medicine_bill_receipt`'s identical Total/Discount/Net
+    Amount convention, adapted to this template's row-based (not
+    table-based) layout: `visit_amount` is already post-discount (see
+    VisitService.register_visit's docstring), so the pre-discount
+    original is recovered as `visit_amount + visit_discount_amount`.
+    When `visit_discount_amount == 0` (the common case), only a single
+    "Amount" row renders, byte-for-byte the same output this template
+    has always produced — the Discount/Net Amount rows appear only
+    when a discount was actually applied."""
     registered_on = _to_local_time(visit_created_at, display_timezone).strftime(
         "%d %b %Y, %I:%M %p"
     )
@@ -243,13 +257,19 @@ def render_registration_slip(
             _row("Contact Number", patient_phone_number),
         ]
     )
-    visit_rows = "".join(
-        [
-            _row("Procedure", visit_procedure),
-            _row("Amount", _money(visit_amount)),
-            _row("Registered On", registered_on),
-        ]
-    )
+    subtotal = visit_amount + visit_discount_amount
+    visit_row_items = [
+        _row("Procedure", visit_procedure),
+        _row("Amount", _money(subtotal)),
+    ]
+    if visit_discount_amount > 0:
+        discount_label = "Discount"
+        if visit_discount_reason:
+            discount_label = f"Discount ({visit_discount_reason})"
+        visit_row_items.append(_row(discount_label, f"-{_money(visit_discount_amount)}"))
+        visit_row_items.append(_row("Net Amount", _money(visit_amount)))
+    visit_row_items.append(_row("Registered On", registered_on))
+    visit_rows = "".join(visit_row_items)
 
     return f"""<!doctype html>
 <html>
