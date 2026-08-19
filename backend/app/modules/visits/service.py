@@ -10,7 +10,7 @@ what makes "no module may write a Visit status that isn't a valid
 transition from its current status" (§4.1) an enforced invariant instead
 of a convention every caller has to remember on its own."""
 
-from datetime import date as date_type
+from datetime import UTC, date as date_type, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -273,3 +273,81 @@ class VisitService:
         await self._transition(actor=actor, visit=visit, target=VisitStatus.CANCELLED)
         await self._session.commit()
         return await self._visit_repo.get_by_id(visit.id)
+
+    # ------------------------------------------------------------------
+    # Admin correction (2026-08-19 addition) — fixing/removing a visit
+    # registered with wrong data (e.g. garbage test input). Deliberately
+    # narrow and orthogonal to the status state machine above: neither
+    # method here is a `mark_*` transition, and neither is exposed by
+    # this module's own (read-only) router — both are called exclusively
+    # from ReceptionService's admin-only composite actions, which is what
+    # actually enforces the `reception:update_visit`/`reception:
+    # delete_visit` RBAC gate and (for delete) the paid-invoice safety
+    # check; VisitService itself stays free of any dependency on Billing
+    # or Queue, exactly like every other method in this class.
+    # ------------------------------------------------------------------
+
+    async def update_visit_details(self, *, actor: User, visit_id: UUID, updates: dict) -> Visit:
+        """Corrects `procedure`/`amount` — the only two fields on Visit
+        itself that a mis-typed registration could get wrong (queue_token
+        is permanent, status/doctor_user_id have their own dedicated
+        transition methods, vitals_required is fixed by the routing
+        decision already acted on). Not a generic field-level PATCH: the
+        caller (ReceptionService.admin_update_visit) is responsible for
+        only ever passing these two keys, mirroring how UserService.
+        update_user's docstring reasons about never letting a generic
+        update endpoint reach a field that has its own dedicated,
+        business-rule-guarded mutation path."""
+        visit = await self.get_visit(visit_id)
+        if not updates:
+            return visit
+
+        for field in ("procedure", "amount"):
+            if field in updates:
+                value = updates[field]
+                setattr(visit, field, quantize_money(value) if field == "amount" else value)
+
+        visit.updated_by = actor.id
+        await self._visit_repo.add(visit)
+        await self._audit_repo.record(
+            module="visits",
+            action="visits.updated_by_admin",
+            entity_type="visit",
+            entity_id=visit.id,
+            actor_user_id=actor.id,
+            metadata={"fields": sorted(updates.keys())},
+        )
+        await self._session.commit()
+        return await self._visit_repo.get_by_id(visit.id)
+
+    async def delete_visit(self, *, actor: User, visit_id: UUID) -> None:
+        """Soft-deletes the Visit (see BaseEntity/BaseRepository.
+        soft_delete) — every existing Visit query already filters
+        `deleted_at IS NULL`, so this is sufficient by itself to make the
+        Visit disappear from every list/search/detail-view with no
+        further code changes. Deliberately never a hard `DELETE`: `visit`
+        is referenced by `queue_entry`/`consultation`/`vitals_record`/
+        `pending_billing_item`/`invoice`, none of which declare an
+        `ON DELETE` clause on their `visit_id` FK (confirmed against the
+        schema — every one of those tables' rows must be deleted by hand,
+        in FK order, before a hard `DELETE FROM visit` could succeed at
+        all) — a hard delete would fail outright for virtually every real
+        Visit, which always has at least a `queue_entry` from
+        registration. Unconditional here by design: whether it is safe to
+        call this at all (e.g. no paid invoice exists) is the caller's
+        business-rule responsibility, not this method's — the same split
+        `cancel_visit` already has with `ReceptionService.cancel_visit`
+        (closing the active queue entry first is that caller's job too,
+        not this module's)."""
+        visit = await self.get_visit(visit_id)
+        now = datetime.now(UTC)
+        await self._visit_repo.soft_delete(visit, deleted_at=now, deleted_by=actor.id)
+        await self._audit_repo.record(
+            module="visits",
+            action="visits.deleted_by_admin",
+            entity_type="visit",
+            entity_id=visit.id,
+            actor_user_id=actor.id,
+            metadata={"queue_token": visit.queue_token, "status": visit.status.value},
+        )
+        await self._session.commit()

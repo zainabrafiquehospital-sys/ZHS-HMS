@@ -1,8 +1,9 @@
 'use client';
 
-import { useQueries, useQuery } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { visitsService } from '@/features/visits/api/visitsService';
 import { adminUsersService } from '@/features/admin/api/adminUsersService';
+import { receptionService } from '@/features/reception/api/receptionService';
 
 export { usePatientsForVisits } from '@/features/patients/hooks/usePatientsForVisits';
 
@@ -49,4 +50,38 @@ export function useReceptionistsForVisits(visits) {
     byId[id] = results[index]?.data;
   });
   return byId;
+}
+
+/** Admin-only "Edit Slip" — corrects a visit's own procedure/amount
+ * and/or its linked patient's identity fields in one call (see
+ * receptionService.updateVisit's docstring). Invalidates every cached
+ * day-scoped admin visit list (`['visits', 'admin', 'day']` is a
+ * prefix match, not one specific day — the edited visit could be
+ * showing on whichever day is currently selected) and every cached
+ * Patient lookup (`usePatientsForVisits`'s `['patients', id]` keys) so
+ * the corrected name/phone appear immediately without a manual
+ * refresh. */
+export function useUpdateVisit() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ visitId, updates }) => receptionService.updateVisit(visitId, updates),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['visits', 'admin', 'day'] });
+      queryClient.invalidateQueries({ queryKey: ['patients'] });
+    },
+  });
+}
+
+/** Admin-only visit deletion (see receptionService.deleteVisit's
+ * docstring) — same invalidation shape as useUpdateVisit above; the
+ * deleted visit simply stops appearing in the next day-scoped fetch
+ * (the backend already excludes soft-deleted visits from every query). */
+export function useDeleteVisit() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (visitId) => receptionService.deleteVisit(visitId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['visits', 'admin', 'day'] });
+    },
+  });
 }

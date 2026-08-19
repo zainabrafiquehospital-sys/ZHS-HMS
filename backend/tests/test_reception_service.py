@@ -9,6 +9,8 @@ from app.modules.consultation.constants import PERMISSION_CONSULTATION_START
 from app.modules.patients.exceptions import PatientNotFoundError
 from app.modules.patients.models import PatientGender
 from app.modules.queue.models import QueueDestination, QueueEntryStatus
+from app.modules.reception.exceptions import VisitHasSettledInvoiceError
+from app.modules.visits.exceptions import VisitNotFoundError
 from app.modules.visits.models import VisitStatus
 from tests.conftest import TEST_PATIENT_NAME_PREFIX, make_test_email
 
@@ -186,3 +188,170 @@ async def test_cancel_visit_closes_active_queue_entry_and_cancels_visit(
 
     assert cancelled.status == VisitStatus.CANCELLED
     assert await queue_service.get_active_for_visit(visit.id) is None
+
+
+# ---------------------------------------------------------------------
+# Admin data correction (2026-08-19 addition) — reception:update_visit /
+# reception:delete_visit. RBAC (admin-only, receptionist gets 403) is
+# proven at the HTTP layer in tests/test_reception_endpoints.py — these
+# are the underlying business-rule tests: ownership doesn't matter (any
+# actor may act on any visit at this layer, exactly like every other
+# service method here), the invoice-paid safety block, and the queue/
+# soft-delete mechanics.
+# ---------------------------------------------------------------------
+
+
+async def _make_visit_waiting_billing(reception_service, consultation_service, doctor, suffix):
+    """Same shape as tests/test_billing_service.py's identical helper —
+    duplicated locally per this codebase's existing convention of small
+    per-file test helpers rather than a shared cross-file import."""
+    _patient, visit, _entry = await reception_service.register_visit(
+        actor=doctor,
+        patient_id=None,
+        new_patient=_new_patient_payload(suffix),
+        doctor_user_id=doctor.id,
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=False,
+    )
+    consultation = await consultation_service.start_consultation(actor=doctor, visit_id=visit.id)
+    await consultation_service.complete_consultation(
+        actor=doctor, consultation_id=consultation.id, updates={}
+    )
+    return visit
+
+
+async def test_admin_update_visit_updates_patient_and_visit_fields(
+    real_session, reception_service, patient_service
+):
+    admin = await _make_actor(real_session, "update-admin")
+    _patient, visit, _entry = await reception_service.register_visit(
+        actor=admin,
+        patient_id=None,
+        new_patient=_new_patient_payload("UpdateTarget"),
+        doctor_user_id=admin.id,
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=False,
+    )
+
+    updated_patient, updated_visit = await reception_service.admin_update_visit(
+        actor=admin,
+        visit_id=visit.id,
+        updates={
+            "full_name": f"{TEST_PATIENT_NAME_PREFIX}CorrectedName",
+            "procedure": "Ultrasound",
+            "amount": Decimal("2500.00"),
+        },
+    )
+
+    assert updated_patient.full_name == f"{TEST_PATIENT_NAME_PREFIX}CorrectedName"
+    assert updated_visit.procedure == "Ultrasound"
+    assert updated_visit.amount == Decimal("2500.00")
+    # Untouched fields survive a partial update unchanged.
+    assert updated_patient.phone_number == "03001234567"
+
+
+async def test_admin_update_visit_with_no_updates_is_a_noop(real_session, reception_service):
+    admin = await _make_actor(real_session, "update-noop-admin")
+    _patient, visit, _entry = await reception_service.register_visit(
+        actor=admin,
+        patient_id=None,
+        new_patient=_new_patient_payload("UpdateNoop"),
+        doctor_user_id=admin.id,
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=False,
+    )
+
+    patient, updated_visit = await reception_service.admin_update_visit(
+        actor=admin, visit_id=visit.id, updates={}
+    )
+
+    assert updated_visit.procedure == "Consultation"
+    assert updated_visit.amount == Decimal("1500.00")
+
+
+async def test_admin_delete_visit_soft_deletes_and_closes_active_queue_entry(
+    real_session, reception_service, visit_service, queue_service
+):
+    admin = await _make_actor(real_session, "delete-admin")
+    _patient, visit, _entry = await reception_service.register_visit(
+        actor=admin,
+        patient_id=None,
+        new_patient=_new_patient_payload("DeleteTarget"),
+        doctor_user_id=admin.id,
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=False,
+    )
+    assert await queue_service.get_active_for_visit(visit.id) is not None
+
+    await reception_service.admin_delete_visit(actor=admin, visit_id=visit.id)
+
+    with pytest.raises(VisitNotFoundError):
+        await visit_service.get_visit(visit.id)
+    assert await queue_service.get_active_for_visit(visit.id) is None
+
+
+async def test_admin_delete_visit_blocked_when_invoice_paid(
+    real_session, reception_service, consultation_service, billing_service
+):
+    admin = await _make_actor(real_session, "delete-blocked-admin")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, admin, "DeleteBlocked"
+    )
+    invoice = await billing_service.generate_invoice(
+        actor=admin,
+        visit_id=visit.id,
+        base_description="Consultation",
+        base_amount=Decimal("1500.00"),
+    )
+    await billing_service.record_payment(
+        actor=admin, invoice_id=invoice.id, amount=Decimal("1500.00")
+    )
+
+    with pytest.raises(VisitHasSettledInvoiceError):
+        await reception_service.admin_delete_visit(actor=admin, visit_id=visit.id)
+
+
+async def test_admin_delete_visit_blocked_when_invoice_partially_paid(
+    real_session, reception_service, consultation_service, billing_service
+):
+    admin = await _make_actor(real_session, "delete-partial-admin")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, admin, "DeletePartial"
+    )
+    invoice = await billing_service.generate_invoice(
+        actor=admin,
+        visit_id=visit.id,
+        base_description="Consultation",
+        base_amount=Decimal("1500.00"),
+    )
+    await billing_service.record_payment(actor=admin, invoice_id=invoice.id, amount=Decimal("500.00"))
+
+    with pytest.raises(VisitHasSettledInvoiceError):
+        await reception_service.admin_delete_visit(actor=admin, visit_id=visit.id)
+
+
+async def test_admin_delete_visit_allowed_when_invoice_unpaid(
+    real_session, reception_service, consultation_service, billing_service, visit_service
+):
+    """An invoice with nothing yet collected against it (PENDING_PAYMENT)
+    is real paperwork, but no money has changed hands — deliberately not
+    a block (see ReceptionService.admin_delete_visit's own docstring)."""
+    admin = await _make_actor(real_session, "delete-unpaid-admin")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, admin, "DeleteUnpaid"
+    )
+    await billing_service.generate_invoice(
+        actor=admin,
+        visit_id=visit.id,
+        base_description="Consultation",
+        base_amount=Decimal("1500.00"),
+    )
+
+    await reception_service.admin_delete_visit(actor=admin, visit_id=visit.id)
+
+    with pytest.raises(VisitNotFoundError):
+        await visit_service.get_visit(visit.id)

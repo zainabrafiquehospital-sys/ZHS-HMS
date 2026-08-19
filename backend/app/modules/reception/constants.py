@@ -11,3 +11,16 @@ routers' permission checks (those only apply at the HTTP boundary)."""
 
 PERMISSION_RECEPTION_REGISTER_VISIT = "reception:register_visit"
 PERMISSION_RECEPTION_CANCEL_VISIT = "reception:cancel_visit"
+
+# Admin-only data-correction actions (2026-08-19 addition) — deliberately
+# two separate, atomic permission codes rather than one combined
+# "manage" code, matching this module's existing register/cancel split:
+# a future admin could grant update without delete (or vice versa)
+# through the Roles/Permissions API without any code change. Neither is
+# ever granted to the Receptionist role (see scripts/
+# seed_launch_bootstrap.py's RECEPTIONIST_PERMISSION_CODES, which
+# explicitly does not include these) — receptionists keep exactly the
+# register/cancel capability they had before; only `cancel_visit`
+# (a status transition, not a correction/removal tool) remains theirs.
+PERMISSION_RECEPTION_UPDATE_VISIT = "reception:update_visit"
+PERMISSION_RECEPTION_DELETE_VISIT = "reception:delete_visit"

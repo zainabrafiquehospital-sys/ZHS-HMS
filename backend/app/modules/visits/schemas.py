@@ -1,10 +1,16 @@
 """Pydantic request/response schemas for the Visit module — see
 app/modules/patients/schemas.py's identical module docstring for
-conventions. There is deliberately no `UpdateVisitRequest` — Visit has
-no freely-editable fields; every change to it after creation is one of
-VisitService's named `mark_*` status transitions, called by the module
-whose business action caused it (Vitals, Consultation, Billing), never
-a generic PATCH a client could use to set an arbitrary status."""
+conventions. There is deliberately no `UpdateVisitRequest` here, and
+this module's own (read-only) router still exposes no update/delete
+endpoint of any kind — every status change remains one of VisitService's
+named `mark_*` transitions, never a generic PATCH a client could use to
+set an arbitrary status. `VisitService.update_visit_details`/
+`delete_visit` (2026-08-19 addition, for admin data correction) are the
+one narrow exception to "no freely-editable fields" — `procedure`/
+`amount` only, never status — and are deliberately reached exclusively
+through Reception's own admin-only composite endpoints
+(`PATCH`/`DELETE /reception/visits/{id}`, see reception/schemas.py's
+`AdminUpdateVisitRequest`), not through anything defined in this file."""
 
 from datetime import datetime
 from decimal import Decimal

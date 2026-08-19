@@ -1,6 +1,9 @@
 """HTTP endpoints for the Reception module — the composite "register a
-visit" and "cancel a visit" actions (Phase 6 architecture §6), plus the
-fast-registration slip print endpoint (§6/§7)."""
+visit" and "cancel a visit" actions (Phase 6 architecture §6), the
+fast-registration slip print endpoint (§6/§7), and (2026-08-19 addition)
+admin-only "update"/"delete" data-correction actions for a mistakenly-
+entered visit — see AdminUpdateVisitRequest's and ReceptionService.
+admin_delete_visit's own docstrings."""
 
 from uuid import UUID
 
@@ -17,10 +20,14 @@ from app.modules.patients.service import PatientService
 from app.modules.queue.schemas import QueueEntryOut
 from app.modules.reception.constants import (
     PERMISSION_RECEPTION_CANCEL_VISIT,
+    PERMISSION_RECEPTION_DELETE_VISIT,
     PERMISSION_RECEPTION_REGISTER_VISIT,
+    PERMISSION_RECEPTION_UPDATE_VISIT,
 )
 from app.modules.reception.dependencies import get_reception_service
 from app.modules.reception.schemas import (
+    AdminUpdateVisitRequest,
+    AdminUpdateVisitResponse,
     CancelVisitRequest,
     RegisterVisitRequest,
     RegisterVisitResponse,
@@ -106,3 +113,50 @@ async def cancel_visit(
         actor=actor, visit_id=visit_id, reason=payload.reason
     )
     return success_envelope(VisitOut.from_visit(visit).model_dump(mode="json"))
+
+
+# ------------------------------------------------------------------
+# Admin data correction (2026-08-19 addition) — gated on
+# reception:update_visit / reception:delete_visit, never on
+# register_visit/cancel_visit, and never granted to Receptionist (see
+# constants.py). Ownership never matters here: an admin may act on any
+# receptionist's slip, not only their own — the permission check alone
+# is what authorizes that, exactly like every other RBAC-gated action
+# in this codebase.
+# ------------------------------------------------------------------
+
+
+@router.patch("/visits/{visit_id}")
+async def update_visit(
+    visit_id: UUID,
+    payload: AdminUpdateVisitRequest,
+    reception_service: ReceptionService = Depends(get_reception_service),
+    actor: User = Depends(require_permission(PERMISSION_RECEPTION_UPDATE_VISIT)),
+) -> dict:
+    """Corrects a wrongly-entered slip — patient identity fields and/or
+    the visit's own procedure/amount, in one call (see
+    AdminUpdateVisitRequest's own docstring for why this is a single
+    flat form rather than two separate requests)."""
+    patient, visit = await reception_service.admin_update_visit(
+        actor=actor, visit_id=visit_id, updates=payload.model_dump(exclude_unset=True)
+    )
+    response = AdminUpdateVisitResponse(
+        patient=PatientOut.from_patient(patient), visit=VisitOut.from_visit(visit)
+    )
+    return success_envelope(response.model_dump(mode="json"))
+
+
+@router.delete("/visits/{visit_id}")
+async def delete_visit(
+    visit_id: UUID,
+    reception_service: ReceptionService = Depends(get_reception_service),
+    actor: User = Depends(require_permission(PERMISSION_RECEPTION_DELETE_VISIT)),
+) -> dict:
+    """Soft-deletes a visit registered by mistake (see ReceptionService.
+    admin_delete_visit's own docstring for the full safety story,
+    including the paid-invoice block). The Visit's own `patient` row is
+    never touched or deleted — only the Visit itself, which is what
+    makes this safe to call even against a Patient with other, real
+    visits on file."""
+    await reception_service.admin_delete_visit(actor=actor, visit_id=visit_id)
+    return success_envelope(None)

@@ -108,7 +108,9 @@ from app.modules.pharmacy.constants import (
 from app.modules.queue.constants import PERMISSION_QUEUE_MANAGE, PERMISSION_QUEUE_READ
 from app.modules.reception.constants import (
     PERMISSION_RECEPTION_CANCEL_VISIT,
+    PERMISSION_RECEPTION_DELETE_VISIT,
     PERMISSION_RECEPTION_REGISTER_VISIT,
+    PERMISSION_RECEPTION_UPDATE_VISIT,
 )
 from app.modules.search.constants import PERMISSION_SEARCH_READ
 from app.modules.visits.constants import PERMISSION_VISITS_CREATE, PERMISSION_VISITS_READ
@@ -201,6 +203,18 @@ PERMISSION_CATALOG: list[tuple[str, str, str]] = [
         "Register a new visit (patient + visit + queue routing) and print its slip.",
     ),
     (PERMISSION_RECEPTION_CANCEL_VISIT, "Cancel Visit", "Cancel a registered visit."),
+    (
+        PERMISSION_RECEPTION_UPDATE_VISIT,
+        "Update Visit",
+        "Admin-only: correct a visit's/slip's details (procedure, amount, and the linked "
+        "patient's identity fields) after registration. Not granted to Receptionist.",
+    ),
+    (
+        PERMISSION_RECEPTION_DELETE_VISIT,
+        "Delete Visit",
+        "Admin-only: soft-delete a mistakenly-registered visit. Blocked if the visit has a "
+        "paid or partially-paid invoice. Not granted to Receptionist.",
+    ),
     (PERMISSION_SEARCH_READ, "Search", "Cross-module patient/visit search."),
     (
         PERMISSION_VISITS_CREATE,
@@ -268,6 +282,12 @@ RECEPTIONIST_PERMISSION_CODES: list[str] = [
 #     worklists belong to Vitals/Doctor.
 #   - search:read — RegisterVisitForm's patient lookup calls GET /patients
 #     (patients:read), not the generic GET /search endpoint this gates.
+#   - reception:update_visit / reception:delete_visit (2026-08-19 addition)
+#     — deliberately admin-only by design, not merely unexercised by the
+#     current UI. See app/modules/reception/constants.py's own docstring:
+#     correcting/removing a mistakenly-entered slip is an admin data-
+#     correction tool, never a receptionist capability, regardless of
+#     which UI screens exist. Do not add these here.
 # Add any of these back via the Roles API later if a future reception screen
 # actually needs them — safer to grant on demonstrated need than up front.
 

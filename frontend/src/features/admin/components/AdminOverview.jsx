@@ -3,12 +3,15 @@
 import { useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { ClipboardList, Pill, Printer, Receipt, Search, Wallet } from 'lucide-react';
+import { ClipboardList, Pencil, Pill, Printer, Receipt, Search, Trash2, Wallet } from 'lucide-react';
 import {
   useAdminVisitsForDay,
+  useDeleteVisit,
   usePatientsForVisits,
   useReceptionistsForVisits,
+  useUpdateVisit,
 } from '@/features/admin/hooks/useAdminOverview';
+import { adminUpdateVisitSchema } from '@/features/reception/schemas/adminUpdateVisitSchema';
 import {
   useMedicineBillsForDay,
   usePrintMedicineBill,
@@ -28,7 +31,9 @@ import { Button } from '@/shared/components/ui/Button';
 import { ConfirmDialog } from '@/shared/components/ui/ConfirmDialog';
 import { Input } from '@/shared/components/ui/Input';
 import { Label } from '@/shared/components/ui/Label';
+import { Select } from '@/shared/components/ui/Select';
 import { Tabs } from '@/shared/components/ui/Tabs';
+import { Textarea } from '@/shared/components/ui/Textarea';
 import { PageLoader } from '@/shared/components/PageLoader';
 import { PageError } from '@/shared/components/PageError';
 import {
@@ -138,6 +143,179 @@ function RecordBillPaymentDialog({ bill, onClose }) {
             {errors.amount ? <p className="text-xs text-destructive">{errors.amount.message}</p> : null}
           </div>
           {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        </div>
+      }
+    />
+  );
+}
+
+/** Admin-only "Edit Slip" (2026-08-19 addition, `reception:update_visit`
+ * — see receptionService.updateVisit's docstring) — corrects a wrongly-
+ * entered registration: the linked patient's identity fields and/or the
+ * visit's own procedure/amount, in one form/one call. Never rendered
+ * for anyone without that permission — the Edit button that opens this
+ * is itself gated (see the "Actions" column below); this dialog is not
+ * a second authorization boundary, the backend's own `require_permission`
+ * check already is. Pre-filled with the visit/patient's *current*
+ * values (not blank) — every field is sent back on submit regardless of
+ * whether it was actually touched, which is safe (unchanged fields
+ * round-trip to the same value) and far simpler than dirty-field
+ * tracking for a form this size. */
+function EditVisitDialog({ visit, patient, onClose }) {
+  const updateVisit = useUpdateVisit();
+  const [error, setError] = useState(null);
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm({
+    resolver: zodResolver(adminUpdateVisitSchema),
+    defaultValues: {
+      full_name: patient?.full_name ?? '',
+      guardian_name: patient?.guardian_name ?? '',
+      gender: patient?.gender ?? '',
+      age_years: patient?.age_years ?? '',
+      phone_number: patient?.phone_number ?? '',
+      cnic: patient?.cnic ?? '',
+      address: patient?.address ?? '',
+      procedure: visit.procedure,
+      amount: visit.amount,
+    },
+  });
+
+  async function onSubmit(values) {
+    setError(null);
+    const updates = { ...values };
+    // Blank optional fields mean "leave unchanged" for this form (see
+    // adminUpdateVisitSchema's own docstring) — never send an empty
+    // string for a field the admin didn't actually clear out.
+    for (const key of ['guardian_name', 'gender', 'cnic', 'address']) {
+      if (updates[key] === '') delete updates[key];
+    }
+    try {
+      await updateVisit.mutateAsync({ visitId: visit.id, updates });
+      onClose();
+    } catch (submitError) {
+      setError(submitError.message || 'Unable to update this visit.');
+    }
+  }
+
+  return (
+    <ConfirmDialog
+      open
+      title={`Edit Slip — ${visit.queue_token}`}
+      confirmLabel={isSubmitting ? 'Saving…' : 'Save Changes'}
+      cancelLabel="Cancel"
+      onCancel={onClose}
+      onConfirm={handleSubmit(onSubmit)}
+      description={
+        <div className="flex max-h-[60vh] flex-col gap-3 overflow-y-auto pr-1">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="admin-edit-full-name">Patient Name</Label>
+            <Input id="admin-edit-full-name" {...register('full_name')} />
+            {errors.full_name ? (
+              <p className="text-xs text-destructive">{errors.full_name.message}</p>
+            ) : null}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="admin-edit-age">Age</Label>
+              <Input id="admin-edit-age" type="number" {...register('age_years')} />
+              {errors.age_years ? (
+                <p className="text-xs text-destructive">{errors.age_years.message}</p>
+              ) : null}
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="admin-edit-gender">Gender</Label>
+              <Select id="admin-edit-gender" {...register('gender')}>
+                <option value="">—</option>
+                <option value="female">Female</option>
+                <option value="male">Male</option>
+                <option value="other">Other</option>
+              </Select>
+            </div>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="admin-edit-phone">Phone Number</Label>
+            <Input id="admin-edit-phone" {...register('phone_number')} />
+            {errors.phone_number ? (
+              <p className="text-xs text-destructive">{errors.phone_number.message}</p>
+            ) : null}
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="admin-edit-guardian">Guardian Name</Label>
+            <Input id="admin-edit-guardian" {...register('guardian_name')} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="admin-edit-cnic">CNIC</Label>
+            <Input id="admin-edit-cnic" {...register('cnic')} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="admin-edit-address">Address</Label>
+            <Textarea id="admin-edit-address" rows={2} {...register('address')} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="admin-edit-procedure">Procedure</Label>
+            <Input id="admin-edit-procedure" {...register('procedure')} />
+            {errors.procedure ? (
+              <p className="text-xs text-destructive">{errors.procedure.message}</p>
+            ) : null}
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="admin-edit-amount">Amount (Rs.)</Label>
+            <Input id="admin-edit-amount" type="number" step="0.01" {...register('amount')} />
+            {errors.amount ? (
+              <p className="text-xs text-destructive">{errors.amount.message}</p>
+            ) : null}
+          </div>
+          {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        </div>
+      }
+    />
+  );
+}
+
+/** Admin-only visit deletion (2026-08-19 addition,
+ * `reception:delete_visit`) — a real, destructive-feeling action
+ * (never available to Receptionist, see backend/app/modules/reception/
+ * constants.py's own docstring), so this is a full ConfirmDialog with
+ * an explicit description, never a single-click button — same
+ * discipline as EmployeeAccounts.jsx's deactivate/delete confirmations.
+ * The backend's own paid-invoice block (VISIT_HAS_SETTLED_INVOICE, see
+ * ReceptionService.admin_delete_visit) surfaces here as a plain error
+ * message, not a separate UI state — the confirm button simply fails
+ * with a clear reason if that block applies. */
+function DeleteVisitDialog({ visit, onClose }) {
+  const deleteVisit = useDeleteVisit();
+  const [error, setError] = useState(null);
+
+  async function handleConfirm() {
+    setError(null);
+    try {
+      await deleteVisit.mutateAsync(visit.id);
+      onClose();
+    } catch (deleteError) {
+      setError(deleteError.message || 'Unable to delete this visit.');
+    }
+  }
+
+  return (
+    <ConfirmDialog
+      open
+      variant="destructive"
+      title={`Delete Visit — ${visit.queue_token}?`}
+      confirmLabel={deleteVisit.isPending ? 'Deleting…' : 'Delete Visit'}
+      cancelLabel="Cancel"
+      onCancel={onClose}
+      onConfirm={handleConfirm}
+      description={
+        <div className="flex flex-col gap-2">
+          <p>
+            This permanently removes this visit/slip from every list — it will no longer be
+            reachable or reprintable. The patient record itself is not affected, and this cannot
+            be undone through the app.
+          </p>
+          {error ? <p className="text-destructive">{error}</p> : null}
         </div>
       }
     />
@@ -292,6 +470,10 @@ export function AdminOverview() {
   const [searchTerm, setSearchTerm] = useState('');
   const [page, setPage] = useState(1);
   const [activeTab, setActiveTab] = useState('visits');
+  // Admin-only Edit/Delete (2026-08-19 addition) — at most one dialog
+  // open at a time, keyed by the specific visit it targets.
+  const [editingVisit, setEditingVisit] = useState(null);
+  const [deletingVisit, setDeletingVisit] = useState(null);
 
   const { visits, isLoading, isError, error, refetch } = useAdminVisitsForDay(selectedDate);
   const patientsById = usePatientsForVisits(visits);
@@ -423,6 +605,7 @@ export function AdminOverview() {
                         <TableHead>Status</TableHead>
                         <TableHead>Booked By</TableHead>
                         <TableHead className="text-right">Amount</TableHead>
+                        <TableHead />
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -481,6 +664,27 @@ export function AdminOverview() {
                             <TableCell className="whitespace-nowrap text-right font-medium tabular-nums">
                               {formatPkr(visit.amount)}
                             </TableCell>
+                            <TableCell>
+                              <div className="flex justify-end gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => setEditingVisit(visit)}
+                                  disabled={!patient}
+                                  title="Correct this slip's details"
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => setDeletingVisit(visit)}
+                                  title="Delete this visit"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
+                            </TableCell>
                           </TableRow>
                         );
                       })}
@@ -521,6 +725,17 @@ export function AdminOverview() {
       </Card>
 
       <LeadsSection />
+
+      {editingVisit ? (
+        <EditVisitDialog
+          visit={editingVisit}
+          patient={patientsById[editingVisit.patient_id]}
+          onClose={() => setEditingVisit(null)}
+        />
+      ) : null}
+      {deletingVisit ? (
+        <DeleteVisitDialog visit={deletingVisit} onClose={() => setDeletingVisit(null)} />
+      ) : null}
     </div>
   );
 }

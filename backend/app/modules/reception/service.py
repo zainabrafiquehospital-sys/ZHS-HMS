@@ -28,14 +28,23 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.auth.models import User
+from app.modules.billing.models import InvoiceStatus
+from app.modules.billing.repository import InvoiceRepository
 from app.modules.patients.models import Patient
 from app.modules.patients.service import PatientService
 from app.modules.queue.models import QueueDestination, QueueEntry
 from app.modules.queue.service import QueueService
+from app.modules.reception.exceptions import VisitHasSettledInvoiceError
 from app.modules.reception.repository import ReceptionRepository
 from app.modules.visits.models import Visit
 from app.modules.visits.service import VisitService
 from app.shared.audit.repository import AuditLogRepository
+
+# Invoice statuses that represent money genuinely collected — see
+# ReceptionService.admin_delete_visit and VisitHasSettledInvoiceError's
+# own docstring for the full reasoning behind blocking on exactly these
+# two and no others.
+_SETTLED_INVOICE_STATUSES = (InvoiceStatus.PAID, InvoiceStatus.PARTIALLY_PAID)
 
 
 class ReceptionService:
@@ -47,6 +56,7 @@ class ReceptionService:
         queue_service: QueueService,
         audit_repository: AuditLogRepository,
         reception_repository: ReceptionRepository,
+        invoice_repository: InvoiceRepository,
     ) -> None:
         """`session` here must be the exact same `AsyncSession` instance
         `audit_repository` was built with (see dependencies.py) — this
@@ -55,13 +65,24 @@ class ReceptionService:
         by the services that made them by the time this service ever
         touches `session` (see this module's docstring for why that's a
         deliberate, documented scope decision rather than a single
-        cross-aggregate transaction)."""
+        cross-aggregate transaction).
+
+        `invoice_repository` (2026-08-19 addition) is a narrow, strictly
+        read-only exception to this module's usual "orchestrate Patient/
+        Visit/Queue only" shape — added solely so `admin_delete_visit`
+        can check for a settled Invoice before deleting a Visit.
+        Reception reading Billing here is the same kind of deliberate,
+        justified, read-only cross-module check as ReceptionRepository.
+        find_least_busy_available_doctor already makes into Auth's own
+        tables — it never writes to an Invoice, and it changes nothing
+        about how Billing itself works."""
         self._session = session
         self._patient_service = patient_service
         self._visit_service = visit_service
         self._queue_service = queue_service
         self._audit_repo = audit_repository
         self._reception_repo = reception_repository
+        self._invoice_repo = invoice_repository
 
     async def register_visit(
         self,
@@ -149,3 +170,95 @@ class ReceptionService:
         )
         await self._session.commit()
         return visit
+
+    # ------------------------------------------------------------------
+    # Admin data correction (2026-08-19 addition, gated on `reception:
+    # update_visit`/`reception:delete_visit` — never on register/cancel,
+    # and never granted to Receptionist, see constants.py). Ownership
+    # never matters here: an admin acts on any receptionist's slip, not
+    # just their own — the permission check alone is what authorizes
+    # this, exactly like every other RBAC-gated action in this codebase.
+    # ------------------------------------------------------------------
+
+    async def admin_update_visit(
+        self, *, actor: User, visit_id: UUID, updates: dict[str, Any]
+    ) -> tuple[Patient, Visit]:
+        """Splits the caller's already-validated flat `updates` dict
+        (see AdminUpdateVisitRequest's own docstring for why the schema
+        is flat with no field-name collisions) between the two
+        already-existing, already-tested update paths this reuses rather
+        than reimplements — `PatientService.update_patient` for identity
+        fields, `VisitService.update_visit_details` for `procedure`/
+        `amount`. Router-level splitting (which keys go where) is
+        request-shape knowledge, kept at the API boundary rather than
+        duplicated here, mirroring register_visit's own docstring on
+        where schema-shape decisions belong; this method just receives
+        two already-separated dicts, not the raw request."""
+        visit = await self._visit_service.get_visit(visit_id)
+        patient = await self._patient_service.get_patient(visit.patient_id)
+
+        visit_updates = {k: v for k, v in updates.items() if k in ("procedure", "amount")}
+        patient_updates = {k: v for k, v in updates.items() if k not in ("procedure", "amount")}
+
+        if patient_updates:
+            patient = await self._patient_service.update_patient(
+                actor=actor, patient_id=patient.id, updates=patient_updates
+            )
+        if visit_updates:
+            visit = await self._visit_service.update_visit_details(
+                actor=actor, visit_id=visit_id, updates=visit_updates
+            )
+
+        await self._audit_repo.record(
+            module="reception",
+            action="reception.visit_updated_by_admin",
+            entity_type="visit",
+            entity_id=visit.id,
+            actor_user_id=actor.id,
+            metadata={
+                "patient_fields": sorted(patient_updates.keys()),
+                "visit_fields": sorted(visit_updates.keys()),
+            },
+        )
+        await self._session.commit()
+        return patient, visit
+
+    async def admin_delete_visit(self, *, actor: User, visit_id: UUID) -> None:
+        """Soft-deletes a Visit an admin has decided was a mistake (Phase
+        6 §... — see VisitService.delete_visit's own docstring for why
+        this is a soft delete, and why closing the active queue entry
+        first, exactly like `cancel_visit` above, is this orchestrating
+        method's job rather than VisitService's).
+
+        Blocked outright — before anything is touched — if the Visit has
+        ever had a real payment collected against it (see
+        VisitHasSettledInvoiceError and _SETTLED_INVOICE_STATUSES's own
+        docstrings for the exact boundary and reasoning). Deliberately
+        does NOT block on an unpaid (`PENDING_PAYMENT`) invoice, a
+        PendingBillingItem, a Consultation, or a VitalsRecord — none of
+        those are destroyed by this (they simply become unreachable
+        through the deleted Visit's own now-404ing endpoints, the same
+        "orphaned but never corrupted, never actually deleted" outcome
+        `cancel_visit` already leaves them in today), so leaving them
+        untouched keeps this new action's blast radius identical to the
+        already-trusted cancel flow, widened only by the one hard
+        financial-integrity line explicitly required."""
+        invoices = await self._invoice_repo.list_for_visit(visit_id)
+        if any(invoice.status in _SETTLED_INVOICE_STATUSES for invoice in invoices):
+            raise VisitHasSettledInvoiceError
+
+        active_entry = await self._queue_service.get_active_for_visit(visit_id)
+        if active_entry is not None:
+            await self._queue_service.cancel_current(actor=actor, visit_id=visit_id)
+
+        visit = await self._visit_service.get_visit(visit_id)
+        await self._visit_service.delete_visit(actor=actor, visit_id=visit_id)
+        await self._audit_repo.record(
+            module="reception",
+            action="reception.visit_deleted_by_admin",
+            entity_type="visit",
+            entity_id=visit_id,
+            actor_user_id=actor.id,
+            metadata={"queue_token": visit.queue_token},
+        )
+        await self._session.commit()

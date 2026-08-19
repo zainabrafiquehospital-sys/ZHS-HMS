@@ -569,6 +569,9 @@ def reception_service(
         queue_service=queue_service,
         audit_repository=AuditLogRepository(real_session),
         reception_repository=ReceptionRepository(real_session),
+        # 2026-08-19 addition — see ReceptionService.__init__'s own
+        # docstring for why this one read-only Billing dependency exists.
+        invoice_repository=InvoiceRepository(real_session),
     )
 
 

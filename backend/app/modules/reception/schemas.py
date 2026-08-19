@@ -9,6 +9,7 @@ docstring)."""
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.modules.patients.models import PatientGender
 from app.modules.patients.schemas import PatientIdentityFields, PatientOut
 from app.modules.queue.schemas import QueueEntryOut
 from app.modules.visits.schemas import VisitOut
@@ -48,3 +49,48 @@ class RegisterVisitResponse(BaseModel):
     patient: PatientOut
     visit: VisitOut
     queue_entry: QueueEntryOut
+
+
+# ---------------------------------------------------------------------
+# Admin data correction (2026-08-19 addition) — see this module's
+# router.py and service.py for the full RBAC/business-rule story.
+# ---------------------------------------------------------------------
+
+
+class AdminUpdateVisitRequest(BaseModel):
+    """A single flat "Edit Slip" form covering both halves of what a
+    printed registration slip actually shows — Visit's own two
+    correctable fields (`procedure`/`amount`) and Patient's editable
+    identity fields (the exact same set `UpdatePatientRequest` already
+    validates, deliberately not re-declared as a shared class the way
+    `PatientIdentityFields` is: unlike create-vs-update on Patient
+    alone, there is no second call site that would ever need this exact
+    combined shape). Every field optional/PATCH-style (`exclude_unset`)
+    — ReceptionService.admin_update_visit splits this into the two
+    already-existing, already-tested update paths (`PatientService.
+    update_patient`, `VisitService.update_visit_details`) rather than
+    this schema (or the service) reimplementing either one's validation.
+    No field-name collision between the two halves, so a flat shape is
+    unambiguous — no `visit: {...}` / `patient: {...}` nesting needed."""
+
+    model_config = ConfigDict(strict=True)
+
+    # Visit's own fields.
+    procedure: str | None = Field(default=None, min_length=1, max_length=200)
+    amount: LaxDecimal | None = Field(default=None, gt=0)
+
+    # Patient's fields — same constraints as UpdatePatientRequest.
+    full_name: str | None = Field(default=None, min_length=1, max_length=150)
+    guardian_name: str | None = Field(default=None, max_length=150)
+    gender: PatientGender | None = Field(default=None, strict=False)
+    age_years: int | None = Field(default=None, ge=0, le=150)
+    phone_number: str | None = Field(default=None, min_length=6, max_length=20)
+    cnic: str | None = Field(default=None, min_length=1, max_length=20)
+    address: str | None = Field(default=None, max_length=2000)
+
+
+class AdminUpdateVisitResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    patient: PatientOut
+    visit: VisitOut
