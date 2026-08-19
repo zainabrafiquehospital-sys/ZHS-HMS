@@ -38,17 +38,35 @@ export const recordMedicineBillPaymentSchema = z.object({
     }),
 });
 
-// The optional "Advance Received" field on the Finalize & Print form —
-// same nonNegativeAmount shape as billing/schemas/billingSchemas.js's
-// discount_amount/initial_payment_amount: blank/zero always means "not
-// paid yet", never a hidden "pay in full" shortcut.
+// Blank/zero/untouched all mean the same thing for every optional
+// money field below (advance received, discount): "not applicable
+// right now" — same convention billing/schemas/billingSchemas.js's
+// identical `nonNegativeAmount` documents (duplicated locally rather
+// than imported cross-feature, matching this codebase's per-feature
+// schema-file independence).
+const nonNegativeAmount = z
+  .union([z.string(), z.number()])
+  .transform((value) => (value === '' || value === null || value === undefined ? 0 : Number(value)))
+  .refine((value) => Number.isFinite(value) && value >= 0, {
+    message: 'Amount must be zero or greater',
+  });
+
+// The Finalize & Print form's two optional fields: "Advance Received"
+// (unchanged) and — 2026-08-19 addition — an optional flat discount.
+// Unlike billing/schemas/billingSchemas.js's generateInvoiceSchema,
+// there is deliberately no cross-field "reason required when
+// discount_amount > 0" refine here: a medicine-bill discount's reason
+// is always optional, a product decision distinct from Invoice's own
+// discount (see app/modules/pharmacy/service.py's create_bill
+// docstring). Whether the discount fields are shown/applied at all is
+// owned by the "Apply Discount" checkbox in
+// MedicineBillingWorkspace.jsx, not by this schema — discount_amount
+// stays 0 whenever that checkbox is off, mirroring
+// RegisterVisitForm.jsx's vitalsRequired toggle shape.
 export const finalizeBillSchema = z.object({
-  initial_payment_amount: z
-    .union([z.string(), z.number()])
-    .transform((value) => (value === '' || value === null || value === undefined ? 0 : Number(value)))
-    .refine((value) => Number.isFinite(value) && value >= 0, {
-      message: 'Amount must be zero or greater',
-    }),
+  initial_payment_amount: nonNegativeAmount,
+  discount_amount: nonNegativeAmount,
+  discount_reason: z.string().max(200).optional(),
 });
 
 // Manual Entry mode's three fields (VisitLinkPanel) — same per-field

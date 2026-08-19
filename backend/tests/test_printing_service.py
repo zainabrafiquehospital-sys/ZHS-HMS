@@ -58,3 +58,37 @@ def test_render_is_valid_html_document():
 
     assert html_document.strip().startswith("<!doctype html>")
     assert "</html>" in html_document
+
+
+def test_render_with_discount_shows_total_discount_and_net_amount_in_order():
+    """2026-08-19 fix: the receipt must show the pre-discount subtotal,
+    then the Discount line, then a distinct Net Amount line as the
+    actual bottom-line total — not leave the final total only implied
+    by Received/Pending."""
+    html_document = _render(
+        total_amount=Decimal("2000.00"),
+        amount_paid=Decimal("500.00"),
+        discount_amount=Decimal("500.00"),
+        discount_reason="Staff discount",
+    )
+
+    assert "Discount (Staff discount)" in html_document
+    assert "Net Amount" in html_document
+    # subtotal (2500.00, recovered) -> discount -> net amount (2000.00)
+    assert "2,500.00" in html_document
+    assert "2,000.00" in html_document
+
+    total_idx = html_document.index("Total Amount")
+    discount_idx = html_document.index("Discount (Staff discount)")
+    net_idx = html_document.index("Net Amount")
+    assert total_idx < discount_idx < net_idx
+
+
+def test_render_without_discount_omits_discount_row_but_keeps_net_amount():
+    html_document = _render()
+
+    assert "Discount" not in html_document
+    assert "Net Amount" in html_document
+    total_idx = html_document.index("Total Amount")
+    net_idx = html_document.index("Net Amount")
+    assert total_idx < net_idx

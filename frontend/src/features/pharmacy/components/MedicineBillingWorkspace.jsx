@@ -242,7 +242,16 @@ function VisitLinkPanel({
  * Patient/Visit lookup or creation at all — see
  * app/modules/pharmacy/models.py's `MedicineBill` docstring for the
  * full three-state rule, enforced server-side (never trust the client
- * alone for a data-integrity invariant like this one). */
+ * alone for a data-integrity invariant like this one).
+ *
+ * "Apply Discount" (2026-08-19 addition) is an optional flat discount,
+ * off entirely by default — same toggle shape as RegisterVisitForm.jsx's
+ * "Vitals required" checkbox. Ticking it reveals a Discount amount and
+ * an optional (never required, unlike Billing's own Invoice discount)
+ * reason, and a live Net Total preview computed client-side purely for
+ * display; the actual authoritative total is always computed server-side
+ * (see PharmacyService.create_bill's docstring) and is what the printed
+ * slip and every stored figure reflect. */
 export function MedicineBillingWorkspace() {
   const { toast } = useToast();
   const [selectedMedicine, setSelectedMedicine] = useState(null);
@@ -256,20 +265,38 @@ export function MedicineBillingWorkspace() {
   const [manualName, setManualName] = useState('');
   const [manualAge, setManualAge] = useState('');
   const [manualPhone, setManualPhone] = useState('');
+  // Mirrors RegisterVisitForm.jsx's vitalsRequired checkbox shape
+  // exactly: unticked, the two discount fields stay hidden and no
+  // discount is ever sent, regardless of any stale value a receptionist
+  // typed before unticking (see handleFinalize below).
+  const [applyDiscount, setApplyDiscount] = useState(false);
 
   const createBill = useCreateMedicineBill();
   const printBill = usePrintMedicineBill();
   const {
     register,
     handleSubmit,
+    watch,
+    setValue,
     reset: resetFinalizeForm,
     formState: { errors: finalizeErrors },
   } = useForm({
     resolver: zodResolver(finalizeBillSchema),
-    defaultValues: { initial_payment_amount: '' },
+    defaultValues: { initial_payment_amount: '', discount_amount: '', discount_reason: '' },
   });
 
   const grandTotal = items.reduce((sum, item) => sum + Number(item.unit_price) * item.quantity, 0);
+  const watchedDiscount = watch('discount_amount');
+  const discountForPreview = applyDiscount && watchedDiscount ? Number(watchedDiscount) : 0;
+  const netTotal = grandTotal - (Number.isFinite(discountForPreview) ? discountForPreview : 0);
+
+  function handleApplyDiscountToggle(checked) {
+    setApplyDiscount(checked);
+    if (!checked) {
+      setValue('discount_amount', '');
+      setValue('discount_reason', '');
+    }
+  }
 
   function handleAddLine() {
     setQuantityError(null);
@@ -354,12 +381,18 @@ export function MedicineBillingWorkspace() {
         visit_id: selectedVisit ? selectedVisit.id : null,
         items: items.map((item) => ({ medicine_id: item.medicine_id, quantity: item.quantity })),
         initial_payment_amount: values.initial_payment_amount,
+        // Belt-and-suspenders with handleApplyDiscountToggle's own
+        // clearing: even if a stale value somehow survived, an
+        // unticked checkbox always sends no discount at all.
+        discount_amount: applyDiscount ? values.discount_amount : 0,
+        discount_reason: applyDiscount ? values.discount_reason || null : null,
         ...manualPatientPayload,
       });
       const bill = response.data;
       setItems([]);
       resetPatientLinkage();
-      resetFinalizeForm({ initial_payment_amount: '' });
+      setApplyDiscount(false);
+      resetFinalizeForm({ initial_payment_amount: '', discount_amount: '', discount_reason: '' });
       toast.success({
         title: 'Medicine bill finalized',
         description: `Total ${money(bill.total_amount)} · Received ${money(bill.amount_paid)}`,
@@ -493,6 +526,64 @@ export function MedicineBillingWorkspace() {
                   {money(grandTotal)}
                 </span>
               </div>
+
+              {/* Optional flat discount (2026-08-19 addition) — same
+                  toggle shape as RegisterVisitForm.jsx's "Vitals
+                  required" checkbox: unticked, no discount fields show
+                  and none is applied; ticked, it reveals the amount +
+                  optional reason and a live Net Total preview below.
+                  Unlike Billing's own Invoice discount, a reason is
+                  never required here (a deliberate product decision —
+                  see PharmacyService.create_bill's docstring). Plain
+                  local state, not a registered form field — mirrors
+                  MedicineBillingWorkspace's own linkMode/manual-field
+                  toggles above, which are handled the same ad hoc way
+                  rather than folded into finalizeBillSchema. */}
+              <label className="flex items-center gap-2 text-sm text-foreground">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-input"
+                  checked={applyDiscount}
+                  onChange={(event) => handleApplyDiscountToggle(event.target.checked)}
+                />
+                Apply Discount
+              </label>
+              {applyDiscount ? (
+                <>
+                  <div className="flex flex-col gap-4 rounded-md border border-dashed border-border p-3 sm:flex-row sm:flex-wrap">
+                    <div className="flex flex-col gap-1.5 sm:w-40">
+                      <Label htmlFor="discount_amount">Discount (Rs.)</Label>
+                      <Input
+                        id="discount_amount"
+                        type="number"
+                        step="0.01"
+                        placeholder="0.00"
+                        {...register('discount_amount')}
+                      />
+                      {finalizeErrors.discount_amount ? (
+                        <p className="text-xs text-destructive">
+                          {finalizeErrors.discount_amount.message}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="flex flex-1 flex-col gap-1.5 sm:min-w-[12rem]">
+                      <Label htmlFor="discount_reason">Discount Reason (optional)</Label>
+                      <Input
+                        id="discount_reason"
+                        placeholder="e.g. Bulk purchase, loyalty discount"
+                        {...register('discount_reason')}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold text-foreground">Net Total</span>
+                    <span className="text-lg font-bold tabular-nums text-foreground">
+                      {money(netTotal)}
+                    </span>
+                  </div>
+                </>
+              ) : null}
+
               {/* Optional payment collected in the same step — leave
                   blank to finalize unpaid, as before; typing the same
                   amount as the Grand Total records it as paid in full

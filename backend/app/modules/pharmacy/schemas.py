@@ -81,6 +81,15 @@ class CreateMedicineBillRequest(BaseModel):
     manual_patient_name: str | None = Field(default=None, min_length=1, max_length=150)
     manual_patient_age: int | None = Field(default=None, ge=0, le=150)
     manual_patient_phone: str | None = Field(default=None, min_length=6, max_length=20)
+    # Optional flat discount, applied at creation time only (2026-08-19
+    # addition) — same shape as app/modules/billing/schemas.py's
+    # GenerateInvoiceRequest.discount_amount/discount_reason, except
+    # discount_reason here is always optional (a deliberate product
+    # decision for this feature; see PharmacyService.create_bill's
+    # docstring — there is no cross-field "reason required" rule to
+    # enforce, unlike Invoice's discount).
+    discount_amount: LaxDecimal = Field(default=Decimal("0"), ge=0)
+    discount_reason: str | None = Field(default=None, max_length=200)
 
 
 class RecordMedicineBillPaymentRequest(BaseModel):
@@ -174,6 +183,8 @@ class MedicineBillOut(BaseModel):
     manual_patient_name: str | None
     manual_patient_age: int | None
     manual_patient_phone: str | None
+    discount_amount: Decimal
+    discount_reason: str | None
     items: list[MedicineBillItemOut] = Field(default_factory=list)
     payments: list[MedicineBillPaymentOut] = Field(default_factory=list)
 
@@ -196,6 +207,8 @@ class MedicineBillOut(BaseModel):
             manual_patient_name=bill.manual_patient_name,
             manual_patient_age=bill.manual_patient_age,
             manual_patient_phone=bill.manual_patient_phone,
+            discount_amount=bill.discount_amount,
+            discount_reason=bill.discount_reason,
             items=[MedicineBillItemOut.from_item(item) for item in (items or [])],
             payments=[MedicineBillPaymentOut.from_payment(p) for p in (payments or [])],
         )
@@ -222,6 +235,11 @@ class MedicineBillSummaryOut(BaseModel):
     # (see MedicineBillOut for the full manual-entry field set, used by
     # the print slip instead).
     manual_patient_name: str | None
+    # 2026-08-19 addition — lets a summary row (both Admin's day view
+    # and a receptionist's own "My Medicine Bills" list, see
+    # PharmacyService.list_bills_for_creator) show whether a discount
+    # was applied without a second fetch of the full MedicineBillOut.
+    discount_amount: Decimal
 
     @classmethod
     def from_bill(cls, bill: MedicineBill, item_count: int) -> "MedicineBillSummaryOut":
@@ -235,6 +253,7 @@ class MedicineBillSummaryOut(BaseModel):
             created_at=bill.created_at,
             item_count=item_count,
             manual_patient_name=bill.manual_patient_name,
+            discount_amount=bill.discount_amount,
         )
 
 

@@ -33,6 +33,14 @@ export const pharmacyService = {
     return httpClient.get('/pharmacy/bills', { params: { date } });
   },
 
+  // The calling receptionist's own medicine bills, newest first, real
+  // server-side pagination — no date restriction. Hard-scoped
+  // server-side to the caller (see app/modules/pharmacy/router.py's
+  // `list_my_bills` docstring); there is no user id parameter here.
+  listMyBills({ page, pageSize }) {
+    return httpClient.get('/pharmacy/bills/mine', { params: { page, page_size: pageSize } });
+  },
+
   // Raw HTML document (not the JSON envelope) — see
   // billingService.fetchInvoiceReceiptHtml's identical docstring for why
   // this is fetched rather than a plain <a href>.

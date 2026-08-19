@@ -3,7 +3,9 @@ price-list management requires `pharmacy:manage` (Admin-only); searching
 the price list and viewing/printing bills requires `pharmacy:read`;
 creating a bill requires `pharmacy:bill` — see constants.py's module
 docstring for the segregation-of-duties rationale, matching Billing's
-identical permission split."""
+identical permission split. `GET /bills/mine` (2026-08-19 addition) is
+a receptionist's own itemized medicine-bill record — see
+list_my_bills's own docstring."""
 
 from datetime import date as date_type
 from uuid import UUID
@@ -137,6 +139,8 @@ async def create_bill(
         manual_patient_name=payload.manual_patient_name,
         manual_patient_age=payload.manual_patient_age,
         manual_patient_phone=payload.manual_patient_phone,
+        discount_amount=payload.discount_amount,
+        discount_reason=payload.discount_reason,
     )
     items = await pharmacy_service.get_bill_items(bill.id)
     payments = await pharmacy_service.get_bill_payments(bill.id)
@@ -203,6 +207,38 @@ async def get_bill_stats_by_creator(
         for user_id, (count, revenue) in stats.items()
     ]
     return success_envelope(body)
+
+
+@router.get("/bills/mine")
+async def list_my_bills(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    pharmacy_service: PharmacyService = Depends(get_pharmacy_service),
+    actor: User = Depends(require_permission(PERMISSION_PHARMACY_READ)),
+) -> dict:
+    """The calling receptionist's own "My Medicine Bills" record —
+    every medicine bill she has personally created, newest first, real
+    server-side pagination, no date restriction (2026-08-19 addition,
+    the medicine-bill sibling of `GET /visits?created_by=`'s "My
+    Registrations"). Declared before `GET /bills/{bill_id}` below —
+    same routing-order precaution `GET /bills/stats/by-creator` above
+    already needs, otherwise FastAPI would try to parse the literal
+    path segment `mine` as a `bill_id` UUID and 422.
+
+    Always `actor.id`, never a request-suppliable user id — the same
+    hard server-side scoping `GET /reception/revenue` already
+    established for "My Revenue" (see PharmacyService.
+    list_bills_for_creator's own docstring); there is structurally no
+    way to ask for someone else's bills through this endpoint."""
+    summaries, total = await pharmacy_service.list_bills_for_creator(
+        actor.id, page=page, page_size=page_size
+    )
+    body = [
+        MedicineBillSummaryOut.from_bill(bill, item_count).model_dump(mode="json")
+        for bill, item_count in summaries
+    ]
+    meta = PaginationMeta(page=page, page_size=page_size, total=total).model_dump(mode="json")
+    return success_envelope(body, meta)
 
 
 @router.get("/bills/{bill_id}")
@@ -289,5 +325,7 @@ async def print_bill(
         ],
         total_amount=bill.total_amount,
         amount_paid=bill.amount_paid,
+        discount_amount=bill.discount_amount,
+        discount_reason=bill.discount_reason,
     )
     return HTMLResponse(content=html_document)

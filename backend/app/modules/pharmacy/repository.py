@@ -130,6 +130,30 @@ class MedicineBillRepository(BaseRepository[MedicineBill]):
         count, revenue = result.one()
         return count, (revenue if revenue is not None else Decimal("0.00"))
 
+    async def list_for_creator(
+        self, user_id: UUID, *, page: int, page_size: int
+    ) -> tuple[list[MedicineBill], int]:
+        """Real, paginated server-side "every bill this user has ever
+        created" (2026-08-19 addition) — the medicine-bill sibling of
+        app/modules/visits/repository.py's `search`'s `created_by`
+        filter, backing the receptionist's own "My Medicine Bills" list
+        the same way that filter backs "My Registrations". Newest
+        first, no date restriction, same rationale as that method's own
+        docstring: a real unbounded server-side filter, never a
+        client-side "fetch N most recent" approximation."""
+        stmt = self._exclude_soft_deleted(
+            select(MedicineBill).where(MedicineBill.created_by == user_id), include_deleted=False
+        )
+        total = (
+            await self.session.execute(select(func.count()).select_from(stmt.subquery()))
+        ).scalar_one()
+
+        stmt = stmt.order_by(MedicineBill.created_at.desc()).limit(page_size).offset(
+            (page - 1) * page_size
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all()), total
+
     async def list_for_day(self, day: datetime) -> list[MedicineBill]:
         """Every medicine bill created on `day`'s UTC calendar date — the
         Admin Overview's Medicine Bills tab, the same UTC-calendar-day

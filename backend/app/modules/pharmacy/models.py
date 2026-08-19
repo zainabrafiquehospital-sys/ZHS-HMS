@@ -25,9 +25,13 @@ Four entities:
   display information for the printed slip when the receptionist wants
   a name/age/contact on the slip without an existing Patient/Visit
   record to link (patient not in the system, or a deliberate skip) —
-  no Patient or Visit row is looked up or created for this. A bill has
-  at most one of a linked `visit_id`, complete manual patient fields
-  (all three together, never partial), or neither (an anonymous
+  no Patient or Visit row is looked up or created for this.
+  `discount_amount`/`discount_reason` (2026-08-19 addition) are an
+  optional fixed-amount discount applied at creation time — see
+  `discount_amount`'s own column docstring below and
+  PharmacyService.create_bill's docstring for the full mechanism. A
+  bill has at most one of a linked `visit_id`, complete manual patient
+  fields (all three together, never partial), or neither (an anonymous
   walk-in) — enforced by this table's own CHECK constraints below, not
   only in the service layer.
 - `MedicineBillItem` — one line on a MedicineBill. Snapshots the
@@ -109,6 +113,9 @@ class MedicineBill(BaseEntity):
         CheckConstraint(
             "amount_paid <= total_amount", name="ck_medicine_bill_amount_paid_not_exceeding_total"
         ),
+        CheckConstraint(
+            "discount_amount >= 0", name="ck_medicine_bill_discount_amount_non_negative"
+        ),
         # A linked visit and manual patient details are mutually
         # exclusive — see this module's docstring. Enforced here, not
         # only in PharmacyService.create_bill, the same "the database is
@@ -144,6 +151,21 @@ class MedicineBill(BaseEntity):
     # cancellation pipeline, unlike an Invoice's Pending Billing Item
     # review flow.
     amount_paid: Mapped[Decimal] = mapped_column(_MONEY, nullable=False, default=Decimal("0.00"))
+    # A fixed-amount discount applied once, at bill-creation time only
+    # (2026-08-19 addition) — same shape and rationale as
+    # app/modules/billing/models.py's Invoice.discount_amount/
+    # discount_reason: `total_amount` above is already post-discount,
+    # the pre-discount subtotal is never stored separately (always
+    # cheaply recoverable as `total_amount + discount_amount`, see
+    # PharmacyService.create_bill's docstring). One deliberate
+    # difference from Invoice: `discount_reason` here is always
+    # optional, even when `discount_amount > 0` — a product decision
+    # for this feature specifically, not a data-integrity requirement
+    # the way Invoice's reason-required rule is.
+    discount_amount: Mapped[Decimal] = mapped_column(
+        _MONEY, nullable=False, default=Decimal("0.00")
+    )
+    discount_reason: Mapped[str | None] = mapped_column(String(200))
     status: Mapped[MedicineBillStatus] = mapped_column(
         Enum(
             MedicineBillStatus,

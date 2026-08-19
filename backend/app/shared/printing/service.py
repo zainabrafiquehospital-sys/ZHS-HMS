@@ -63,17 +63,21 @@ def render_invoice_receipt(
     be a stored-XSS vector the moment this HTML is ever opened in a
     browser (which is its entire purpose).
 
-    Leads with the simple three-line mental model every workspace
-    screen now shares: **Total Amount** (the pre-discount subtotal —
-    `total_amount` is already post-discount on the stored Invoice, see
+    Leads with the four-line mental model every workspace screen now
+    shares (2026-08-19 revision, adding the third line below — the
+    original three-line version left the actual post-discount total
+    only implied by Received+Pending, never shown as its own line):
+    **Total Amount** (the pre-discount subtotal — `total_amount` is
+    already post-discount on the stored Invoice, see
     BillingService.generate_invoice's docstring, so this recovers it as
     `total_amount + discount_amount` rather than storing it twice),
     **Discount** (only shown when actually applied — `discount_amount
-    == 0` means the row is fully absent, never a zero line), then
-    **Received**/**Pending** (`amount_paid` / `total_amount -
-    amount_paid` — Pending is mathematically identical to `Total -
-    Discount - Received` since `Total - Discount` is exactly the stored
-    post-discount `total_amount`)."""
+    == 0` means the row is fully absent, never a zero line), **Net
+    Amount** (the actual bottom-line total after discount — exactly the
+    stored `total_amount`, always shown, the visually emphasized row
+    now that it is the true bottom line rather than the pre-discount
+    subtotal above it), then **Received**/**Pending** (`amount_paid` /
+    `total_amount - amount_paid`)."""
     pending = total_amount - amount_paid
     subtotal = total_amount + discount_amount
     rows = "".join(
@@ -100,7 +104,7 @@ def render_invoice_receipt(
   table {{ width: 100%; border-collapse: collapse; margin-top: 16px; }}
   th, td {{ text-align: left; padding: 4px 0; }}
   td.amount, th.amount {{ text-align: right; }}
-  .totals td {{ font-weight: bold; border-top: 1px solid #000; padding-top: 6px; }}
+  .net-amount td {{ font-weight: bold; border-top: 1px solid #000; padding-top: 6px; }}
   .meta {{ margin-top: 12px; font-size: 13px; color: #333; }}
   @media print {{ body {{ padding: 0; }} }}
 </style>
@@ -120,8 +124,9 @@ def render_invoice_receipt(
     <thead><tr><th>Description</th><th class="amount">Amount</th></tr></thead>
     <tbody>
       {rows}
-      <tr class="totals"><td>Total Amount</td><td class="amount">{_money(subtotal)}</td></tr>
+      <tr><td>Total Amount</td><td class="amount">{_money(subtotal)}</td></tr>
       {discount_row}
+      <tr class="net-amount"><td>Net Amount</td><td class="amount">{_money(total_amount)}</td></tr>
       <tr><td>Received</td><td class="amount">{_money(amount_paid)}</td></tr>
       <tr><td>Pending</td><td class="amount">{_money(pending)}</td></tr>
     </tbody>
@@ -501,6 +506,8 @@ def render_medicine_bill_receipt(
     line_items: list[tuple[str, str, int, Decimal, Decimal]],
     total_amount: Decimal,
     amount_paid: Decimal,
+    discount_amount: Decimal = Decimal("0.00"),
+    discount_reason: str | None = None,
 ) -> str:
     """Renders the Pharmacy module's medicine bill slip — reuses the
     exact `.sheet`/`.header`/`.title-box`/`.body-grid` grayscale, A4,
@@ -524,17 +531,25 @@ def render_medicine_bill_receipt(
     `line_items` is `(medicine_name, category, quantity, unit_price,
     line_total)` tuples, already snapshotted at billing time (see
     `MedicineBillItem`'s docstring) — this function renders exactly what
-    was billed, never re-reads the live price list.
-
-    `amount_paid` mirrors `render_invoice_receipt`'s identical Total
-    Amount / Received / Pending footer (Pharmacy has no discount
-    concept, so there is no conditional Discount row here — always
-    exactly these three) — a bill freshly created and not yet paid
-    renders `Received: 0.00` / `Pending` equal to the total, exactly
-    like an unpaid Invoice would, rather than silently implying the
-    sale was already settled."""
+    was billed, never re-reads the live price list. Each line's own
+    `line_total` is never affected by `discount_amount` — a bill-level
+    discount is applied once, below the itemized table, exactly like
+    `render_invoice_receipt`'s identical Total Amount / Discount / Net
+    Amount footer (2026-08-19 addition — Pharmacy previously had no
+    discount concept at all; see app/modules/pharmacy/models.py's
+    `MedicineBill.discount_amount` docstring). `discount_amount == 0`
+    means the Discount row is fully absent, never a zero line, same
+    convention as the invoice receipt's. `total_amount` is already
+    post-discount (the pre-discount subtotal is recovered as
+    `total_amount + discount_amount`, same as the invoice receipt) —
+    `Net Amount` always shows it, then `Received`/`Pending` follow: a
+    bill freshly created and not yet paid renders `Received: 0.00` /
+    `Pending` equal to the (post-discount) total, exactly like an
+    unpaid Invoice would, rather than silently implying the sale was
+    already settled."""
     billed_on = _to_local_time(bill_created_at, display_timezone).strftime("%d %b %Y, %I:%M %p")
     pending = total_amount - amount_paid
+    subtotal = total_amount + discount_amount
     short_bill_id = bill_id.split("-")[0].upper()
 
     logo_data_uri = _logo_data_uri()
@@ -585,6 +600,16 @@ def render_medicine_bill_receipt(
         f"<td class='amount'>{_money(line_total)}</td></tr>"
         for name, category, quantity, unit_price, line_total in line_items
     )
+
+    discount_row = ""
+    if discount_amount > 0:
+        discount_label = "Discount"
+        if discount_reason:
+            discount_label = f"Discount ({_escape(discount_reason)})"
+        discount_row = (
+            f'<tr><td colspan="4">{discount_label}</td>'
+            f"<td class='amount'>-{_money(discount_amount)}</td></tr>"
+        )
 
     return f"""<!doctype html>
 <html>
@@ -742,19 +767,19 @@ def render_medicine_bill_receipt(
   th.qty, td.qty {{ text-align: center; width: 60px; }}
   th.category, td.category {{ width: 110px; }}
   th.amount, td.amount {{ text-align: right; width: 110px; }}
-  tfoot tr:first-child td {{
-    font-size: 14px;
-    font-weight: 800;
-    padding-top: 12px;
-    border-top: 2px solid var(--rule-strong);
-    border-bottom: none;
-  }}
-  tfoot tr:not(:first-child) td {{
+  tfoot td {{
     font-size: 12px;
     font-weight: 600;
     color: var(--ink-soft);
     padding-top: 4px;
     border-bottom: none;
+  }}
+  tfoot tr.net-amount td {{
+    font-size: 14px;
+    font-weight: 800;
+    color: var(--ink);
+    padding-top: 12px;
+    border-top: 2px solid var(--rule-strong);
   }}
   tfoot td.amount {{ text-align: right; }}
 
@@ -849,6 +874,11 @@ def render_medicine_bill_receipt(
         <tfoot>
           <tr>
             <td colspan="4">Total Amount</td>
+            <td class="amount">{_money(subtotal)}</td>
+          </tr>
+          {discount_row}
+          <tr class="net-amount">
+            <td colspan="4">Net Amount</td>
             <td class="amount">{_money(total_amount)}</td>
           </tr>
           <tr>

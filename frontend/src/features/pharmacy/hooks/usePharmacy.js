@@ -4,6 +4,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { pharmacyService } from '@/features/pharmacy/api/pharmacyService';
 import { adminUsersService } from '@/features/admin/api/adminUsersService';
 import { visitsService } from '@/features/visits/api/visitsService';
+import { useAuth } from '@/features/auth/hooks/useAuth';
 import { openAndPrintHtml } from '@/utils/printWindow';
 
 /** Admin management listing — every medicine, active and inactive alike
@@ -79,6 +80,35 @@ export function useMedicineBillsForDay(dayKey) {
     queryFn: () => pharmacyService.listBillsForDay(dayKey).then((res) => res.data),
     enabled: Boolean(dayKey),
   });
+}
+
+/** Every medicine bill this receptionist has personally created,
+ * newest first, no date restriction (2026-08-19 addition) — the
+ * medicine-bill sibling of `useMyRegistrations` (features/reception/
+ * hooks/useReception.js): a real, unbounded server-side filter (`GET
+ * /pharmacy/bills/mine`, hard-scoped to the caller — see
+ * pharmacyService.listMyBills's docstring), fetched as one generously-
+ * sized page (`FETCH_PAGE_SIZE`, same convention as
+ * useMyRegistrations's own) for the UI to search/display-paginate over
+ * client-side; `meta.total` reveals if that page size is ever actually
+ * insufficient. */
+export function useMyMedicineBills({ page, pageSize }) {
+  const { user } = useAuth();
+  const query = useQuery({
+    queryKey: ['pharmacy', 'bills', 'mine', user?.id, { page, pageSize }],
+    queryFn: () =>
+      pharmacyService.listMyBills({ page, pageSize }).then((res) => ({
+        bills: res.data,
+        meta: res.meta,
+      })),
+    enabled: Boolean(user?.id),
+    refetchInterval: 20000,
+  });
+  return {
+    ...query,
+    bills: query.data?.bills ?? [],
+    meta: query.data?.meta ?? null,
+  };
 }
 
 /** Enriches a list of medicine bills with their linked Visit (only for

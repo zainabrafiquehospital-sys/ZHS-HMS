@@ -72,3 +72,19 @@ class MedicineBillManualPatientFieldsIncompleteError(ValidationError):
         super().__init__(
             "Manual patient details require name, age, and contact number all together."
         )
+
+
+class MedicineBillDiscountExceedsSubtotalError(ValidationError):
+    """Mirrors app/modules/billing/exceptions.py's identical
+    `DiscountExceedsSubtotalError` — there is deliberately no
+    `MedicineBillDiscountReasonRequiredError` sibling: unlike Invoice's
+    discount, a medicine bill's discount reason is always optional (a
+    2026-08-19 product decision for this feature specifically), so
+    there is no reason-required rule to enforce."""
+
+    code = "MEDICINE_BILL_DISCOUNT_EXCEEDS_SUBTOTAL"
+
+    def __init__(self, subtotal: str) -> None:
+        super().__init__(
+            f"Discount exceeds the medicine bill subtotal of {subtotal}.", {"subtotal": subtotal}
+        )

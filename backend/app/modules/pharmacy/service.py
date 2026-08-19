@@ -48,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import ValidationError
 from app.modules.auth.models import User
 from app.modules.pharmacy.exceptions import (
+    MedicineBillDiscountExceedsSubtotalError,
     MedicineBillManualPatientConflictsWithVisitError,
     MedicineBillManualPatientFieldsIncompleteError,
     MedicineBillNotFoundError,
@@ -190,6 +191,8 @@ class PharmacyService:
         manual_patient_name: str | None = None,
         manual_patient_age: int | None = None,
         manual_patient_phone: str | None = None,
+        discount_amount: Decimal = _ZERO,
+        discount_reason: str | None = None,
     ) -> MedicineBill:
         """`items` is a list of `(medicine_id, quantity)` pairs, already
         validated non-empty by `CreateMedicineBillRequest`. Every
@@ -213,7 +216,18 @@ class PharmacyService:
         linked — see models.py's `MedicineBill` docstring for the full
         rationale and the DB-level CHECK constraints that also enforce
         the two rules validated here: mutually exclusive with
-        `visit_id`, and all-or-nothing (never a partial manual entry)."""
+        `visit_id`, and all-or-nothing (never a partial manual entry).
+
+        `discount_amount` (optional, defaults to none, 2026-08-19
+        addition) is a flat discount off the sum of line items — same
+        shape as `BillingService.generate_invoice`'s identical
+        parameter: validated here against the subtotal (never against
+        `total_amount`, which does not exist until this same
+        computation), and `total_amount` is stored already
+        post-discount, never separately. Unlike Invoice's discount,
+        `discount_reason` is always optional here, even when
+        `discount_amount > 0` — a deliberate product decision for this
+        feature, so there is no reason-required check to mirror."""
         manual_fields = (manual_patient_name, manual_patient_age, manual_patient_phone)
         any_manual_field = any(field is not None for field in manual_fields)
         all_manual_fields = all(field is not None for field in manual_fields)
@@ -236,10 +250,20 @@ class PharmacyService:
                 raise MedicineInactiveError(medicine.name)
             resolved.append((medicine, quantity))
 
-        total = sum(
+        subtotal = sum(
             (quantize_money(medicine.unit_price * quantity) for medicine, quantity in resolved),
             _ZERO,
         )
+
+        discount_amount = quantize_money(discount_amount) if discount_amount else _ZERO
+        if discount_amount < _ZERO:
+            raise ValidationError("discount_amount cannot be negative.")
+        discount_reason = discount_reason.strip() if discount_reason else None
+        if discount_amount == _ZERO:
+            discount_reason = None
+        if discount_amount > subtotal:
+            raise MedicineBillDiscountExceedsSubtotalError(str(subtotal))
+        total = subtotal - discount_amount
 
         bill = MedicineBill(
             visit_id=visit_id,
@@ -249,6 +273,8 @@ class PharmacyService:
             manual_patient_name=manual_patient_name,
             manual_patient_age=manual_patient_age,
             manual_patient_phone=manual_patient_phone,
+            discount_amount=discount_amount,
+            discount_reason=discount_reason,
             created_by=actor.id,
             updated_by=actor.id,
         )
@@ -281,6 +307,7 @@ class PharmacyService:
                 "total_amount": str(total),
                 "line_item_count": len(resolved),
                 "manual_patient_name": manual_patient_name,
+                "discount_amount": str(discount_amount),
             },
         )
 
@@ -385,6 +412,26 @@ class PharmacyService:
         bills = await self._bill_repo.list_for_day(day)
         counts = await self._item_repo.count_items_for_bills([bill.id for bill in bills])
         return [(bill, counts.get(bill.id, 0)) for bill in bills]
+
+    async def list_bills_for_creator(
+        self, user_id: UUID, *, page: int, page_size: int
+    ) -> tuple[list[tuple[MedicineBill, int]], int]:
+        """`(bill, item_count)` pairs for every medicine bill `user_id`
+        has personally created, newest first, real server-side
+        pagination — the medicine-bill sibling of Reception's own "My
+        Registrations" (`VisitRepository.search`'s `created_by` filter),
+        added (2026-08-19) so a receptionist can see an itemized record
+        of her own medicine bills, not just the "My Revenue" total.
+        `user_id` always comes from the caller's own `actor.id` at the
+        router layer, never a request-suppliable parameter — the same
+        hard server-side scoping `ReceptionService.get_own_revenue`
+        already established, so there is structurally no way to ask for
+        someone else's bills through this method."""
+        bills, total = await self._bill_repo.list_for_creator(
+            user_id, page=page, page_size=page_size
+        )
+        counts = await self._item_repo.count_items_for_bills([bill.id for bill in bills])
+        return [(bill, counts.get(bill.id, 0)) for bill in bills], total
 
     async def count_and_revenue_by_creator(self) -> dict[UUID, tuple[int, Decimal]]:
         """Read-only aggregate added for the Admin "Employee Accounts &

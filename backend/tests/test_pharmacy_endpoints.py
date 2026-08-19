@@ -803,6 +803,272 @@ async def test_bill_payment_requires_permission(api_client, real_session, grant_
     assert resp.status_code == 403
 
 
+async def test_create_bill_with_discount_computes_correct_total(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "discount-basic")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}DiscountBasic", price="100.00"
+    )
+
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": None,
+            "items": [{"medicine_id": medicine_id, "quantity": 3}],
+            "discount_amount": "50.00",
+            "discount_reason": "Bulk purchase",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert bill_resp.status_code == 201, bill_resp.text
+    body = bill_resp.json()["data"]
+    # 3 x 100.00 = 300.00 subtotal, minus 50.00 discount = 250.00
+    assert body["total_amount"] == "250.00"
+    assert body["discount_amount"] == "50.00"
+    assert body["discount_reason"] == "Bulk purchase"
+
+
+async def test_create_bill_discount_reason_is_optional(api_client, real_session, grant_permission):
+    """Deliberate difference from Invoice's discount, which requires a
+    reason — a medicine-bill discount reason may be left blank."""
+    actor, access_token = await _create_and_login(api_client, real_session, "discount-no-reason")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}DiscountNoReason", price="40.00"
+    )
+
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": None,
+            "items": [{"medicine_id": medicine_id, "quantity": 1}],
+            "discount_amount": "10.00",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert bill_resp.status_code == 201, bill_resp.text
+    body = bill_resp.json()["data"]
+    assert body["total_amount"] == "30.00"
+    assert body["discount_amount"] == "10.00"
+    assert body["discount_reason"] is None
+
+
+async def test_create_bill_discount_exceeding_subtotal_rejected(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "discount-exceeds")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}DiscountExceeds", price="20.00"
+    )
+
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": None,
+            "items": [{"medicine_id": medicine_id, "quantity": 1}],
+            "discount_amount": "20.01",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert bill_resp.status_code == 422
+    assert bill_resp.json()["error"]["code"] == "MEDICINE_BILL_DISCOUNT_EXCEEDS_SUBTOTAL"
+
+
+async def test_create_bill_negative_discount_rejected(api_client, real_session, grant_permission):
+    actor, access_token = await _create_and_login(api_client, real_session, "discount-negative")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}DiscountNegative", price="20.00"
+    )
+
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": None,
+            "items": [{"medicine_id": medicine_id, "quantity": 1}],
+            "discount_amount": "-5.00",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert bill_resp.status_code == 422
+
+
+async def test_print_bill_with_discount_shows_lines_in_correct_order(
+    api_client, real_session, grant_permission
+):
+    """The printed slip must show, in order: the original (pre-discount)
+    total, then the Discount line, then the final Net Amount — never
+    the reverse, and never with the discount silently absorbed into a
+    single opaque total."""
+    actor, access_token = await _create_and_login(api_client, real_session, "discount-print-order")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor, PERMISSION_PHARMACY_READ)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}DiscountPrintOrder", price="100.00"
+    )
+
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": None,
+            "items": [{"medicine_id": medicine_id, "quantity": 2}],
+            "discount_amount": "30.00",
+            "discount_reason": "Loyalty",
+        },
+        headers=_auth_header(access_token),
+    )
+    assert bill_resp.status_code == 201, bill_resp.text
+    bill_id = bill_resp.json()["data"]["id"]
+
+    print_resp = await api_client.get(
+        f"/api/v1/pharmacy/bills/{bill_id}/print", headers=_auth_header(access_token)
+    )
+    assert print_resp.status_code == 200
+    html = print_resp.text
+    # 2 x 100.00 = 200.00 subtotal, -30.00 discount = 170.00 net.
+    assert "200.00" in html
+    assert "Discount (Loyalty)" in html
+    assert "170.00" in html
+
+    total_idx = html.index("Total Amount")
+    discount_idx = html.index("Discount (Loyalty)")
+    net_idx = html.index("Net Amount")
+    assert total_idx < discount_idx < net_idx
+
+
+async def test_print_bill_without_discount_omits_discount_line(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "no-discount-print")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor, PERMISSION_PHARMACY_READ)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}PlainPrint", price="15.00"
+    )
+
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": None, "items": [{"medicine_id": medicine_id, "quantity": 1}]},
+        headers=_auth_header(access_token),
+    )
+    assert bill_resp.status_code == 201, bill_resp.text
+    bill_id = bill_resp.json()["data"]["id"]
+
+    print_resp = await api_client.get(
+        f"/api/v1/pharmacy/bills/{bill_id}/print", headers=_auth_header(access_token)
+    )
+    assert print_resp.status_code == 200
+    assert "Discount" not in print_resp.text
+    assert "Net Amount" in print_resp.text
+
+
+# ---------------------------------------------------------------------
+# "My Medicine Bills" (2026-08-19 addition) — GET /pharmacy/bills/mine,
+# the medicine-bill sibling of Reception's own "My Registrations".
+# ---------------------------------------------------------------------
+
+
+async def test_list_my_bills_requires_permission(api_client, real_session):
+    _actor, access_token = await _create_and_login(api_client, real_session, "my-bills-no-perm")
+
+    resp = await api_client.get(
+        "/api/v1/pharmacy/bills/mine", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_list_my_bills_returns_only_own_bills(api_client, real_session, grant_permission):
+    """The core requirement: receptionist A's "My Medicine Bills" must
+    never include receptionist B's bills, even though both are billed
+    in the same database at the same time."""
+    actor_a, token_a = await _create_and_login(api_client, real_session, "my-bills-a")
+    await grant_permission(actor_a, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor_a, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor_a, PERMISSION_PHARMACY_READ)
+    actor_b, token_b = await _create_and_login(api_client, real_session, "my-bills-b")
+    await grant_permission(actor_b, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor_b, PERMISSION_PHARMACY_READ)
+
+    medicine_id = await _create_medicine(
+        api_client, token_a, f"{TEST_MEDICINE_NAME_PREFIX}MyBillsShared", price="10.00"
+    )
+
+    bill_a_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": None, "items": [{"medicine_id": medicine_id, "quantity": 1}]},
+        headers=_auth_header(token_a),
+    )
+    assert bill_a_resp.status_code == 201, bill_a_resp.text
+    bill_a_id = bill_a_resp.json()["data"]["id"]
+
+    bill_b_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": None, "items": [{"medicine_id": medicine_id, "quantity": 5}]},
+        headers=_auth_header(token_b),
+    )
+    assert bill_b_resp.status_code == 201, bill_b_resp.text
+    bill_b_id = bill_b_resp.json()["data"]["id"]
+
+    resp_a = await api_client.get("/api/v1/pharmacy/bills/mine", headers=_auth_header(token_a))
+    assert resp_a.status_code == 200
+    ids_a = [row["id"] for row in resp_a.json()["data"]]
+    assert bill_a_id in ids_a
+    assert bill_b_id not in ids_a
+
+    resp_b = await api_client.get("/api/v1/pharmacy/bills/mine", headers=_auth_header(token_b))
+    assert resp_b.status_code == 200
+    ids_b = [row["id"] for row in resp_b.json()["data"]]
+    assert bill_b_id in ids_b
+    assert bill_a_id not in ids_b
+
+
+async def test_list_my_bills_includes_item_count_and_discount(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "my-bills-fields")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor, PERMISSION_PHARMACY_READ)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}MyBillsFields", price="50.00"
+    )
+
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": None,
+            "items": [{"medicine_id": medicine_id, "quantity": 2}],
+            "discount_amount": "20.00",
+        },
+        headers=_auth_header(access_token),
+    )
+    assert bill_resp.status_code == 201, bill_resp.text
+    bill_id = bill_resp.json()["data"]["id"]
+
+    resp = await api_client.get("/api/v1/pharmacy/bills/mine", headers=_auth_header(access_token))
+    assert resp.status_code == 200
+    matching = [row for row in resp.json()["data"] if row["id"] == bill_id]
+    assert len(matching) == 1
+    assert matching[0]["item_count"] == 1
+    assert matching[0]["total_amount"] == "80.00"
+    assert matching[0]["discount_amount"] == "20.00"
+    assert resp.json()["meta"]["total"] >= 1
+
+
 async def test_print_bill_requires_permission(api_client, real_session, grant_permission):
     actor, access_token = await _create_and_login(api_client, real_session, "print-no-perm")
     await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
