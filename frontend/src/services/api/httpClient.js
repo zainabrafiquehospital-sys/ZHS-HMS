@@ -1,6 +1,13 @@
 import axios from 'axios';
 import { env } from '@/core/config/env';
-import { clearAccessToken, getAccessToken, setAccessToken } from '@/services/api/tokenStore';
+import {
+  clearAccessToken,
+  clearUserId,
+  getAccessToken,
+  getUserId,
+  setAccessToken,
+  setUserId,
+} from '@/services/api/tokenStore';
 
 export const httpClient = axios.create({
   baseURL: `${env.apiBaseUrl}/api/${env.apiVersion}`,
@@ -38,10 +45,23 @@ let _refreshPromise = null;
  * and race to rotate the same refresh-token family. */
 function _refreshAccessToken() {
   if (!_refreshPromise) {
+    // See tokenStore.js's `userId` docstring — this lets the backend
+    // detect a stale-cookie cross-tab identity swap and fail the
+    // refresh cleanly instead of silently authenticating this tab as
+    // whoever's login most recently overwrote the shared browser
+    // cookie. `undefined` (no header) when this tab has never known a
+    // user id yet (e.g. the very first refresh on a hard reload) —
+    // that case must trust the cookie exactly as before.
+    const expectedUserId = getUserId();
     _refreshPromise = httpClient
-      .post('/auth/refresh')
+      .post(
+        '/auth/refresh',
+        undefined,
+        expectedUserId ? { headers: { 'X-Expected-User-Id': expectedUserId } } : undefined,
+      )
       .then((data) => {
         setAccessToken(data.data.access_token);
+        setUserId(data.data.user.id);
         return data.data.access_token;
       })
       .finally(() => {
@@ -77,6 +97,7 @@ httpClient.interceptors.response.use(
         return httpClient(originalRequest);
       } catch {
         clearAccessToken();
+        clearUserId();
         _onAuthFailure?.();
         // fall through to the normalized rejection below using the
         // *original* 401, not the refresh call's own error shape.

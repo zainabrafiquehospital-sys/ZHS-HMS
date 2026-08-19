@@ -174,6 +174,19 @@ class SignupService:
             signup_role=signup_role,
             status=UserStatus.PENDING_EMAIL_VERIFICATION,
             is_email_verified=False,
+            # Explicit, not left to User.must_change_password's own
+            # column default (`True`) — found while enforcing that flag
+            # in the 2026-08-19 audit fix pass (see
+            # dependencies.py's require_permission). A self-service
+            # signup chooses its own password right here; unlike an
+            # admin-provisioned account (UserService.create_user) or an
+            # admin-issued reset (admin_reset_password), there is no
+            # system-generated temporary credential to force a change
+            # away from. Leaving this unset would have force-routed
+            # every self-service-signed-up Receptionist/Vitals account
+            # to /change-password on its very first login the moment
+            # enforcement went live, for no real security reason.
+            must_change_password=False,
         )
         try:
             await self._user_repo.add(user)

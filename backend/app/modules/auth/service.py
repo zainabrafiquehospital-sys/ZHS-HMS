@@ -18,12 +18,14 @@ boundary is deliberately drawn, exactly once per business operation."""
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
 from app.core.config import Settings
+from app.core.logging import get_logger
 from app.core.token_rotation import ReuseVerdict, RotatedTokenState, classify_reuse
 from app.modules.auth.exceptions import (
     AccountLockedError,
@@ -64,6 +66,8 @@ from app.modules.auth.token_service import TokenService
 from app.modules.auth.validators import normalize_email
 from app.shared.db_errors import unique_violation_constraint_name
 from app.shared.email.service import EmailService, render_otp_email
+
+logger = get_logger(__name__)
 
 # The unique-while-active indexes backing User.email/phone_number — see
 # app/modules/auth/models.py and app/shared/db_errors.py for the full
@@ -222,6 +226,14 @@ class AuthService:
             full_name=full_name,
             phone_number=phone_number,
             status=UserStatus.ACTIVE,
+            # Explicit, not left to the column's own `True` default —
+            # same reasoning as SignupService.signup's identical
+            # explicit `False` (see that call site's own comment, added
+            # in the 2026-08-19 must_change_password enforcement fix
+            # pass): this method's caller chooses their own password
+            # right here, so there is no temporary credential to force a
+            # change away from.
+            must_change_password=False,
         )
         try:
             await self._user_repo.add(user)
@@ -362,7 +374,32 @@ class AuthService:
         raw_refresh_token: str,
         ip_address: str | None,
         user_agent: str | None,
+        expected_user_id: UUID | None = None,
     ) -> RefreshResult:
+        """`expected_user_id`, when given, is who the *caller* (a specific
+        browser tab, per its own in-memory record of who it last logged
+        in as — see frontend/src/services/api/tokenStore.js) believes it
+        is about to refresh as. It exists to close a cross-tab identity-
+        bleed gap found in the 2026-08-19 audit: the refresh cookie is
+        scoped per-origin+path, not per-tab, so on a shared front-desk
+        machine, Staff B logging in on a second tab silently overwrites
+        the one browser-wide cookie Staff A's still-open tab depends on.
+        Without this check, Tab A's next silent refresh (on reload, or
+        the access-token-expiry retry in httpClient.js) would decode
+        *whichever* refresh token the cookie currently holds and hand Tab
+        A a valid access token for Staff B — a real identity swap, not
+        merely a logout. When the resolved token's owner doesn't match
+        what the caller expected, this is treated as an invalid token
+        (the same generic `TokenInvalidError` every other refresh failure
+        raises — no separate error code, so a client can't use this to
+        enumerate whether a given user id is currently logged in
+        elsewhere) rather than a successful refresh, *before* any
+        rotation is attempted — so a mismatched request never consumes
+        or disturbs the legitimate session's own rotation slot. This is
+        deliberately not a reuse-attack/family-revocation event: nothing
+        was stolen or replayed, one browser legitimately holds two
+        different people's login history, so the *other* (matching)
+        session must be left completely undisturbed."""
         now = datetime.now(UTC)
         token_hash = self._token_service.hash_refresh_token(raw_refresh_token)
         old_token = await self._refresh_token_repo.get_by_token_hash(token_hash)
@@ -372,6 +409,14 @@ class AuthService:
 
         user = await self._user_repo.get_by_id(old_token.user_id)
         if user is None or user.status not in _LOGGABLE_STATUSES:
+            raise TokenInvalidError
+
+        if expected_user_id is not None and user.id != expected_user_id:
+            logger.warning(
+                "refresh_identity_mismatch",
+                expected_user_id=str(expected_user_id),
+                resolved_user_id=str(user.id),
+            )
             raise TokenInvalidError
 
         login_session = next((s for s in old_token.login_sessions if s.is_active), None)

@@ -28,6 +28,10 @@ async def _create_and_login(api_client, real_session, suffix: str) -> tuple[User
             password_hash=password_hash,
             full_name="Billing Endpoint Actor",
             status=UserStatus.ACTIVE,
+            # See tests/test_user_endpoints.py's _create_and_login for
+            # why this must be explicit (must_change_password
+            # enforcement, 2026-08-19 audit fix pass).
+            must_change_password=False,
         )
     )
     await real_session.commit()

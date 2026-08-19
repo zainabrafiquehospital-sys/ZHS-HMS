@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { authService } from '@/features/auth/api/authService';
-import { clearAccessToken, setAccessToken } from '@/services/api/tokenStore';
+import { clearAccessToken, clearUserId, setAccessToken, setUserId } from '@/services/api/tokenStore';
 import { setOnAuthFailure } from '@/services/api/httpClient';
 import { ROUTES } from '@/core/constants/routes';
 
@@ -16,6 +16,7 @@ export function AuthProvider({ children }) {
 
   const clearSession = useCallback(() => {
     clearAccessToken();
+    clearUserId();
     setUser(null);
   }, []);
 
@@ -51,11 +52,13 @@ export function AuthProvider({ children }) {
       .then((data) => {
         if (cancelled) return;
         setAccessToken(data.data.access_token);
+        setUserId(data.data.user.id);
         setUser(data.data.user);
       })
       .catch(() => {
         if (cancelled) return;
         clearAccessToken();
+        clearUserId();
         setUser(null);
       })
       .finally(() => {
@@ -70,6 +73,7 @@ export function AuthProvider({ children }) {
   const login = useCallback(async ({ email, password, rememberMe }) => {
     const data = await authService.login({ email, password, rememberMe });
     setAccessToken(data.data.access_token);
+    setUserId(data.data.user.id);
     setUser(data.data.user);
     return data.data.user;
   }, []);
@@ -87,6 +91,14 @@ export function AuthProvider({ children }) {
     hasPermission,
     login,
     logout,
+    // Local-only session clear, no backend call — for a caller that has
+    // already had its session invalidated server-side by some other
+    // request (e.g. ChangePasswordForm's successful submit: `AuthService
+    // .change_password` already revokes every refresh token/session,
+    // including the one that made the call — see that method's own
+    // docstring) and just needs the frontend to catch up without a
+    // redundant, already-no-op `POST /auth/logout`.
+    clearSession,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

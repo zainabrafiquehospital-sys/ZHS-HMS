@@ -46,3 +46,12 @@ export const generateInvoiceSchema = z
 export const recordPaymentSchema = z.object({
   amount: positiveAmount,
 });
+
+// Doctor-side "submit an additional charge request" (2026-08-19 audit
+// fix pass — see billingService.submitPendingItem's docstring). Same
+// per-field shape as the backend's SubmitPendingItemRequest; the
+// visit_id itself is supplied by the caller, not part of this form.
+export const submitPendingItemSchema = z.object({
+  description: z.string().min(1, 'Description is required').max(200),
+  amount: positiveAmount,
+});

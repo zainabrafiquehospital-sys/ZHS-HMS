@@ -20,7 +20,19 @@ class Settings(BaseSettings):
     # conversion is configured, not a number baked into a template.
     display_timezone: str = "Asia/Karachi"
 
-    cors_allowed_origins: str = "https://zhs-hms-mu.vercel.app"
+    # 2026-08-19 ground-up audit finding: this default previously named
+    # only the retired zhs-hms-mu.vercel.app domain, while production has
+    # since moved to the custom domain below. Both are listed — the
+    # custom domain first as the real primary origin, the old Vercel URL
+    # kept as a harmless transitional fallback in case anything (a stale
+    # bookmark, an old preview link) still resolves there — CORS allow-
+    # listing an extra trusted origin costs nothing security-wise.
+    # IMPORTANT: this is only the code-level *default*. The actual
+    # deployed value comes from Railway's `CORS_ALLOWED_ORIGINS` env var,
+    # which this file cannot see or change — verify/update it directly in
+    # the Railway dashboard so it matches (comma-separated if multiple
+    # origins are genuinely still in use).
+    cors_allowed_origins: str = "https://hms.zainabrafiquehospital.com,https://zhs-hms-mu.vercel.app"
 
     # The frontend's own login page — linked from the signup-approval
     # confirmation email (see app/modules/auth/user_service.py's
@@ -28,8 +40,12 @@ class Settings(BaseSettings):
     # than derived from `cors_allowed_origins` (a comma-separated
     # allowlist with no defined "primary" entry) — this is specifically
     # where a human should land after clicking the email, not just any
-    # origin permitted to call the API.
-    frontend_login_url: str = "https://zhs-hms-mu.vercel.app/login"
+    # origin permitted to call the API. Same 2026-08-19 audit note as
+    # `cors_allowed_origins` above: this default now points at the real
+    # custom domain; verify Railway's `FRONTEND_LOGIN_URL` env var
+    # matches (a stale value here only affects future approval emails,
+    # never login itself).
+    frontend_login_url: str = "https://hms.zainabrafiquehospital.com/login"
 
     database_url: str
     database_sync_url: str

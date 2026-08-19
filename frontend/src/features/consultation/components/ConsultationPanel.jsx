@@ -2,8 +2,9 @@
 
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
-import { HeartPulse, CheckCircle2 } from 'lucide-react';
+import { HeartPulse, CheckCircle2, ReceiptText } from 'lucide-react';
 import {
   useActiveConsultation,
   useConsultationById,
@@ -21,6 +22,9 @@ import {
   SEVERITY_LABEL,
   getVitalSeverity,
 } from '@/features/vitals/utils/vitalsSeverity';
+import { useSubmitPendingItem } from '@/features/billing/hooks/useBilling';
+import { submitPendingItemSchema } from '@/features/billing/schemas/billingSchemas';
+import { useAuth } from '@/features/auth/hooks/useAuth';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
@@ -85,8 +89,95 @@ function RecordedVitals({ visitId, ageYears }) {
   );
 }
 
+/** Doctor's "submit an additional charge request" (Phase 6 §7.1) —
+ * added in the 2026-08-19 audit fix pass. The backend endpoint
+ * (`billing:submit_charge`) and Reception's own approve/reject screen
+ * (`BillingWorkspace.jsx`'s `PendingItemsPanel`) already existed; this
+ * was the missing piece — nothing in the doctor-facing UI could ever
+ * call it. A clinical fact, never a financial transaction on its own
+ * (see backend/app/modules/billing/models.py's `PendingBillingItem`
+ * docstring) — Reception still reviews, approves/rejects, and is the
+ * only one who ever touches an actual Invoice; this form only creates
+ * the request. Submittable multiple times per consultation (e.g. a
+ * doctor requesting two separate additional procedures), so — unlike
+ * Send-to-Vitals, which navigates the whole panel into a waiting state
+ * — this resets and stays in place after each successful submission. */
+function SubmitChargeRequestForm({ visitId, disabled }) {
+  const submitPendingItem = useSubmitPendingItem(visitId);
+  const [submitError, setSubmitError] = useState(null);
+  const [justSubmitted, setJustSubmitted] = useState(false);
+
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors, isSubmitting },
+  } = useForm({
+    resolver: zodResolver(submitPendingItemSchema),
+    defaultValues: { description: '', amount: '' },
+  });
+
+  async function onSubmit(values) {
+    setSubmitError(null);
+    setJustSubmitted(false);
+    try {
+      await submitPendingItem.mutateAsync(values);
+      reset();
+      setJustSubmitted(true);
+    } catch (error) {
+      setSubmitError(error.message || 'Unable to submit this charge request.');
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border pt-4">
+      <Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        Request Additional Charge
+      </Label>
+      <p className="text-xs text-muted-foreground">
+        Sends a request to Reception to add a charge to this visit&apos;s bill — Reception
+        reviews and approves it before it&apos;s billed.
+      </p>
+      <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-2 sm:flex-row sm:items-start">
+        <div className="flex flex-1 flex-col gap-1.5">
+          <Input
+            aria-label="Charge description"
+            placeholder="e.g. Ultrasound"
+            disabled={disabled}
+            {...register('description')}
+          />
+          {errors.description ? (
+            <p className="text-xs text-destructive">{errors.description.message}</p>
+          ) : null}
+        </div>
+        <div className="flex w-full flex-col gap-1.5 sm:w-32">
+          <Input
+            aria-label="Charge amount"
+            type="number"
+            step="0.01"
+            placeholder="Amount"
+            disabled={disabled}
+            {...register('amount')}
+          />
+          {errors.amount ? <p className="text-xs text-destructive">{errors.amount.message}</p> : null}
+        </div>
+        <Button type="submit" variant="outline" disabled={disabled || isSubmitting}>
+          <ReceiptText className="h-4 w-4" />
+          {isSubmitting ? 'Submitting…' : 'Submit Request'}
+        </Button>
+      </form>
+      {justSubmitted ? (
+        <p className="text-xs text-emerald-700">Charge request sent to Reception.</p>
+      ) : null}
+      {submitError ? <p className="text-xs text-destructive">{submitError}</p> : null}
+    </div>
+  );
+}
+
 export function ConsultationPanel({ visitId }) {
   const router = useRouter();
+  const { hasPermission } = useAuth();
+  const canSubmitCharge = hasPermission('billing:submit_charge');
   const { data: activeSummary, isLoading: isLoadingActive } = useActiveConsultation(visitId);
   const consultationId = activeSummary?.id;
   const { data: consultation } = useConsultationById(consultationId);
@@ -206,6 +297,10 @@ export function ConsultationPanel({ visitId }) {
             Send to Vitals
           </Button>
         </div>
+
+        {canSubmitCharge ? (
+          <SubmitChargeRequestForm visitId={visitId} disabled={status !== 'in_progress'} />
+        ) : null}
 
         {actionError ? (
           <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">

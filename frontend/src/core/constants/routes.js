@@ -12,6 +12,13 @@ export const ROUTES = {
   SIGNUP: '/signup',
   VERIFY_EMAIL: '/verify-email',
   FORGOT_PASSWORD: '/forgot-password',
+  // Authenticated (lives under the (dashboard) route group, behind
+  // AuthGuard), unlike the unauthenticated /forgot-password reset flow
+  // — this is where AuthGuard traps a user whose account has
+  // `must_change_password` set (e.g. straight after an admin-issued
+  // temporary password) until they've actually changed it. See
+  // AuthGuard.jsx and ChangePasswordForm.jsx.
+  CHANGE_PASSWORD: '/change-password',
   DASHBOARD: '/',
   RECEPTION: '/reception',
   DOCTOR_QUEUE: '/doctor',

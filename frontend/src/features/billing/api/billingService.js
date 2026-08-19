@@ -1,6 +1,19 @@
 import { httpClient } from '@/services/api/httpClient';
 
 export const billingService = {
+  // Doctor-side (`billing:submit_charge`) — see backend/app/modules/
+  // billing/router.py's `submit_pending_item`. Added in the 2026-08-19
+  // audit fix pass: the endpoint and Reception's approve/reject screen
+  // both already existed, but nothing in the frontend ever called this
+  // one — a doctor had no way to actually request an additional charge.
+  submitPendingItem({ visitId, description, amount }) {
+    return httpClient.post('/billing/pending-items', {
+      visit_id: visitId,
+      description,
+      amount,
+    });
+  },
+
   listPendingItems(visitId, status) {
     return httpClient.get(`/billing/visits/${visitId}/pending-items`, { params: { status } });
   },

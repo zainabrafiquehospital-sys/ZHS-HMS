@@ -146,6 +146,61 @@ async def test_refresh_rejects_unknown_token(auth_service):
         )
 
 
+async def test_refresh_accepts_matching_expected_user_id(auth_service):
+    """`expected_user_id` matching the token's real owner must behave
+    exactly like omitting it — the guard is only ever supposed to reject
+    a genuine mismatch, never a normal, single-identity refresh."""
+    user = await _register(auth_service, "refresh-expected-match")
+    login = await auth_service.login(
+        email=user.email, password=_PASSWORD, remember_me=False, ip_address=None, user_agent=None
+    )
+
+    refreshed = await auth_service.refresh(
+        raw_refresh_token=login.raw_refresh_token,
+        ip_address=None,
+        user_agent=None,
+        expected_user_id=user.id,
+    )
+
+    assert refreshed.user.id == user.id
+
+
+async def test_refresh_rejects_mismatched_expected_user_id(auth_service, real_session):
+    """The 2026-08-19 audit's cross-tab identity-bleed scenario, at the
+    service layer: Staff A's tab believes it is refreshing as A
+    (`expected_user_id=A.id`), but the cookie it actually presents
+    belongs to B (a second login on the same shared browser). This must
+    fail exactly like any other invalid token — never silently hand back
+    a valid session for B."""
+    user_a = await _register(auth_service, "refresh-mismatch-a")
+    user_b = await _register(auth_service, "refresh-mismatch-b")
+    login_b = await auth_service.login(
+        email=user_b.email,
+        password=_PASSWORD,
+        remember_me=False,
+        ip_address=None,
+        user_agent=None,
+    )
+
+    with pytest.raises(TokenInvalidError):
+        await auth_service.refresh(
+            raw_refresh_token=login_b.raw_refresh_token,
+            ip_address=None,
+            user_agent=None,
+            expected_user_id=user_a.id,
+        )
+
+    # The mismatch must not have disturbed B's own, genuinely valid
+    # refresh token — B's real session is collateral-free.
+    real_refresh = await auth_service.refresh(
+        raw_refresh_token=login_b.raw_refresh_token,
+        ip_address=None,
+        user_agent=None,
+        expected_user_id=user_b.id,
+    )
+    assert real_refresh.user.id == user_b.id
+
+
 async def test_replay_within_grace_window_is_benign(auth_service):
     """Two callers presenting the same already-rotated token within the
     grace window must both end up with a valid session — this is the

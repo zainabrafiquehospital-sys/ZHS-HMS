@@ -41,7 +41,11 @@ from app.core.dependencies import get_db, get_rate_limiter
 from app.core.exceptions import AuthenticationError, PermissionDeniedError
 from app.core.jwt_keys import JWTKeyRegistry, get_jwt_key_registry
 from app.core.rate_limit import RateLimiter
-from app.modules.auth.exceptions import AccountSuspendedError, TokenInvalidError
+from app.modules.auth.exceptions import (
+    AccountSuspendedError,
+    PasswordChangeRequiredError,
+    TokenInvalidError,
+)
 from app.modules.auth.models import User, UserStatus
 from app.modules.auth.otp_service import OtpService
 from app.modules.auth.password_service import PasswordService
@@ -401,6 +405,15 @@ def require_permission(permission_code: str) -> Callable[..., Coroutine[Any, Any
         user: User = Depends(get_current_active_user),
         auth_service: AuthService = Depends(get_auth_service),
     ) -> User:
+        # Checked before the permission itself: a user forced to change
+        # their password is blocked from every permission-gated
+        # endpoint, not just the ones they'd otherwise lack — see
+        # PasswordChangeRequiredError's own docstring for exactly which
+        # auth endpoints (me/change-password/logout) deliberately stay
+        # reachable regardless, since they never go through this
+        # dependency in the first place.
+        if user.must_change_password:
+            raise PasswordChangeRequiredError
         if permission_code not in auth_service.effective_permission_codes(user):
             raise PermissionDeniedError(f"Missing required permission: {permission_code}")
         return user
@@ -413,6 +426,8 @@ def require_role(role_name: str) -> Callable[..., Coroutine[Any, Any, User]]:
         user: User = Depends(get_current_active_user),
         auth_service: AuthService = Depends(get_auth_service),
     ) -> User:
+        if user.must_change_password:
+            raise PasswordChangeRequiredError
         if role_name not in auth_service.effective_role_names(user):
             raise PermissionDeniedError(f"Missing required role: {role_name}")
         return user

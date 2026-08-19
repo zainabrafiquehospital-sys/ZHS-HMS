@@ -26,6 +26,13 @@ export const authService = {
     return httpClient.get('/auth/me');
   },
 
+  changePassword({ currentPassword, newPassword }) {
+    return httpClient.post('/auth/change-password', {
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+  },
+
   // Self-service signup (Receptionist or Vitals staff — see backend/
   // app/modules/auth/signup_schemas.py's SignupRole) — email/OTP/
   // approval flow, same for both roles.

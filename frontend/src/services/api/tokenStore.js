@@ -23,3 +23,32 @@ export function setAccessToken(token) {
 export function clearAccessToken() {
   accessToken = null;
 }
+
+/**
+ * The id of the user this tab last authenticated as — kept alongside the
+ * access token (same in-memory-only, per-tab storage, cleared on the
+ * same events) purely so httpClient.js can send it as the
+ * `X-Expected-User-Id` header on every `/auth/refresh` call. This closes
+ * a cross-tab identity-bleed gap found in the 2026-08-19 audit: the
+ * refresh cookie is scoped per-origin+path, not per-tab, so on a shared
+ * front-desk machine, a second tab logging in as a different staff
+ * member silently overwrites the one browser-wide cookie this tab's own
+ * silent refresh depends on. Sending back "who I last knew myself to
+ * be" lets the backend detect that mismatch and fail the refresh
+ * cleanly (see AuthService.refresh's `expected_user_id` docstring)
+ * instead of this tab silently becoming the other person. Never sent
+ * anywhere except that one header; never displayed.
+ */
+let userId = null;
+
+export function getUserId() {
+  return userId;
+}
+
+export function setUserId(id) {
+  userId = id;
+}
+
+export function clearUserId() {
+  userId = null;
+}

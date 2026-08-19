@@ -63,6 +63,19 @@ function invalidateVisitBilling(queryClient, visitId) {
   queryClient.invalidateQueries({ queryKey: ['dashboard'] });
 }
 
+/** Doctor-side submission of an additional-charge request — see
+ * billingService.submitPendingItem's docstring. Invalidates the same
+ * visit-scoped pending-items query Reception's own approve/reject
+ * screen reads, so a newly submitted item shows up there without a
+ * manual refresh if both are open at once. */
+export function useSubmitPendingItem(visitId) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload) => billingService.submitPendingItem({ visitId, ...payload }),
+    onSuccess: () => invalidateVisitBilling(queryClient, visitId),
+  });
+}
+
 export function useApprovePendingItem(visitId) {
   const queryClient = useQueryClient();
   return useMutation({

@@ -36,6 +36,8 @@ app/core/rate_limit.py) — the endpoint where request-volume throttling
 matters most, since it's the one an attacker can hit without already
 holding any valid credential."""
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, Request, Response
 
 from app.core.config import Settings, get_settings
@@ -71,6 +73,15 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 _REFRESH_COOKIE_NAME = "refresh_token"
 _SECONDS_PER_DAY = 24 * 60 * 60
 
+# Optional cross-tab identity-pinning header the frontend sends on every
+# /auth/refresh call (see AuthService.refresh's `expected_user_id`
+# docstring for the full rationale/audit finding this closes). Entirely
+# advisory from the router's perspective — a missing or malformed value
+# is simply treated as "no expectation", never a 4xx of its own, since
+# older/unrelated clients calling this endpoint must keep working
+# unchanged.
+_EXPECTED_USER_ID_HEADER = "X-Expected-User-Id"
+
 
 def _cookie_path(settings: Settings) -> str:
     return f"{settings.api_v1_prefix}{router.prefix}"
@@ -78,6 +89,16 @@ def _cookie_path(settings: Settings) -> str:
 
 def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
+
+
+def _expected_user_id(request: Request) -> UUID | None:
+    raw = request.headers.get(_EXPECTED_USER_ID_HEADER)
+    if not raw:
+        return None
+    try:
+        return UUID(raw)
+    except ValueError:
+        return None
 
 
 def _set_refresh_cookie(
@@ -190,6 +211,7 @@ async def refresh(
         raw_refresh_token=raw_refresh_token,
         ip_address=_client_ip(request),
         user_agent=request.headers.get("user-agent"),
+        expected_user_id=_expected_user_id(request),
     )
     _set_refresh_cookie(response, result.raw_refresh_token, result.remember_me, settings)
     return _token_response(result, settings, auth_service)

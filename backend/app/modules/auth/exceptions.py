@@ -12,6 +12,7 @@ architecture document's §6 for the same principle applied elsewhere."""
 from app.core.exceptions import (
     AuthenticationError,
     ConflictError,
+    DomainException,
     NotFoundError,
     RecordLockedError,
     ValidationError,
@@ -63,6 +64,31 @@ class TokenInvalidError(AuthenticationError):
 
     def __init__(self) -> None:
         super().__init__("Invalid or expired token.")
+
+
+class PasswordChangeRequiredError(DomainException):
+    """Raised by `require_permission()`/`require_role()` (see
+    dependencies.py) — never by `get_current_active_user` itself — for a
+    user whose `must_change_password` flag is set. Deliberately a plain
+    `DomainException` (403), not `AuthenticationError`: the caller *is*
+    genuinely authenticated (their access token is valid), just gated
+    from every permission-checked endpoint until they change their
+    password, mirroring `PermissionDeniedError`'s identical shape rather
+    than implying "log in again" via a `WWW-Authenticate` challenge.
+    `GET /auth/me`, `POST /auth/change-password`, and `POST /auth/logout`
+    (-`all`) all use `get_current_active_user` directly, not
+    `require_permission()`, so they stay reachable regardless of this
+    flag — a user must always be able to see their own status, escape
+    via the one endpoint that clears the flag, and log out. Added in the
+    2026-08-19 audit fix pass: `must_change_password` previously existed
+    on the model and in the API response but was never actually
+    enforced anywhere."""
+
+    code = "PASSWORD_CHANGE_REQUIRED"
+    status_code = 403
+
+    def __init__(self) -> None:
+        super().__init__("You must change your password before continuing.")
 
 
 class PasswordPolicyViolationError(ValidationError):

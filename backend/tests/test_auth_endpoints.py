@@ -148,6 +148,73 @@ async def test_refresh_rotates_cookie_and_access_token(api_client, real_session)
     assert resp.json()["data"]["access_token"] != original_access_token
 
 
+async def test_refresh_with_expected_user_id_matching_owner_succeeds(api_client, real_session):
+    """Baseline for the mismatch test below: sending the correct
+    `X-Expected-User-Id` (the normal, single-identity case every real
+    browser tab is in) must refresh exactly as if the header were
+    omitted."""
+    email = await _create_user_directly(real_session, "refresh-expected-ok")
+    login_resp = await api_client.post(
+        "/api/v1/auth/login", json={"email": email, "password": _PASSWORD}
+    )
+    user_id = login_resp.json()["data"]["user"]["id"]
+
+    resp = await api_client.post(
+        "/api/v1/auth/refresh", headers={"X-Expected-User-Id": user_id}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["user"]["id"] == user_id
+
+
+async def test_refresh_does_not_resolve_to_a_different_tabs_login(api_client, real_session):
+    """2026-08-19 audit finding, reproduced and guarded at the HTTP
+    layer: `api_client` shares one cookie jar across every call it
+    makes, exactly like a real browser shares one cookie jar across
+    every tab open on the same origin. This simulates a shared front-
+    desk machine — Staff A logs in on "Tab 1", then Staff B logs in on
+    "Tab 2" without A ever logging out, which (at the real browser
+    level) silently overwrites the one refresh cookie Tab 1 depends on.
+    When "Tab 1" (still believing it is A — the only thing distinguishing
+    it from Tab 2 in this test, exactly as in a real browser, is the
+    `X-Expected-User-Id` header it sends from its own in-memory record)
+    next calls /auth/refresh, it must NOT come back authenticated as B."""
+    email_a = await _create_user_directly(real_session, "refresh-mixup-a")
+    email_b = await _create_user_directly(real_session, "refresh-mixup-b")
+
+    login_a = await api_client.post(
+        "/api/v1/auth/login", json={"email": email_a, "password": _PASSWORD}
+    )
+    user_a_id = login_a.json()["data"]["user"]["id"]
+
+    # "Tab 2": logging in as B on the same cookie jar overwrites the
+    # shared refresh_token cookie — this is real browser behavior, not
+    # a test artifact.
+    login_b = await api_client.post(
+        "/api/v1/auth/login", json={"email": email_b, "password": _PASSWORD}
+    )
+    assert login_b.status_code == 200
+
+    # "Tab 1" refreshing: the cookie jar now holds B's token, but this
+    # request still presents A's own remembered identity.
+    resp = await api_client.post(
+        "/api/v1/auth/refresh", headers={"X-Expected-User-Id": user_a_id}
+    )
+
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "TOKEN_INVALID"
+
+    # Confirm this didn't merely fail generically — the *same* cookie,
+    # refreshed as B genuinely expects, still works. B's real session is
+    # left completely undisturbed by A's mismatched attempt.
+    user_b_id = login_b.json()["data"]["user"]["id"]
+    still_b = await api_client.post(
+        "/api/v1/auth/refresh", headers={"X-Expected-User-Id": user_b_id}
+    )
+    assert still_b.status_code == 200
+    assert still_b.json()["data"]["user"]["id"] == user_b_id
+
+
 async def test_logout_clears_cookie_and_revokes_session(api_client, real_session):
     email = await _create_user_directly(real_session, "logout-endpoint")
     await api_client.post("/api/v1/auth/login", json={"email": email, "password": _PASSWORD})

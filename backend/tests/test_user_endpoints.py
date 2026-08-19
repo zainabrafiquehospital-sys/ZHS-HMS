@@ -33,6 +33,17 @@ async def _create_and_login(api_client, real_session, suffix: str) -> tuple[User
             password_hash=password_hash,
             full_name="Endpoint Actor",
             status=UserStatus.ACTIVE,
+            # Explicit, not left to the column's own `True` default —
+            # this helper models an ordinary, already-onboarded account
+            # (the shape every test in this file except the dedicated
+            # must_change_password section needs), not an admin-issued
+            # temporary-password one. Found necessary when
+            # must_change_password enforcement shipped (2026-08-19 audit
+            # fix pass, app/modules/auth/dependencies.py's
+            # require_permission) — every actor this helper built
+            # previously satisfied `require_permission` regardless of
+            # this flag, since nothing checked it yet.
+            must_change_password=False,
         )
     )
     await real_session.commit()
@@ -286,6 +297,78 @@ async def test_force_password_change_via_http(api_client, real_session, grant_pe
 
     assert resp.status_code == 200
     assert resp.json()["data"]["must_change_password"] is True
+
+
+# ---------------------------------------------------------------------
+# must_change_password enforcement (2026-08-19 audit fix pass) — the
+# flag previously existed on the model and in every API response but was
+# never actually checked anywhere. These prove it now blocks every
+# permission-gated endpoint while `/auth/me`/`/auth/change-password`
+# stay reachable, and that changing the password lifts the block
+# immediately, without a fresh login.
+# ---------------------------------------------------------------------
+
+
+async def test_must_change_password_blocks_permission_gated_endpoints(
+    api_client, real_session, grant_permission
+):
+    admin, admin_token = await _create_and_login(api_client, real_session, "mcp-admin")
+    await grant_permission(admin, PERMISSION_USERS_MANAGE_PASSWORD)
+    target, target_token = await _create_and_login(api_client, real_session, "mcp-target")
+    # Grant the target a real permission first, so a 403 below can only
+    # mean "blocked by must_change_password" — never mistakable for an
+    # ordinary missing-permission 403.
+    await grant_permission(target, PERMISSION_USERS_READ)
+
+    reset_resp = await api_client.post(
+        f"/api/v1/users/{target.id}/reset-password", headers=_auth_header(admin_token)
+    )
+    assert reset_resp.json()["data"]["user"]["must_change_password"] is True
+
+    # The target's pre-reset access token is still cryptographically
+    # valid (access tokens are stateless JWTs; must_change_password is
+    # read live from the database on every request, not from the token
+    # — see app/modules/auth/dependencies.py's require_permission) —
+    # this is deliberately the same token from before the reset, proving
+    # the block takes effect immediately, not only after a fresh login.
+    blocked = await api_client.get("/api/v1/users", headers=_auth_header(target_token))
+    assert blocked.status_code == 403
+    assert blocked.json()["error"]["code"] == "PASSWORD_CHANGE_REQUIRED"
+
+    # These two must stay reachable regardless — the user must always be
+    # able to see their own status and escape via change-password.
+    me_resp = await api_client.get("/api/v1/auth/me", headers=_auth_header(target_token))
+    assert me_resp.status_code == 200
+    assert me_resp.json()["data"]["must_change_password"] is True
+
+
+async def test_changing_password_immediately_lifts_the_block(
+    api_client, real_session, grant_permission
+):
+    admin, admin_token = await _create_and_login(api_client, real_session, "mcp-lift-admin")
+    await grant_permission(admin, PERMISSION_USERS_MANAGE_PASSWORD)
+    target, target_token = await _create_and_login(api_client, real_session, "mcp-lift-target")
+    await grant_permission(target, PERMISSION_USERS_READ)
+
+    reset_resp = await api_client.post(
+        f"/api/v1/users/{target.id}/reset-password", headers=_auth_header(admin_token)
+    )
+    temporary_password = reset_resp.json()["data"]["temporary_password"]
+
+    still_blocked = await api_client.get("/api/v1/users", headers=_auth_header(target_token))
+    assert still_blocked.status_code == 403
+
+    change_resp = await api_client.post(
+        "/api/v1/auth/change-password",
+        json={"current_password": temporary_password, "new_password": "Str0ng!NewPassw0rd#2026"},
+        headers=_auth_header(target_token),
+    )
+    assert change_resp.status_code == 200
+
+    # Same still-valid access token, no fresh login — the block must
+    # already be lifted on the very next request.
+    now_allowed = await api_client.get("/api/v1/users", headers=_auth_header(target_token))
+    assert now_allowed.status_code == 200
 
 
 # ---------------------------------------------------------------------
