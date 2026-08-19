@@ -54,6 +54,7 @@ from app.modules.pharmacy.exceptions import (
     MedicineBillNotFoundError,
     MedicineBillNotPayableError,
     MedicineBillPaymentExceedsBalanceError,
+    MedicineBillPaymentMethodRequiredError,
     MedicineInactiveError,
     MedicineNotFoundError,
 )
@@ -75,6 +76,7 @@ from app.modules.pharmacy.repository import (
 from app.modules.visits.service import VisitService
 from app.shared.audit.repository import AuditLogRepository
 from app.shared.money import quantize_money
+from app.shared.payment_method import PaymentMethod
 
 _ZERO = Decimal("0.00")
 
@@ -188,6 +190,7 @@ class PharmacyService:
         visit_id: UUID | None,
         items: list[tuple[UUID, int]],
         initial_payment_amount: Decimal = _ZERO,
+        initial_payment_method: PaymentMethod | None = None,
         manual_patient_name: str | None = None,
         manual_patient_age: int | None = None,
         manual_patient_phone: str | None = None,
@@ -208,7 +211,10 @@ class PharmacyService:
         that method's docstring for the full rationale. Recording no
         payment at all (the default) still works exactly as before: a
         bill with no `initial_payment_amount` is created `UNPAID`, same
-        as ever.
+        as ever. `initial_payment_method` (2026-08-19 addition) is
+        required whenever `initial_payment_amount > 0` —
+        `MedicineBillPaymentMethodRequiredError` otherwise — and simply
+        ignored when no payment is being recorded at all.
 
         `manual_patient_name`/`manual_patient_age`/`manual_patient_phone`
         (all optional, default None) are purely display information for
@@ -317,7 +323,14 @@ class PharmacyService:
         if initial_payment_amount < _ZERO:
             raise ValidationError("initial_payment_amount cannot be negative.")
         if initial_payment_amount > _ZERO:
-            await self._apply_payment(bill=bill, actor=actor, amount=initial_payment_amount)
+            if initial_payment_method is None:
+                raise MedicineBillPaymentMethodRequiredError
+            await self._apply_payment(
+                bill=bill,
+                actor=actor,
+                amount=initial_payment_amount,
+                payment_method=initial_payment_method,
+            )
 
         await self._session.commit()
         return await self._get_bill(bill.id)
@@ -337,7 +350,9 @@ class PharmacyService:
     async def get_bill_payments(self, bill_id: UUID) -> list[MedicineBillPayment]:
         return await self._payment_repo.list_for_bill(bill_id)
 
-    async def _apply_payment(self, *, bill: MedicineBill, actor: User, amount: Decimal) -> bool:
+    async def _apply_payment(
+        self, *, bill: MedicineBill, actor: User, amount: Decimal, payment_method: PaymentMethod
+    ) -> bool:
         """Shared by `create_bill`'s optional initial payment above and
         `record_payment`'s top-up payment below — validates `amount`
         against the remaining balance, mutates `bill.amount_paid`/
@@ -348,7 +363,14 @@ class PharmacyService:
         Assumes the bill is already known payable (not `PAID`) —
         `record_payment` checks that itself before calling this;
         `create_bill`'s bill is always freshly created and `UNPAID` by
-        construction, so it never needs the check."""
+        construction, so it never needs the check.
+
+        `payment_method` (2026-08-19 addition) mirrors
+        `BillingService._apply_payment`'s identical parameter — required
+        by both callers, stored on this individual `MedicineBillPayment`
+        row only (never on the bill itself), so a partial cash payment
+        now and a bank transfer later are correctly two separate,
+        independently attributed rows."""
         if amount <= _ZERO:
             raise ValidationError("Payment amount must be greater than zero.")
         amount = quantize_money(amount)
@@ -370,6 +392,7 @@ class PharmacyService:
             MedicineBillPayment(
                 medicine_bill_id=bill.id,
                 amount=amount,
+                payment_method=payment_method,
                 created_by=actor.id,
                 updated_by=actor.id,
             )
@@ -380,11 +403,17 @@ class PharmacyService:
             entity_type="medicine_bill",
             entity_id=bill.id,
             actor_user_id=actor.id,
-            metadata={"amount": str(amount), "fully_paid": fully_paid},
+            metadata={
+                "amount": str(amount),
+                "payment_method": payment_method.value,
+                "fully_paid": fully_paid,
+            },
         )
         return fully_paid
 
-    async def record_payment(self, *, actor: User, bill_id: UUID, amount: Decimal) -> MedicineBill:
+    async def record_payment(
+        self, *, actor: User, bill_id: UUID, amount: Decimal, payment_method: PaymentMethod
+    ) -> MedicineBill:
         """Records an *additional* payment against an already-created
         bill — topping up toward the remaining balance later, not the
         primary way a bill gets its first payment (see `create_bill`'s
@@ -401,37 +430,50 @@ class PharmacyService:
         if bill.status == MedicineBillStatus.PAID:
             raise MedicineBillNotPayableError(bill.status.value)
 
-        await self._apply_payment(bill=bill, actor=actor, amount=amount)
+        await self._apply_payment(
+            bill=bill, actor=actor, amount=amount, payment_method=payment_method
+        )
         await self._session.commit()
         return await self._get_bill(bill.id)
 
-    async def list_bill_summaries_for_day(self, day: datetime) -> list[tuple[MedicineBill, int]]:
-        """`(bill, item_count)` pairs for every medicine bill created on
-        `day` — a single line-item count query for the whole day (see
-        repository.py's `count_items_for_bills`), not one per bill."""
+    async def list_bill_summaries_for_day(
+        self, day: datetime
+    ) -> list[tuple[MedicineBill, int, list[str]]]:
+        """`(bill, item_count, payment_methods)` triples for every
+        medicine bill created on `day` — a single line-item count query
+        and a single payment-methods query for the whole day (see
+        repository.py's `count_items_for_bills`/
+        `list_distinct_payment_methods_for_bills`), not one per bill.
+        `payment_methods` (2026-08-19 addition) backs Admin Overview's
+        Medicine Bills tab "Payment Method" column."""
         bills = await self._bill_repo.list_for_day(day)
-        counts = await self._item_repo.count_items_for_bills([bill.id for bill in bills])
-        return [(bill, counts.get(bill.id, 0)) for bill in bills]
+        bill_ids = [bill.id for bill in bills]
+        counts = await self._item_repo.count_items_for_bills(bill_ids)
+        methods = await self._payment_repo.list_distinct_payment_methods_for_bills(bill_ids)
+        return [(bill, counts.get(bill.id, 0), methods.get(bill.id, [])) for bill in bills]
 
     async def list_bills_for_creator(
         self, user_id: UUID, *, page: int, page_size: int
-    ) -> tuple[list[tuple[MedicineBill, int]], int]:
-        """`(bill, item_count)` pairs for every medicine bill `user_id`
-        has personally created, newest first, real server-side
-        pagination — the medicine-bill sibling of Reception's own "My
-        Registrations" (`VisitRepository.search`'s `created_by` filter),
-        added (2026-08-19) so a receptionist can see an itemized record
-        of her own medicine bills, not just the "My Revenue" total.
-        `user_id` always comes from the caller's own `actor.id` at the
-        router layer, never a request-suppliable parameter — the same
-        hard server-side scoping `ReceptionService.get_own_revenue`
-        already established, so there is structurally no way to ask for
-        someone else's bills through this method."""
+    ) -> tuple[list[tuple[MedicineBill, int, list[str]]], int]:
+        """`(bill, item_count, payment_methods)` triples for every
+        medicine bill `user_id` has personally created, newest first,
+        real server-side pagination — the medicine-bill sibling of
+        Reception's own "My Registrations" (`VisitRepository.search`'s
+        `created_by` filter), added (2026-08-19) so a receptionist can
+        see an itemized record of her own medicine bills, not just the
+        "My Revenue" total. `user_id` always comes from the caller's
+        own `actor.id` at the router layer, never a request-suppliable
+        parameter — the same hard server-side scoping
+        `ReceptionService.get_own_revenue` already established, so
+        there is structurally no way to ask for someone else's bills
+        through this method."""
         bills, total = await self._bill_repo.list_for_creator(
             user_id, page=page, page_size=page_size
         )
-        counts = await self._item_repo.count_items_for_bills([bill.id for bill in bills])
-        return [(bill, counts.get(bill.id, 0)) for bill in bills], total
+        bill_ids = [bill.id for bill in bills]
+        counts = await self._item_repo.count_items_for_bills(bill_ids)
+        methods = await self._payment_repo.list_distinct_payment_methods_for_bills(bill_ids)
+        return [(bill, counts.get(bill.id, 0), methods.get(bill.id, [])) for bill in bills], total
 
     async def count_and_revenue_by_creator(self) -> dict[UUID, tuple[int, Decimal]]:
         """Read-only aggregate added for the Admin "Employee Accounts &

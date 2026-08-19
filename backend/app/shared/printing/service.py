@@ -31,6 +31,8 @@ from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from app.shared.payment_method import PAYMENT_METHOD_LABELS
+
 
 def _escape(value: str) -> str:
     return html.escape(value, quote=True)
@@ -55,6 +57,7 @@ def render_invoice_receipt(
     amount_paid: Decimal,
     discount_amount: Decimal = Decimal("0.00"),
     discount_reason: str | None = None,
+    payment_methods: list[str] | None = None,
 ) -> str:
     """Renders a single-page, print-ready HTML receipt for one Invoice.
     Every dynamic value is HTML-escaped — this document assembles
@@ -77,7 +80,18 @@ def render_invoice_receipt(
     stored `total_amount`, always shown, the visually emphasized row
     now that it is the true bottom line rather than the pre-discount
     subtotal above it), then **Received**/**Pending** (`amount_paid` /
-    `total_amount - amount_paid`)."""
+    `total_amount - amount_paid`).
+
+    `payment_methods` (2026-08-19 addition) is the caller-computed list
+    of *distinct* methods across every `InvoicePayment` on this Invoice,
+    in first-payment order (see billing/router.py's `print_invoice`,
+    which builds it with `dict.fromkeys` rather than a plain `set` to
+    preserve that order) — rendered as one "Paid via: Cash, JazzCash"
+    summary line next to Received, not a full itemized per-payment
+    breakdown (this receipt has always summarized Received as one
+    number; a partial cash payment now and a bank transfer later still
+    show as a single combined Received total, just with both methods
+    named). Omitted entirely when empty (nothing paid yet)."""
     pending = total_amount - amount_paid
     subtotal = total_amount + discount_amount
     rows = "".join(
@@ -92,6 +106,10 @@ def render_invoice_receipt(
         discount_row = (
             f"<tr><td>{discount_label}</td><td class='amount'>-{_money(discount_amount)}</td></tr>"
         )
+    paid_via_row = ""
+    if payment_methods:
+        labels = ", ".join(PAYMENT_METHOD_LABELS.get(method, method) for method in payment_methods)
+        paid_via_row = f'<tr class="paid-via"><td colspan="2">Paid via: {_escape(labels)}</td></tr>'
     return f"""<!doctype html>
 <html>
 <head>
@@ -105,6 +123,7 @@ def render_invoice_receipt(
   th, td {{ text-align: left; padding: 4px 0; }}
   td.amount, th.amount {{ text-align: right; }}
   .net-amount td {{ font-weight: bold; border-top: 1px solid #000; padding-top: 6px; }}
+  .paid-via td {{ font-size: 12px; color: #555; padding-top: 0; }}
   .meta {{ margin-top: 12px; font-size: 13px; color: #333; }}
   @media print {{ body {{ padding: 0; }} }}
 </style>
@@ -128,6 +147,7 @@ def render_invoice_receipt(
       {discount_row}
       <tr class="net-amount"><td>Net Amount</td><td class="amount">{_money(total_amount)}</td></tr>
       <tr><td>Received</td><td class="amount">{_money(amount_paid)}</td></tr>
+      {paid_via_row}
       <tr><td>Pending</td><td class="amount">{_money(pending)}</td></tr>
     </tbody>
   </table>
@@ -528,6 +548,7 @@ def render_medicine_bill_receipt(
     amount_paid: Decimal,
     discount_amount: Decimal = Decimal("0.00"),
     discount_reason: str | None = None,
+    payment_methods: list[str] | None = None,
 ) -> str:
     """Renders the Pharmacy module's medicine bill slip — reuses the
     exact `.sheet`/`.header`/`.title-box`/`.body-grid` grayscale, A4,
@@ -566,7 +587,14 @@ def render_medicine_bill_receipt(
     bill freshly created and not yet paid renders `Received: 0.00` /
     `Pending` equal to the (post-discount) total, exactly like an
     unpaid Invoice would, rather than silently implying the sale was
-    already settled."""
+    already settled.
+
+    `payment_methods` (2026-08-19 addition) mirrors
+    `render_invoice_receipt`'s identical parameter exactly — the
+    caller-computed list of distinct methods across every
+    `MedicineBillPayment` on this bill, in first-payment order,
+    rendered as one "Paid via: Cash, JazzCash" summary line next to
+    Received. Omitted entirely when empty (nothing paid yet)."""
     billed_on = _to_local_time(bill_created_at, display_timezone).strftime("%d %b %Y, %I:%M %p")
     pending = total_amount - amount_paid
     subtotal = total_amount + discount_amount
@@ -629,6 +657,12 @@ def render_medicine_bill_receipt(
         discount_row = (
             f'<tr><td colspan="4">{discount_label}</td>'
             f"<td class='amount'>-{_money(discount_amount)}</td></tr>"
+        )
+    paid_via_row = ""
+    if payment_methods:
+        labels = ", ".join(PAYMENT_METHOD_LABELS.get(method, method) for method in payment_methods)
+        paid_via_row = (
+            f'<tr class="paid-via"><td colspan="5">Paid via: {_escape(labels)}</td></tr>'
         )
 
     return f"""<!doctype html>
@@ -905,6 +939,7 @@ def render_medicine_bill_receipt(
             <td colspan="4">Received</td>
             <td class="amount">{_money(amount_paid)}</td>
           </tr>
+          {paid_via_row}
           <tr>
             <td colspan="4">Pending</td>
             <td class="amount">{_money(pending)}</td>

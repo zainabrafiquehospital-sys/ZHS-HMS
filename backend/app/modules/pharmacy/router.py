@@ -136,6 +136,7 @@ async def create_bill(
         visit_id=payload.visit_id,
         items=[(item.medicine_id, item.quantity) for item in payload.items],
         initial_payment_amount=payload.initial_payment_amount,
+        initial_payment_method=payload.initial_payment_method,
         manual_patient_name=payload.manual_patient_name,
         manual_patient_age=payload.manual_patient_age,
         manual_patient_phone=payload.manual_patient_phone,
@@ -165,7 +166,7 @@ async def record_payment(
     separate "manage" gate here would be a distinction without a
     difference."""
     bill = await pharmacy_service.record_payment(
-        actor=actor, bill_id=bill_id, amount=payload.amount
+        actor=actor, bill_id=bill_id, amount=payload.amount, payment_method=payload.payment_method
     )
     items = await pharmacy_service.get_bill_items(bill.id)
     payments = await pharmacy_service.get_bill_payments(bill.id)
@@ -182,8 +183,8 @@ async def list_bills_for_day(
 ) -> dict:
     summaries = await pharmacy_service.list_bill_summaries_for_day(date)
     body = [
-        MedicineBillSummaryOut.from_bill(bill, item_count).model_dump(mode="json")
-        for bill, item_count in summaries
+        MedicineBillSummaryOut.from_bill(bill, item_count, payment_methods).model_dump(mode="json")
+        for bill, item_count, payment_methods in summaries
     ]
     return success_envelope(body)
 
@@ -234,8 +235,8 @@ async def list_my_bills(
         actor.id, page=page, page_size=page_size
     )
     body = [
-        MedicineBillSummaryOut.from_bill(bill, item_count).model_dump(mode="json")
-        for bill, item_count in summaries
+        MedicineBillSummaryOut.from_bill(bill, item_count, payment_methods).model_dump(mode="json")
+        for bill, item_count, payment_methods in summaries
     ]
     meta = PaginationMeta(page=page, page_size=page_size, total=total).model_dump(mode="json")
     return success_envelope(body, meta)
@@ -280,6 +281,7 @@ async def print_bill(
     which of these three sources supplied it."""
     bill = await pharmacy_service.get_bill(bill_id)
     items = await pharmacy_service.get_bill_items(bill.id)
+    payments = await pharmacy_service.get_bill_payments(bill.id)
 
     visit = None
     patient = None
@@ -327,5 +329,6 @@ async def print_bill(
         amount_paid=bill.amount_paid,
         discount_amount=bill.discount_amount,
         discount_reason=bill.discount_reason,
+        payment_methods=list(dict.fromkeys(payment.payment_method.value for payment in payments)),
     )
     return HTMLResponse(content=html_document)

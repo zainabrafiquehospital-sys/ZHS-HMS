@@ -29,6 +29,8 @@ export const billLineItemSchema = z.object({
 // the server's own "exceeds remaining balance" check. Used by the
 // Admin Overview "record an additional payment" action (a later
 // top-up on an already-created bill), not by the finalize step itself.
+// `payment_method` (2026-08-19 addition) is required, same as Billing's
+// identical field.
 export const recordMedicineBillPaymentSchema = z.object({
   amount: z
     .union([z.string(), z.number()])
@@ -36,6 +38,7 @@ export const recordMedicineBillPaymentSchema = z.object({
     .refine((value) => Number.isFinite(value) && value > 0, {
       message: 'Amount must be greater than 0',
     }),
+  payment_method: z.string().min(1, 'Select a payment method'),
 });
 
 // Blank/zero/untouched all mean the same thing for every optional
@@ -51,23 +54,34 @@ const nonNegativeAmount = z
     message: 'Amount must be zero or greater',
   });
 
-// The Finalize & Print form's two optional fields: "Advance Received"
-// (unchanged) and — 2026-08-19 addition — an optional flat discount.
-// Unlike billing/schemas/billingSchemas.js's generateInvoiceSchema,
-// there is deliberately no cross-field "reason required when
-// discount_amount > 0" refine here: a medicine-bill discount's reason
-// is always optional, a product decision distinct from Invoice's own
-// discount (see app/modules/pharmacy/service.py's create_bill
-// docstring). Whether the discount fields are shown/applied at all is
-// owned by the "Apply Discount" checkbox in
+// The Finalize & Print form's optional fields: "Advance Received"
+// (unchanged, its own payment method added 2026-08-19 — required
+// whenever initial_payment_amount > 0, mirroring the backend's
+// MedicineBillPaymentMethodRequiredError) and an optional flat
+// discount. Unlike billing/schemas/billingSchemas.js's
+// generateInvoiceSchema, there is deliberately no cross-field "reason
+// required when discount_amount > 0" refine here: a medicine-bill
+// discount's reason is always optional, a product decision distinct
+// from Invoice's own discount (see app/modules/pharmacy/service.py's
+// create_bill docstring). Whether the discount fields are shown/
+// applied at all is owned by the "Apply Discount" checkbox in
 // MedicineBillingWorkspace.jsx, not by this schema — discount_amount
 // stays 0 whenever that checkbox is off, mirroring
 // RegisterVisitForm.jsx's vitalsRequired toggle shape.
-export const finalizeBillSchema = z.object({
-  initial_payment_amount: nonNegativeAmount,
-  discount_amount: nonNegativeAmount,
-  discount_reason: z.string().max(200).optional(),
-});
+export const finalizeBillSchema = z
+  .object({
+    initial_payment_amount: nonNegativeAmount,
+    initial_payment_method: z.string().optional(),
+    discount_amount: nonNegativeAmount,
+    discount_reason: z.string().max(200).optional(),
+  })
+  .refine(
+    (values) => values.initial_payment_amount === 0 || Boolean(values.initial_payment_method),
+    {
+      message: 'Select a payment method to record this payment',
+      path: ['initial_payment_method'],
+    },
+  );
 
 // Manual Entry mode's three fields (VisitLinkPanel) — same per-field
 // shape as app/modules/patients/schemas.py's CreatePatientRequest

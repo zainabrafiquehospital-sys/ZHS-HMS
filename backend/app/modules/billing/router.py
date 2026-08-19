@@ -97,6 +97,7 @@ async def generate_invoice(
         discount_amount=payload.discount_amount,
         discount_reason=payload.discount_reason,
         initial_payment_amount=payload.initial_payment_amount,
+        initial_payment_method=payload.initial_payment_method,
     )
     line_items = await billing_service.get_line_items(invoice.id)
     payments = await billing_service.get_payments(invoice.id)
@@ -138,7 +139,10 @@ async def record_payment(
     actor: User = Depends(require_permission(PERMISSION_BILLING_MANAGE)),
 ) -> dict:
     invoice = await billing_service.record_payment(
-        actor=actor, invoice_id=invoice_id, amount=payload.amount
+        actor=actor,
+        invoice_id=invoice_id,
+        amount=payload.amount,
+        payment_method=payload.payment_method,
     )
     line_items = await billing_service.get_line_items(invoice.id)
     payments = await billing_service.get_payments(invoice.id)
@@ -162,6 +166,7 @@ async def print_invoice(
     renders it (Phase 6 §14)."""
     invoice = await billing_service.get_invoice(invoice_id)
     line_items = await billing_service.get_line_items(invoice.id)
+    payments = await billing_service.get_payments(invoice.id)
     visit = await visit_service.get_visit(invoice.visit_id)
     patient = await patient_service.get_patient(visit.patient_id)
 
@@ -175,6 +180,10 @@ async def print_invoice(
         invoice_status=invoice.status.value,
         invoice_created_at=invoice.created_at,
         line_items=[(item.description, item.amount) for item in line_items],
+        # Distinct payment methods used, in first-payment order — see
+        # render_invoice_receipt's own docstring for why this is a
+        # summary line, not a full itemized payment breakdown.
+        payment_methods=list(dict.fromkeys(payment.payment_method.value for payment in payments)),
         total_amount=invoice.total_amount,
         amount_paid=invoice.amount_paid,
         discount_amount=invoice.discount_amount,

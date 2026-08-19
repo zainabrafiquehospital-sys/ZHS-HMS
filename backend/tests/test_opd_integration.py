@@ -149,7 +149,7 @@ async def test_scenario_1_new_patient_full_flow_with_printed_invoice(
     invoice_id = generate_resp.json()["data"]["id"]
     pay_resp = await api_client.post(
         f"/api/v1/billing/invoices/{invoice_id}/pay",
-        json={"amount": "1000.00"},
+        json={"amount": "1000.00", "payment_method": "cash"},
         headers=headers,
     )
     assert pay_resp.json()["data"]["status"] == "paid"
@@ -455,7 +455,7 @@ async def test_scenario_6_billing_authorization_reception_only(
     )
     pay_resp = await api_client.post(
         "/api/v1/billing/invoices/00000000-0000-0000-0000-000000000000/pay",
-        json={"amount": "1"},
+        json={"amount": "1", "payment_method": "cash"},
         headers=headers,
     )
     assert approve_resp.status_code == 403  # doctor CANNOT approve
@@ -671,7 +671,7 @@ async def test_scenario_10_concurrent_payment_attempts_only_one_succeeds(
     async def _pay():
         return await api_client.post(
             f"/api/v1/billing/invoices/{invoice_id}/pay",
-            json={"amount": "1000.00"},
+            json={"amount": "1000.00", "payment_method": "cash"},
             headers=headers,
         )
 

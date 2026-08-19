@@ -57,6 +57,7 @@ from sqlalchemy import Boolean, CheckConstraint, Enum, ForeignKey, Index, Intege
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.shared.base_entity import BaseEntity
+from app.shared.payment_method import PaymentMethod
 
 _MONEY = Numeric(10, 2)
 
@@ -237,3 +238,19 @@ class MedicineBillPayment(BaseEntity):
 
     medicine_bill_id: Mapped[UUID] = mapped_column(ForeignKey("medicine_bill.id"), nullable=False)
     amount: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)
+    # `payment_method` (2026-08-19 addition) — same shape and rationale
+    # as app/modules/billing/models.py's identical InvoicePayment.
+    # payment_method; see app/shared/payment_method.py's module
+    # docstring for the shared vocabulary. Every individual payment
+    # carries its own method (never one method per MedicineBill).
+    payment_method: Mapped[PaymentMethod] = mapped_column(
+        Enum(
+            PaymentMethod,
+            name="payment_method",
+            native_enum=False,
+            length=20,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+            create_constraint=True,
+        ),
+        nullable=False,
+    )

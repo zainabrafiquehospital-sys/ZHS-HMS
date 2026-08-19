@@ -5,6 +5,7 @@ from app.modules.auth.repository import UserRepository
 from app.modules.patients.models import PatientGender
 from app.modules.queue.models import QueueDestination
 from app.modules.visits.models import VisitStatus
+from app.shared.payment_method import PaymentMethod
 from tests.conftest import TEST_PATIENT_NAME_PREFIX, make_test_email
 
 
@@ -78,7 +79,10 @@ async def test_reception_summary_includes_todays_revenue(
         actor=doctor, visit_id=visit.id, base_description="Fee", base_amount=Decimal("800.00")
     )
     await billing_service.record_payment(
-        actor=doctor, invoice_id=invoice.id, amount=Decimal("800.00")
+        actor=doctor,
+        invoice_id=invoice.id,
+        amount=Decimal("800.00"),
+        payment_method=PaymentMethod.CASH,
     )
 
     _q1, _q2, revenue_after, paid_after, _open_after = (

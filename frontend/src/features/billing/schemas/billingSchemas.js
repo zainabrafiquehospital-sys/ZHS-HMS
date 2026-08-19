@@ -29,7 +29,10 @@ const nonNegativeAmount = z
 // know the full subtotal (base amount + any approved doctor-requested
 // charges) at the point of typing, only the backend does, so an
 // over-the-limit advance is caught there (PAYMENT_EXCEEDS_BALANCE),
-// same as an over-the-limit discount already is.
+// same as an over-the-limit discount already is. `initial_payment_method`
+// (2026-08-19 addition) is the same shape as discount_reason above —
+// required whenever initial_payment_amount > 0, mirroring the
+// backend's PaymentMethodRequiredError.
 export const generateInvoiceSchema = z
   .object({
     base_description: z.string().min(1, 'Description is required').max(200),
@@ -37,14 +40,23 @@ export const generateInvoiceSchema = z
     discount_amount: nonNegativeAmount,
     discount_reason: z.string().max(200).optional(),
     initial_payment_amount: nonNegativeAmount,
+    initial_payment_method: z.string().optional(),
   })
   .refine((values) => values.discount_amount === 0 || Boolean(values.discount_reason?.trim()), {
     message: 'A reason is required when a discount is applied',
     path: ['discount_reason'],
-  });
+  })
+  .refine(
+    (values) => values.initial_payment_amount === 0 || Boolean(values.initial_payment_method),
+    {
+      message: 'Select a payment method to record this payment',
+      path: ['initial_payment_method'],
+    },
+  );
 
 export const recordPaymentSchema = z.object({
   amount: positiveAmount,
+  payment_method: z.string().min(1, 'Select a payment method'),
 });
 
 // Doctor-side "submit an additional charge request" (2026-08-19 audit

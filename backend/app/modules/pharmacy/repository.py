@@ -221,3 +221,35 @@ class MedicineBillPaymentRepository(BaseRepository[MedicineBillPayment]):
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def list_distinct_payment_methods_for_bills(
+        self, medicine_bill_ids: list[UUID]
+    ) -> dict[UUID, list[str]]:
+        """One query for every given bill's *distinct* payment methods,
+        in first-payment order — backs the Admin Overview Medicine
+        Bills tab's "Payment Method" column (2026-08-19 addition), the
+        same N+1-avoidance shape as `MedicineBillItemRepository.
+        count_items_for_bills`. Grouping/de-duplicating by first-seen
+        order happens in Python rather than a `GROUP BY` + `array_agg`
+        (which would need Postgres-specific ordering tricks to keep
+        first-payment order) — this table is small per bill, so a
+        single ordered fetch plus a plain Python loop is simpler and
+        just as correct. Bills with no payments yet simply have no
+        entry in the returned dict; callers should default to `[]`."""
+        if not medicine_bill_ids:
+            return {}
+        stmt = (
+            select(MedicineBillPayment.medicine_bill_id, MedicineBillPayment.payment_method)
+            .where(
+                MedicineBillPayment.deleted_at.is_(None),
+                MedicineBillPayment.medicine_bill_id.in_(medicine_bill_ids),
+            )
+            .order_by(MedicineBillPayment.medicine_bill_id, MedicineBillPayment.created_at.asc())
+        )
+        result = await self.session.execute(stmt)
+        methods_by_bill: dict[UUID, list[str]] = {}
+        for bill_id, method in result.all():
+            methods = methods_by_bill.setdefault(bill_id, [])
+            if method.value not in methods:
+                methods.append(method.value)
+        return methods_by_bill

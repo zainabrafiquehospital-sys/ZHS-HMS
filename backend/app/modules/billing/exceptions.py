@@ -75,3 +75,16 @@ class InvoiceImmutableError(ConflictError):
 
     def __init__(self) -> None:
         super().__init__("A paid or cancelled invoice can never be modified.")
+
+
+class PaymentMethodRequiredError(ValidationError):
+    """Unlike `DiscountReasonRequiredError` above (a discount's reason
+    is nice-to-have context), a real payment's method is never
+    optional when an amount is actually being recorded — staff always
+    know how they received the money (2026-08-19 addition, see
+    app/shared/payment_method.py's module docstring)."""
+
+    code = "PAYMENT_METHOD_REQUIRED"
+
+    def __init__(self) -> None:
+        super().__init__("A payment method is required whenever a payment is recorded.")

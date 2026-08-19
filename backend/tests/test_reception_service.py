@@ -17,6 +17,7 @@ from app.modules.visits.models import Visit, VisitStatus
 from app.modules.visits.repository import VisitRepository
 from app.shared.audit.models import AuditEntry
 from app.shared.audit.repository import AuditLogRepository
+from app.shared.payment_method import PaymentMethod
 from tests.conftest import TEST_MEDICINE_NAME_PREFIX, TEST_PATIENT_NAME_PREFIX, make_test_email
 
 
@@ -313,7 +314,10 @@ async def test_admin_delete_visit_blocked_when_invoice_paid(
         base_amount=Decimal("1500.00"),
     )
     await billing_service.record_payment(
-        actor=admin, invoice_id=invoice.id, amount=Decimal("1500.00")
+        actor=admin,
+        invoice_id=invoice.id,
+        amount=Decimal("1500.00"),
+        payment_method=PaymentMethod.CASH,
     )
 
     with pytest.raises(VisitHasSettledInvoiceError):
@@ -333,7 +337,12 @@ async def test_admin_delete_visit_blocked_when_invoice_partially_paid(
         base_description="Consultation",
         base_amount=Decimal("1500.00"),
     )
-    await billing_service.record_payment(actor=admin, invoice_id=invoice.id, amount=Decimal("500.00"))
+    await billing_service.record_payment(
+        actor=admin,
+        invoice_id=invoice.id,
+        amount=Decimal("500.00"),
+        payment_method=PaymentMethod.CASH,
+    )
 
     with pytest.raises(VisitHasSettledInvoiceError):
         await reception_service.admin_delete_visit(actor=admin, visit_id=visit.id)

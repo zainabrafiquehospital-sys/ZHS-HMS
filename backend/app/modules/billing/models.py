@@ -29,6 +29,7 @@ from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.shared.base_entity import BaseEntity
+from app.shared.payment_method import PaymentMethod
 
 _MONEY = Numeric(10, 2)
 
@@ -178,3 +179,24 @@ class InvoicePayment(BaseEntity):
 
     invoice_id: Mapped[UUID] = mapped_column(ForeignKey("invoice.id"), nullable=False)
     amount: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)
+    # `payment_method` (2026-08-19 addition) — see
+    # app/shared/payment_method.py's module docstring for the shared
+    # vocabulary and why it lives there. Not a payment gateway concept:
+    # staff manually record which method was used (cash handed over,
+    # or a bank transfer/JazzCash/EasyPaisa/card payment the patient
+    # made separately) — nothing here processes an actual transaction.
+    # Every individual payment carries its own method (never one
+    # method per Invoice) — a partial cash payment now and a bank
+    # transfer later are two separate InvoicePayment rows, each
+    # correctly attributed.
+    payment_method: Mapped[PaymentMethod] = mapped_column(
+        Enum(
+            PaymentMethod,
+            name="payment_method",
+            native_enum=False,
+            length=20,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+            create_constraint=True,
+        ),
+        nullable=False,
+    )

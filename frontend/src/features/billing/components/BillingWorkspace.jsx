@@ -22,7 +22,9 @@ import { Input } from '@/shared/components/ui/Input';
 import { Label } from '@/shared/components/ui/Label';
 import { Badge } from '@/shared/components/ui/Badge';
 import { PageLoader } from '@/shared/components/PageLoader';
+import { PaymentMethodSelect } from '@/shared/components/PaymentMethodSelect';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/components/ui/Table';
+import { PAYMENT_METHOD_LABELS } from '@/shared/constants/paymentMethod';
 
 function money(amount) {
   return `Rs. ${Number(amount).toFixed(2)}`;
@@ -142,19 +144,29 @@ function GenerateInvoiceForm({ visitId, visit }) {
       discount_amount: '',
       discount_reason: '',
       initial_payment_amount: '',
+      initial_payment_method: '',
     },
   });
 
   async function onSubmit(values) {
     setSubmitError(null);
     try {
-      await generateInvoice.mutateAsync({ visit_id: visitId, ...values });
+      await generateInvoice.mutateAsync({
+        visit_id: visitId,
+        ...values,
+        // The backend's initial_payment_method is a strict enum
+        // (PaymentMethod | None) — unlike discount_reason's plain
+        // string field, an empty string is not a valid value, so a
+        // blank/untouched select must become null, never "".
+        initial_payment_method: values.initial_payment_method || null,
+      });
       reset({
         base_description: '',
         base_amount: '',
         discount_amount: '',
         discount_reason: '',
         initial_payment_amount: '',
+        initial_payment_method: '',
       });
     } catch (error) {
       setSubmitError(error.message || 'Unable to generate invoice.');
@@ -239,6 +251,13 @@ function GenerateInvoiceForm({ visitId, visit }) {
                 <p className="text-xs text-destructive">{errors.initial_payment_amount.message}</p>
               ) : null}
             </div>
+            <div className="sm:w-44">
+              <PaymentMethodSelect
+                id="initial_payment_method"
+                registration={register('initial_payment_method')}
+                error={errors.initial_payment_method}
+              />
+            </div>
             <Button type="submit" disabled={isSubmitting} className="sm:self-end">
               <ReceiptText className="h-4 w-4" />
               {isSubmitting ? 'Generating…' : 'Generate Invoice'}
@@ -266,25 +285,31 @@ function RecordPaymentRow({ invoice, visitId }) {
   const totalAmount = Number(invoice.total_amount) + Number(invoice.discount_amount);
   const pending = Number(invoice.total_amount) - Number(invoice.amount_paid);
   const balanceDueValue = pending > 0 ? pending.toFixed(2) : '';
+  // Distinct payment methods used so far, in first-payment order — same
+  // "Paid via" summary the print receipt shows (2026-08-19 addition).
+  const paidViaMethods = [...new Set((invoice.payments ?? []).map((p) => p.payment_method))];
   const {
     register,
     handleSubmit,
     reset,
+    setValue,
     formState: { errors, isSubmitting, isDirty },
   } = useForm({
     resolver: zodResolver(recordPaymentSchema),
     // Defaults to the full remaining balance (still editable) rather
     // than an always-pays-full button — see the module's Phase 3 note.
-    defaultValues: { amount: balanceDueValue },
+    defaultValues: { amount: balanceDueValue, payment_method: '' },
   });
 
-  // Keeps the field pinned to the current remaining balance as it
-  // changes underneath (a partial payment elsewhere, a refetch) —
+  // Keeps the amount field pinned to the current remaining balance as
+  // it changes underneath (a partial payment elsewhere, a refetch) —
   // but only while the receptionist hasn't started typing a different
-  // amount, so an in-progress edit is never clobbered.
+  // amount, so an in-progress edit is never clobbered. `setValue`
+  // rather than `reset` — a full reset would also wipe out whatever
+  // payment_method the receptionist already picked.
   useEffect(() => {
     if (!isDirty) {
-      reset({ amount: balanceDueValue });
+      setValue('amount', balanceDueValue);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [balanceDueValue]);
@@ -294,8 +319,12 @@ function RecordPaymentRow({ invoice, visitId }) {
   async function onSubmit(values) {
     setError(null);
     try {
-      await recordPayment.mutateAsync({ invoiceId: invoice.id, amount: values.amount });
-      reset({ amount: '' });
+      await recordPayment.mutateAsync({
+        invoiceId: invoice.id,
+        amount: values.amount,
+        paymentMethod: values.payment_method,
+      });
+      reset({ amount: '', payment_method: '' });
     } catch (submitError) {
       setError(submitError.message || 'Unable to record payment.');
     }
@@ -320,6 +349,9 @@ function RecordPaymentRow({ invoice, visitId }) {
           <p className="text-xs text-muted-foreground">
             {invoice.line_items?.length ?? 0} line item(s) · Received: {money(invoice.amount_paid)}{' '}
             · Pending: {money(pending)}
+            {paidViaMethods.length > 0
+              ? ` · Paid via: ${paidViaMethods.map((m) => PAYMENT_METHOD_LABELS[m] ?? m).join(', ')}`
+              : ''}
           </p>
           {Number(invoice.discount_amount) > 0 ? (
             <p className="text-xs text-muted-foreground">
@@ -377,6 +409,13 @@ function RecordPaymentRow({ invoice, visitId }) {
               {errors.amount ? (
                 <p className="text-xs text-destructive">{errors.amount.message}</p>
               ) : null}
+            </div>
+            <div className="w-40">
+              <PaymentMethodSelect
+                id={`payment-method-${invoice.id}`}
+                registration={register('payment_method')}
+                error={errors.payment_method}
+              />
             </div>
             <Button type="submit" size="sm" disabled={isSubmitting}>
               <Wallet className="h-4 w-4" />

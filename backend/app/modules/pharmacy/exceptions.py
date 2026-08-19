@@ -88,3 +88,15 @@ class MedicineBillDiscountExceedsSubtotalError(ValidationError):
         super().__init__(
             f"Discount exceeds the medicine bill subtotal of {subtotal}.", {"subtotal": subtotal}
         )
+
+
+class MedicineBillPaymentMethodRequiredError(ValidationError):
+    """Mirrors app/modules/billing/exceptions.py's identical
+    `PaymentMethodRequiredError` — a real payment's method is never
+    optional when an amount is actually being recorded (2026-08-19
+    addition, see app/shared/payment_method.py's module docstring)."""
+
+    code = "MEDICINE_BILL_PAYMENT_METHOD_REQUIRED"
+
+    def __init__(self) -> None:
+        super().__init__("A payment method is required whenever a payment is recorded.")

@@ -38,8 +38,11 @@ export const billingService = {
     return httpClient.get(`/billing/visits/${visitId}/invoices`);
   },
 
-  recordPayment(invoiceId, amount) {
-    return httpClient.post(`/billing/invoices/${invoiceId}/pay`, { amount });
+  recordPayment(invoiceId, amount, paymentMethod) {
+    return httpClient.post(`/billing/invoices/${invoiceId}/pay`, {
+      amount,
+      payment_method: paymentMethod,
+    });
   },
 
   // The print endpoint returns a raw HTML document (Content-Type:

@@ -13,12 +13,14 @@ from app.modules.billing.exceptions import (
     InvoiceNotFoundError,
     InvoiceNotPayableError,
     PaymentExceedsBalanceError,
+    PaymentMethodRequiredError,
     PendingBillingItemNotFoundError,
     PendingBillingItemNotPendingError,
 )
 from app.modules.billing.models import InvoiceStatus, PendingBillingItemStatus
 from app.modules.patients.models import PatientGender
 from app.modules.visits.models import VisitStatus
+from app.shared.payment_method import PaymentMethod
 from tests.conftest import TEST_PATIENT_NAME_PREFIX, make_test_email
 
 
@@ -177,7 +179,10 @@ async def test_money_fields_are_quantized_to_two_decimal_places_in_the_same_resp
     assert str(invoice.amount_paid) == "0.00"
 
     paid = await billing_service.record_payment(
-        actor=doctor, invoice_id=invoice.id, amount=Decimal("2500")
+        actor=doctor,
+        invoice_id=invoice.id,
+        amount=Decimal("2500"),
+        payment_method=PaymentMethod.CASH,
     )
     assert str(paid.amount_paid) == "2500.00"
 
@@ -370,6 +375,7 @@ async def test_generate_invoice_with_initial_payment_records_partial_atomically(
         base_description="Consultation Fee",
         base_amount=Decimal("1000"),
         initial_payment_amount=Decimal("400"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     assert invoice.status == InvoiceStatus.PARTIALLY_PAID
@@ -400,6 +406,7 @@ async def test_generate_invoice_with_initial_payment_paying_in_full_completes_vi
         base_description="Consultation Fee",
         base_amount=Decimal("1000"),
         initial_payment_amount=Decimal("1000"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     assert invoice.status == InvoiceStatus.PAID
@@ -433,7 +440,10 @@ async def test_generate_invoice_without_initial_payment_then_paid_later_still_wo
     assert updated_visit.status == VisitStatus.PAYMENT_PENDING
 
     paid = await billing_service.record_payment(
-        actor=doctor, invoice_id=invoice.id, amount=Decimal("1000")
+        actor=doctor,
+        invoice_id=invoice.id,
+        amount=Decimal("1000"),
+        payment_method=PaymentMethod.CASH,
     )
     assert paid.status == InvoiceStatus.PAID
     completed_visit = await visit_service.get_visit(visit.id)
@@ -464,6 +474,7 @@ async def test_generate_invoice_discount_and_initial_payment_combined_computes_p
         discount_amount=Decimal("200"),
         discount_reason="Staff family discount",
         initial_payment_amount=Decimal("500"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     assert invoice.total_amount == Decimal("1300.00")
@@ -490,6 +501,7 @@ async def test_generate_invoice_initial_payment_exceeding_balance_raises(
             base_description="Consultation Fee",
             base_amount=Decimal("1000"),
             initial_payment_amount=Decimal("1000.01"),
+            initial_payment_method=PaymentMethod.CASH,
         )
 
 
@@ -512,6 +524,7 @@ async def test_generate_invoice_initial_payment_on_reopened_visit_fully_pays_and
         base_description="Consultation Fee",
         base_amount=Decimal("1000"),
         initial_payment_amount=Decimal("1000"),
+        initial_payment_method=PaymentMethod.CASH,
     )
     assert first_invoice.status == InvoiceStatus.PAID
     completed_visit = await visit_service.get_visit(visit.id)
@@ -527,6 +540,7 @@ async def test_generate_invoice_initial_payment_on_reopened_visit_fully_pays_and
         base_description="Additional charge",
         base_amount=Decimal("1"),
         initial_payment_amount=Decimal("201"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     assert second_invoice.status == InvoiceStatus.PAID
@@ -548,7 +562,10 @@ async def test_record_full_payment_marks_paid_and_completes_visit(
     )
 
     paid = await billing_service.record_payment(
-        actor=doctor, invoice_id=invoice.id, amount=Decimal("1000")
+        actor=doctor,
+        invoice_id=invoice.id,
+        amount=Decimal("1000"),
+        payment_method=PaymentMethod.CASH,
     )
 
     assert paid.status == InvoiceStatus.PAID
@@ -570,7 +587,10 @@ async def test_record_partial_payment_keeps_visit_payment_pending(
     )
 
     partial = await billing_service.record_payment(
-        actor=doctor, invoice_id=invoice.id, amount=Decimal("400")
+        actor=doctor,
+        invoice_id=invoice.id,
+        amount=Decimal("400"),
+        payment_method=PaymentMethod.JAZZCASH,
     )
 
     assert partial.status == InvoiceStatus.PARTIALLY_PAID
@@ -600,25 +620,41 @@ async def test_multiple_partial_payments_sum_correctly_and_recorded_as_audit_row
     )
 
     first = await billing_service.record_payment(
-        actor=doctor, invoice_id=invoice.id, amount=Decimal("250")
+        actor=doctor,
+        invoice_id=invoice.id,
+        amount=Decimal("250"),
+        payment_method=PaymentMethod.CASH,
     )
     assert first.status == InvoiceStatus.PARTIALLY_PAID
     assert first.amount_paid == Decimal("250.00")
 
     second = await billing_service.record_payment(
-        actor=doctor, invoice_id=invoice.id, amount=Decimal("300")
+        actor=doctor,
+        invoice_id=invoice.id,
+        amount=Decimal("300"),
+        payment_method=PaymentMethod.BANK_TRANSFER,
     )
     assert second.status == InvoiceStatus.PARTIALLY_PAID
     assert second.amount_paid == Decimal("550.00")
 
     third = await billing_service.record_payment(
-        actor=doctor, invoice_id=invoice.id, amount=Decimal("450")
+        actor=doctor,
+        invoice_id=invoice.id,
+        amount=Decimal("450"),
+        payment_method=PaymentMethod.EASYPAISA,
     )
     assert third.status == InvoiceStatus.PAID
     assert third.amount_paid == Decimal("1000.00")
     assert third.paid_at is not None
 
     payments = await billing_service.get_payments(invoice.id)
+    # Each payment must carry its own method, never one method for the
+    # whole invoice (2026-08-19 addition).
+    assert [p.payment_method for p in payments] == [
+        PaymentMethod.CASH,
+        PaymentMethod.BANK_TRANSFER,
+        PaymentMethod.EASYPAISA,
+    ]
     assert [p.amount for p in payments] == [Decimal("250.00"), Decimal("300.00"), Decimal("450.00")]
     assert sum((p.amount for p in payments), Decimal("0")) == third.amount_paid
     # Each row is independently attributed/timestamped, not a single
@@ -641,7 +677,10 @@ async def test_record_payment_exceeding_balance_raises(
 
     with pytest.raises(PaymentExceedsBalanceError):
         await billing_service.record_payment(
-            actor=doctor, invoice_id=invoice.id, amount=Decimal("1000.01")
+            actor=doctor,
+            invoice_id=invoice.id,
+            amount=Decimal("1000.01"),
+            payment_method=PaymentMethod.CASH,
         )
 
 
@@ -659,12 +698,18 @@ async def test_record_payment_on_paid_invoice_raises_immutable(
         base_amount=Decimal("1000"),
     )
     await billing_service.record_payment(
-        actor=doctor, invoice_id=invoice.id, amount=Decimal("1000")
+        actor=doctor,
+        invoice_id=invoice.id,
+        amount=Decimal("1000"),
+        payment_method=PaymentMethod.CASH,
     )
 
     with pytest.raises(InvoiceNotPayableError):
         await billing_service.record_payment(
-            actor=doctor, invoice_id=invoice.id, amount=Decimal("1")
+            actor=doctor,
+            invoice_id=invoice.id,
+            amount=Decimal("1"),
+            payment_method=PaymentMethod.CASH,
         )
 
 
@@ -682,7 +727,10 @@ async def test_record_payment_zero_or_negative_raises_validation_error(
 
     with pytest.raises(ValidationError):
         await billing_service.record_payment(
-            actor=doctor, invoice_id=invoice.id, amount=Decimal("0")
+            actor=doctor,
+            invoice_id=invoice.id,
+            amount=Decimal("0"),
+            payment_method=PaymentMethod.CASH,
         )
 
 
@@ -702,7 +750,10 @@ async def test_post_payment_charge_opens_new_invoice_not_reopening_paid_one(
         base_amount=Decimal("1000"),
     )
     await billing_service.record_payment(
-        actor=doctor, invoice_id=first_invoice.id, amount=Decimal("1000")
+        actor=doctor,
+        invoice_id=first_invoice.id,
+        amount=Decimal("1000"),
+        payment_method=PaymentMethod.CASH,
     )
     completed_visit = await visit_service.get_visit(visit.id)
     assert completed_visit.status == VisitStatus.COMPLETED
@@ -734,3 +785,82 @@ async def test_post_payment_charge_opens_new_invoice_not_reopening_paid_one(
 async def test_get_invoice_raises_not_found(billing_service):
     with pytest.raises(InvoiceNotFoundError):
         await billing_service.get_invoice(uuid7())
+
+
+# ---------------------------------------------------------------------
+# Payment method (2026-08-19 addition) — every InvoicePayment carries
+# its own method; a real payment's method is required, never defaulted.
+# ---------------------------------------------------------------------
+
+
+async def test_generate_invoice_initial_payment_without_method_raises(
+    real_session, reception_service, consultation_service, billing_service
+):
+    doctor = await _make_doctor(real_session, "initial-payment-no-method")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "InitialPaymentNoMethod"
+    )
+
+    with pytest.raises(PaymentMethodRequiredError):
+        await billing_service.generate_invoice(
+            actor=doctor,
+            visit_id=visit.id,
+            base_description="Consultation Fee",
+            base_amount=Decimal("1000"),
+            initial_payment_amount=Decimal("500"),
+        )
+
+
+async def test_generate_invoice_without_initial_payment_ignores_missing_method(
+    real_session, reception_service, consultation_service, billing_service
+):
+    """No payment being recorded at all means `initial_payment_method`
+    is simply irrelevant — omitting it must never raise."""
+    doctor = await _make_doctor(real_session, "no-payment-no-method")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "NoPaymentNoMethod"
+    )
+
+    invoice = await billing_service.generate_invoice(
+        actor=doctor,
+        visit_id=visit.id,
+        base_description="Consultation Fee",
+        base_amount=Decimal("1000"),
+    )
+
+    assert invoice.status == InvoiceStatus.PENDING_PAYMENT
+    assert invoice.amount_paid == Decimal("0.00")
+
+
+async def test_record_payment_stores_the_method_on_that_payment_only(
+    real_session, reception_service, consultation_service, billing_service
+):
+    """Each individual InvoicePayment row carries its own method — not
+    a field on the Invoice itself — so two payments on the same invoice
+    can genuinely have different methods."""
+    doctor = await _make_doctor(real_session, "payment-method-storage")
+    visit = await _make_visit_waiting_billing(
+        reception_service, consultation_service, doctor, "PaymentMethodStorage"
+    )
+    invoice = await billing_service.generate_invoice(
+        actor=doctor,
+        visit_id=visit.id,
+        base_description="Consultation Fee",
+        base_amount=Decimal("1000"),
+    )
+
+    await billing_service.record_payment(
+        actor=doctor,
+        invoice_id=invoice.id,
+        amount=Decimal("400"),
+        payment_method=PaymentMethod.JAZZCASH,
+    )
+    await billing_service.record_payment(
+        actor=doctor,
+        invoice_id=invoice.id,
+        amount=Decimal("600"),
+        payment_method=PaymentMethod.CARD,
+    )
+
+    payments = await billing_service.get_payments(invoice.id)
+    assert [p.payment_method for p in payments] == [PaymentMethod.JAZZCASH, PaymentMethod.CARD]

@@ -53,7 +53,8 @@ export function useCreateMedicineBill() {
 export function useRecordMedicineBillPayment() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ billId, amount }) => pharmacyService.recordPayment(billId, amount),
+    mutationFn: ({ billId, amount, paymentMethod }) =>
+      pharmacyService.recordPayment(billId, amount, paymentMethod),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pharmacy', 'bills'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });

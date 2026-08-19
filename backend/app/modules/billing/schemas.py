@@ -14,6 +14,7 @@ from app.modules.billing.models import (
     PendingBillingItem,
     PendingBillingItemStatus,
 )
+from app.shared.payment_method import PaymentMethod
 from app.shared.schema_types import LaxDecimal, LaxUUID
 
 
@@ -42,14 +43,19 @@ class GenerateInvoiceRequest(BaseModel):
     # "Advance Received" field on Billing's single merged form (see
     # BillingService.generate_invoice's docstring). Validated against
     # the remaining balance server-side same as any other payment;
-    # schema only enforces >= 0 here.
+    # schema only enforces >= 0 here. `initial_payment_method`
+    # (2026-08-19 addition) is required whenever `initial_payment_amount
+    # > 0` — a cross-field rule left to the service, same convention as
+    # discount_reason above — and otherwise simply ignored.
     initial_payment_amount: LaxDecimal = Field(default=Decimal("0"), ge=0)
+    initial_payment_method: PaymentMethod | None = Field(default=None, strict=False)
 
 
 class RecordPaymentRequest(BaseModel):
     model_config = ConfigDict(strict=True)
 
     amount: LaxDecimal = Field(gt=0)
+    payment_method: PaymentMethod = Field(strict=False)
 
 
 class PendingBillingItemOut(BaseModel):
@@ -97,6 +103,7 @@ class InvoicePaymentOut(BaseModel):
 
     id: UUID
     amount: Decimal
+    payment_method: PaymentMethod
     created_by: UUID | None
     created_at: datetime
 
@@ -105,6 +112,7 @@ class InvoicePaymentOut(BaseModel):
         return cls(
             id=payment.id,
             amount=payment.amount,
+            payment_method=payment.payment_method,
             created_by=payment.created_by,
             created_at=payment.created_at,
         )

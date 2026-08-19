@@ -32,6 +32,7 @@ from app.modules.billing.exceptions import (
     InvoiceNotFoundError,
     InvoiceNotPayableError,
     PaymentExceedsBalanceError,
+    PaymentMethodRequiredError,
     PendingBillingItemNotFoundError,
     PendingBillingItemNotPendingError,
 )
@@ -53,6 +54,7 @@ from app.modules.visits.service import VisitService
 from app.shared.audit.repository import AuditLogRepository
 from app.shared.db_errors import unique_violation_constraint_name
 from app.shared.money import quantize_money
+from app.shared.payment_method import PaymentMethod
 
 _ZERO = Decimal("0.00")
 
@@ -174,6 +176,7 @@ class BillingService:
         discount_amount: Decimal = _ZERO,
         discount_reason: str | None = None,
         initial_payment_amount: Decimal = _ZERO,
+        initial_payment_method: PaymentMethod | None = None,
     ) -> Invoice:
         """Creates the Invoice for a Visit: the base procedure charge
         plus every currently-`APPROVED` Pending Billing Item, each
@@ -204,6 +207,11 @@ class BillingService:
         independently. Recording no payment at all (the default) still
         works exactly as before — creating an Invoice has never
         required an immediate payment, and still doesn't.
+        `initial_payment_method` (2026-08-19 addition) is required
+        whenever `initial_payment_amount > 0` — `PaymentMethodRequiredError`
+        otherwise — but is simply ignored when no payment is being
+        recorded at all, mirroring `discount_reason`'s identical
+        "only meaningful when its companion amount is non-zero" shape.
 
         Callable whether the Visit is fresh out of Consultation
         (`WAITING_BILLING`) or already `COMPLETED` with a prior `Paid`
@@ -302,8 +310,13 @@ class BillingService:
             raise ValidationError("initial_payment_amount cannot be negative.")
         fully_paid = False
         if initial_payment_amount > _ZERO:
+            if initial_payment_method is None:
+                raise PaymentMethodRequiredError
             fully_paid = await self._apply_payment(
-                invoice=invoice, actor=actor, amount=initial_payment_amount
+                invoice=invoice,
+                actor=actor,
+                amount=initial_payment_amount,
+                payment_method=initial_payment_method,
             )
 
         # Always Pending Payment first, even when the initial payment
@@ -319,7 +332,9 @@ class BillingService:
         await self._session.commit()
         return await self._invoice_repo.get_by_id(invoice.id)
 
-    async def _apply_payment(self, *, invoice: Invoice, actor: User, amount: Decimal) -> bool:
+    async def _apply_payment(
+        self, *, invoice: Invoice, actor: User, amount: Decimal, payment_method: PaymentMethod
+    ) -> bool:
         """Shared by `generate_invoice`'s optional initial payment and
         `record_payment`'s top-up payment below — validates `amount`
         against the remaining balance, mutates `invoice.amount_paid`/
@@ -336,7 +351,16 @@ class BillingService:
         Payment/Partially Paid) — `record_payment` checks that itself
         before calling this; `generate_invoice`'s invoice is always
         freshly created and Pending Payment by construction, so it
-        never needs the check."""
+        never needs the check.
+
+        `payment_method` (2026-08-19 addition) is required by both
+        callers — a real payment being recorded always has a known
+        method (cash, bank transfer, JazzCash, EasyPaisa, or card);
+        see app/shared/payment_method.py's module docstring. Stored on
+        this individual `InvoicePayment` row only — never on the
+        Invoice itself — so a partial cash payment now and a bank
+        transfer later are correctly two separate, independently
+        attributed rows."""
         if amount <= _ZERO:
             raise ValidationError("Payment amount must be greater than zero.")
         amount = quantize_money(amount)
@@ -358,6 +382,7 @@ class BillingService:
             InvoicePayment(
                 invoice_id=invoice.id,
                 amount=amount,
+                payment_method=payment_method,
                 created_by=actor.id,
                 updated_by=actor.id,
             )
@@ -371,12 +396,15 @@ class BillingService:
             metadata={
                 "visit_id": str(invoice.visit_id),
                 "amount": str(amount),
+                "payment_method": payment_method.value,
                 "fully_paid": fully_paid,
             },
         )
         return fully_paid
 
-    async def record_payment(self, *, actor: User, invoice_id: UUID, amount: Decimal) -> Invoice:
+    async def record_payment(
+        self, *, actor: User, invoice_id: UUID, amount: Decimal, payment_method: PaymentMethod
+    ) -> Invoice:
         """Records an *additional* payment against an already-created
         Invoice — topping up toward the remaining balance on a later
         visit/call, not the primary way an Invoice gets its first
@@ -404,7 +432,9 @@ class BillingService:
         if invoice.status not in (InvoiceStatus.PENDING_PAYMENT, InvoiceStatus.PARTIALLY_PAID):
             raise InvoiceNotPayableError(invoice.status.value)
 
-        fully_paid = await self._apply_payment(invoice=invoice, actor=actor, amount=amount)
+        fully_paid = await self._apply_payment(
+            invoice=invoice, actor=actor, amount=amount, payment_method=payment_method
+        )
         if fully_paid:
             await self._visit_service.mark_completed(actor=actor, visit_id=invoice.visit_id)
         await self._session.commit()

@@ -18,6 +18,7 @@ from app.modules.pharmacy.models import (
     MedicineBillStatus,
     MedicineCategory,
 )
+from app.shared.payment_method import PaymentMethod
 from app.shared.schema_types import LaxDecimal, LaxUUID
 
 
@@ -69,8 +70,12 @@ class CreateMedicineBillRequest(BaseModel):
     # "Advance Received" field on Pharmacy's single merged counter
     # form (see PharmacyService.create_bill's docstring). Validated
     # against the remaining balance server-side same as any other
-    # payment; schema only enforces >= 0 here.
+    # payment; schema only enforces >= 0 here. `initial_payment_method`
+    # (2026-08-19 addition) is required whenever `initial_payment_amount
+    # > 0` — a cross-field rule left to the service — and otherwise
+    # simply ignored.
     initial_payment_amount: LaxDecimal = Field(default=Decimal("0"), ge=0)
+    initial_payment_method: PaymentMethod | None = Field(default=None, strict=False)
     # Purely display information for the printed slip when no
     # visit_id is linked — see PharmacyService.create_bill's docstring.
     # Same per-field shape as app/modules/patients/schemas.py's
@@ -96,6 +101,7 @@ class RecordMedicineBillPaymentRequest(BaseModel):
     model_config = ConfigDict(strict=True)
 
     amount: LaxDecimal = Field(gt=0)
+    payment_method: PaymentMethod = Field(strict=False)
 
 
 # ---------------------------------------------------------------------
@@ -156,6 +162,7 @@ class MedicineBillPaymentOut(BaseModel):
 
     id: UUID
     amount: Decimal
+    payment_method: PaymentMethod
     created_by: UUID | None
     created_at: datetime
 
@@ -164,6 +171,7 @@ class MedicineBillPaymentOut(BaseModel):
         return cls(
             id=payment.id,
             amount=payment.amount,
+            payment_method=payment.payment_method,
             created_by=payment.created_by,
             created_at=payment.created_at,
         )
@@ -240,9 +248,18 @@ class MedicineBillSummaryOut(BaseModel):
     # PharmacyService.list_bills_for_creator) show whether a discount
     # was applied without a second fetch of the full MedicineBillOut.
     discount_amount: Decimal
+    # 2026-08-19 addition — distinct payment methods used across this
+    # bill's payments, in first-payment order (see
+    # MedicineBillPaymentRepository.list_distinct_payment_methods_for_bills),
+    # so Admin Overview's Medicine Bills tab can show "Cash" / "Cash,
+    # JazzCash" without a second per-bill fetch. Empty list, never a
+    # default/implied "cash", when nothing has been paid yet.
+    payment_methods: list[str]
 
     @classmethod
-    def from_bill(cls, bill: MedicineBill, item_count: int) -> "MedicineBillSummaryOut":
+    def from_bill(
+        cls, bill: MedicineBill, item_count: int, payment_methods: list[str] | None = None
+    ) -> "MedicineBillSummaryOut":
         return cls(
             id=bill.id,
             visit_id=bill.visit_id,
@@ -254,6 +271,7 @@ class MedicineBillSummaryOut(BaseModel):
             item_count=item_count,
             manual_patient_name=bill.manual_patient_name,
             discount_amount=bill.discount_amount,
+            payment_methods=payment_methods or [],
         )
 
 

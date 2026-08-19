@@ -140,7 +140,7 @@ async def test_full_billing_lifecycle_via_http(api_client, real_session, grant_p
 
     pay_resp = await api_client.post(
         f"/api/v1/billing/invoices/{invoice_id}/pay",
-        json={"amount": "2500.00"},
+        json={"amount": "2500.00", "payment_method": "cash"},
         headers=_auth_header(access_token),
     )
     assert pay_resp.status_code == 200
@@ -182,7 +182,7 @@ async def test_partial_invoice_payments_via_http_sum_correctly_and_reject_overpa
 
     first_pay = await api_client.post(
         f"/api/v1/billing/invoices/{invoice_id}/pay",
-        json={"amount": "400.00"},
+        json={"amount": "400.00", "payment_method": "cash"},
         headers=_auth_header(access_token),
     )
     assert first_pay.status_code == 200, first_pay.text
@@ -196,7 +196,7 @@ async def test_partial_invoice_payments_via_http_sum_correctly_and_reject_overpa
     # must be rejected outright, and must not mutate the invoice.
     overpay_resp = await api_client.post(
         f"/api/v1/billing/invoices/{invoice_id}/pay",
-        json={"amount": "600.01"},
+        json={"amount": "600.01", "payment_method": "cash"},
         headers=_auth_header(access_token),
     )
     assert overpay_resp.status_code == 422
@@ -204,7 +204,7 @@ async def test_partial_invoice_payments_via_http_sum_correctly_and_reject_overpa
 
     second_pay = await api_client.post(
         f"/api/v1/billing/invoices/{invoice_id}/pay",
-        json={"amount": "600.00"},
+        json={"amount": "600.00", "payment_method": "bank_transfer"},
         headers=_auth_header(access_token),
     )
     assert second_pay.status_code == 200, second_pay.text
@@ -308,6 +308,7 @@ async def test_generate_invoice_with_initial_payment_via_http(
             "base_description": "Consultation Fee",
             "base_amount": "1000.00",
             "initial_payment_amount": "600.00",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -317,10 +318,89 @@ async def test_generate_invoice_with_initial_payment_via_http(
     assert body["amount_paid"] == "600.00"
     assert len(body["payments"]) == 1
     assert body["payments"][0]["amount"] == "600.00"
+    assert body["payments"][0]["payment_method"] == "cash"
     # Pending = Total - Received (Total already post-discount; no
     # discount here, so Total - Discount collapses to just Total).
     pending = float(body["total_amount"]) - float(body["amount_paid"])
     assert pending == 400.00
+
+
+async def test_generate_invoice_initial_payment_without_method_rejected(
+    api_client, real_session, grant_permission
+):
+    doctor, access_token = await _create_and_login(api_client, real_session, "no-method-http")
+    await grant_permission(doctor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_START)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_MANAGE)
+    await grant_permission(doctor, PERMISSION_BILLING_MANAGE)
+    await grant_permission(doctor, PERMISSION_BILLING_READ)
+    visit_id = await _make_visit_waiting_billing(api_client, access_token, "NoMethodHttp")
+
+    resp = await api_client.post(
+        "/api/v1/billing/invoices",
+        json={
+            "visit_id": visit_id,
+            "base_description": "Consultation Fee",
+            "base_amount": "1000.00",
+            "initial_payment_amount": "600.00",
+        },
+        headers=_auth_header(access_token),
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "PAYMENT_METHOD_REQUIRED"
+
+
+async def test_record_payment_without_method_rejected_at_schema_level(
+    api_client, real_session, grant_permission
+):
+    doctor, access_token = await _create_and_login(api_client, real_session, "record-no-method-http")
+    await grant_permission(doctor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_START)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_MANAGE)
+    await grant_permission(doctor, PERMISSION_BILLING_MANAGE)
+    await grant_permission(doctor, PERMISSION_BILLING_READ)
+    visit_id = await _make_visit_waiting_billing(api_client, access_token, "RecordNoMethodHttp")
+    generate_resp = await api_client.post(
+        "/api/v1/billing/invoices",
+        json={"visit_id": visit_id, "base_description": "Fee", "base_amount": "1000.00"},
+        headers=_auth_header(access_token),
+    )
+    invoice_id = generate_resp.json()["data"]["id"]
+
+    resp = await api_client.post(
+        f"/api/v1/billing/invoices/{invoice_id}/pay",
+        json={"amount": "500.00"},
+        headers=_auth_header(access_token),
+    )
+    assert resp.status_code == 422
+
+
+async def test_print_invoice_shows_paid_via_line(api_client, real_session, grant_permission):
+    doctor, access_token = await _create_and_login(api_client, real_session, "print-paid-via-http")
+    await grant_permission(doctor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_START)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_MANAGE)
+    await grant_permission(doctor, PERMISSION_BILLING_MANAGE)
+    await grant_permission(doctor, PERMISSION_BILLING_READ)
+    visit_id = await _make_visit_waiting_billing(api_client, access_token, "PrintPaidVia")
+    generate_resp = await api_client.post(
+        "/api/v1/billing/invoices",
+        json={
+            "visit_id": visit_id,
+            "base_description": "Fee",
+            "base_amount": "1000.00",
+            "initial_payment_amount": "1000.00",
+            "initial_payment_method": "jazzcash",
+        },
+        headers=_auth_header(access_token),
+    )
+    invoice_id = generate_resp.json()["data"]["id"]
+
+    print_resp = await api_client.get(
+        f"/api/v1/billing/invoices/{invoice_id}/print", headers=_auth_header(access_token)
+    )
+    assert print_resp.status_code == 200
+    assert "Paid via: JazzCash" in print_resp.text
 
 
 async def test_generate_invoice_initial_payment_exceeding_balance_creates_no_invoice(
@@ -346,6 +426,7 @@ async def test_generate_invoice_initial_payment_exceeding_balance_creates_no_inv
             "base_description": "Consultation Fee",
             "base_amount": "1000.00",
             "initial_payment_amount": "1000.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )

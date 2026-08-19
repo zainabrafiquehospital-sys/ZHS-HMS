@@ -502,6 +502,7 @@ async def test_create_bill_with_initial_payment_records_it_atomically(
             "visit_id": None,
             "items": [{"medicine_id": medicine_id, "quantity": 2}],
             "initial_payment_amount": "80.00",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -513,8 +514,56 @@ async def test_create_bill_with_initial_payment_records_it_atomically(
     assert body["amount_paid"] == "80.00"
     assert len(body["payments"]) == 1
     assert body["payments"][0]["amount"] == "80.00"
+    assert body["payments"][0]["payment_method"] == "cash"
     pending = float(body["total_amount"]) - float(body["amount_paid"])
     assert pending == 120.00
+
+
+async def test_create_bill_initial_payment_without_method_rejected(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "bill-no-method")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}NoMethod", price="50.00"
+    )
+
+    resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": None,
+            "items": [{"medicine_id": medicine_id, "quantity": 1}],
+            "initial_payment_amount": "50.00",
+        },
+        headers=_auth_header(access_token),
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "MEDICINE_BILL_PAYMENT_METHOD_REQUIRED"
+
+
+async def test_record_bill_payment_without_method_rejected_at_schema_level(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "bill-record-no-method")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}RecordNoMethod", price="50.00"
+    )
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": None, "items": [{"medicine_id": medicine_id, "quantity": 1}]},
+        headers=_auth_header(access_token),
+    )
+    bill_id = bill_resp.json()["data"]["id"]
+
+    resp = await api_client.post(
+        f"/api/v1/pharmacy/bills/{bill_id}/pay",
+        json={"amount": "50.00"},
+        headers=_auth_header(access_token),
+    )
+    assert resp.status_code == 422
 
 
 async def test_create_bill_with_initial_payment_paying_in_full(
@@ -533,6 +582,7 @@ async def test_create_bill_with_initial_payment_paying_in_full(
             "visit_id": None,
             "items": [{"medicine_id": medicine_id, "quantity": 1}],
             "initial_payment_amount": "60.00",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -571,7 +621,7 @@ async def test_create_bill_without_initial_payment_then_paid_later_still_works(
 
     pay_resp = await api_client.post(
         f"/api/v1/pharmacy/bills/{bill_id}/pay",
-        json={"amount": "45.00"},
+        json={"amount": "45.00", "payment_method": "cash"},
         headers=_auth_header(access_token),
     )
     assert pay_resp.status_code == 200, pay_resp.text
@@ -605,6 +655,7 @@ async def test_create_bill_initial_payment_exceeding_balance_creates_no_bill(
             "visit_id": None,
             "items": [{"medicine_id": medicine_id, "quantity": 1}],
             "initial_payment_amount": "30.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -642,7 +693,7 @@ async def test_multiple_partial_bill_payments_sum_correctly_and_settle_status(
 
     first_pay = await api_client.post(
         f"/api/v1/pharmacy/bills/{bill_id}/pay",
-        json={"amount": "80.00"},
+        json={"amount": "80.00", "payment_method": "cash"},
         headers=_auth_header(access_token),
     )
     assert first_pay.status_code == 200, first_pay.text
@@ -654,7 +705,7 @@ async def test_multiple_partial_bill_payments_sum_correctly_and_settle_status(
 
     second_pay = await api_client.post(
         f"/api/v1/pharmacy/bills/{bill_id}/pay",
-        json={"amount": "50.00"},
+        json={"amount": "50.00", "payment_method": "jazzcash"},
         headers=_auth_header(access_token),
     )
     assert second_pay.status_code == 200, second_pay.text
@@ -665,7 +716,7 @@ async def test_multiple_partial_bill_payments_sum_correctly_and_settle_status(
 
     third_pay = await api_client.post(
         f"/api/v1/pharmacy/bills/{bill_id}/pay",
-        json={"amount": "70.00"},
+        json={"amount": "70.00", "payment_method": "card"},
         headers=_auth_header(access_token),
     )
     assert third_pay.status_code == 200, third_pay.text
@@ -689,6 +740,9 @@ async def test_multiple_partial_bill_payments_sum_correctly_and_settle_status(
     assert "Total Amount" in print_resp.text
     assert "Received" in print_resp.text
     assert "Pending" in print_resp.text
+    # Three payments, three distinct methods (2026-08-19 addition) — the
+    # slip's "Paid via" line must name all of them, in payment order.
+    assert "Paid via: Cash, JazzCash, Card" in print_resp.text
 
 
 async def test_bill_payment_exceeding_balance_rejected(api_client, real_session, grant_permission):
@@ -708,7 +762,7 @@ async def test_bill_payment_exceeding_balance_rejected(api_client, real_session,
 
     resp = await api_client.post(
         f"/api/v1/pharmacy/bills/{bill_id}/pay",
-        json={"amount": "50.01"},
+        json={"amount": "50.01", "payment_method": "cash"},
         headers=_auth_header(access_token),
     )
 
@@ -740,14 +794,14 @@ async def test_bill_payment_on_already_paid_bill_rejected(
     bill_id = bill_resp.json()["data"]["id"]
     first_pay = await api_client.post(
         f"/api/v1/pharmacy/bills/{bill_id}/pay",
-        json={"amount": "25.00"},
+        json={"amount": "25.00", "payment_method": "cash"},
         headers=_auth_header(access_token),
     )
     assert first_pay.json()["data"]["status"] == "paid"
 
     resp = await api_client.post(
         f"/api/v1/pharmacy/bills/{bill_id}/pay",
-        json={"amount": "1.00"},
+        json={"amount": "1.00", "payment_method": "cash"},
         headers=_auth_header(access_token),
     )
 
@@ -771,7 +825,7 @@ async def test_bill_payment_zero_or_negative_rejected(api_client, real_session, 
 
     resp = await api_client.post(
         f"/api/v1/pharmacy/bills/{bill_id}/pay",
-        json={"amount": "0"},
+        json={"amount": "0", "payment_method": "cash"},
         headers=_auth_header(access_token),
     )
 
@@ -796,7 +850,7 @@ async def test_bill_payment_requires_permission(api_client, real_session, grant_
 
     resp = await api_client.post(
         f"/api/v1/pharmacy/bills/{bill_id}/pay",
-        json={"amount": "10.00"},
+        json={"amount": "10.00", "payment_method": "cash"},
         headers=_auth_header(other_token),
     )
 

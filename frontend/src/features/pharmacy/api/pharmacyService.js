@@ -25,8 +25,11 @@ export const pharmacyService = {
     return httpClient.post('/pharmacy/bills', payload);
   },
 
-  recordPayment(billId, amount) {
-    return httpClient.post(`/pharmacy/bills/${billId}/pay`, { amount });
+  recordPayment(billId, amount, paymentMethod) {
+    return httpClient.post(`/pharmacy/bills/${billId}/pay`, {
+      amount,
+      payment_method: paymentMethod,
+    });
   },
 
   listBillsForDay(date) {

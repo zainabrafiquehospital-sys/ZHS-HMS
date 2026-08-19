@@ -103,7 +103,8 @@ export function useGenerateInvoice(visitId) {
 export function useRecordPayment(visitId) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ invoiceId, amount }) => billingService.recordPayment(invoiceId, amount),
+    mutationFn: ({ invoiceId, amount, paymentMethod }) =>
+      billingService.recordPayment(invoiceId, amount, paymentMethod),
     onSuccess: () => invalidateVisitBilling(queryClient, visitId),
   });
 }

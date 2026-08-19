@@ -36,6 +36,7 @@ import { Tabs } from '@/shared/components/ui/Tabs';
 import { Textarea } from '@/shared/components/ui/Textarea';
 import { PageLoader } from '@/shared/components/PageLoader';
 import { PageError } from '@/shared/components/PageError';
+import { PaymentMethodSelect } from '@/shared/components/PaymentMethodSelect';
 import {
   Table,
   TableBody,
@@ -47,6 +48,7 @@ import {
 import { useDebouncedValue } from '@/shared/hooks/useDebouncedValue';
 import { formatDisplayDate, formatDisplayTime, todayDisplayDayKey } from '@/utils/timezone';
 import { VISIT_STATUS_BADGE_VARIANT } from '@/shared/constants/visitStatus';
+import { PAYMENT_METHOD_LABELS } from '@/shared/constants/paymentMethod';
 
 const OVERVIEW_TABS = [
   { value: 'visits', label: 'Visits' },
@@ -108,13 +110,17 @@ function RecordBillPaymentDialog({ bill, onClose }) {
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(recordMedicineBillPaymentSchema),
-    defaultValues: { amount: '' },
+    defaultValues: { amount: '', payment_method: '' },
   });
 
   async function onSubmit(values) {
     setError(null);
     try {
-      await recordPayment.mutateAsync({ billId: bill.id, amount: values.amount });
+      await recordPayment.mutateAsync({
+        billId: bill.id,
+        amount: values.amount,
+        paymentMethod: values.payment_method,
+      });
       await printBill.mutateAsync(bill.id);
       onClose();
     } catch (submitError) {
@@ -142,6 +148,11 @@ function RecordBillPaymentDialog({ bill, onClose }) {
             <Input id="admin-bill-payment-amount" type="number" step="0.01" {...register('amount')} />
             {errors.amount ? <p className="text-xs text-destructive">{errors.amount.message}</p> : null}
           </div>
+          <PaymentMethodSelect
+            id="admin-bill-payment-method"
+            registration={register('payment_method')}
+            error={errors.payment_method}
+          />
           {error ? <p className="text-xs text-destructive">{error}</p> : null}
         </div>
       }
@@ -388,6 +399,7 @@ function MedicineBillsPanel({ selectedDate }) {
               <TableHead className="text-right">Items</TableHead>
               <TableHead className="text-right">Total</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead>Payment Method</TableHead>
               <TableHead />
             </TableRow>
           </TableHeader>
@@ -431,6 +443,18 @@ function MedicineBillsPanel({ selectedDate }) {
                     >
                       {bill.status.replaceAll('_', ' ')}
                     </Badge>
+                  </TableCell>
+                  <TableCell className="max-w-[160px] truncate text-xs text-muted-foreground">
+                    {/* Distinct methods across this bill's payments, in
+                        first-payment order (2026-08-19 addition) — see
+                        MedicineBillSummaryOut.payment_methods's own
+                        docstring. Never "cash" by default: an unpaid
+                        bill simply shows a dash. */}
+                    {bill.payment_methods?.length > 0
+                      ? bill.payment_methods
+                          .map((method) => PAYMENT_METHOD_LABELS[method] ?? method)
+                          .join(', ')
+                      : '—'}
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-2">

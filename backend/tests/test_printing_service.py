@@ -1,7 +1,11 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from app.shared.printing.service import render_invoice_receipt, render_registration_slip
+from app.shared.printing.service import (
+    render_invoice_receipt,
+    render_medicine_bill_receipt,
+    render_registration_slip,
+)
 
 
 def _render(**overrides) -> str:
@@ -38,6 +42,25 @@ def _render_slip(**overrides) -> str:
     )
     defaults.update(overrides)
     return render_registration_slip(**defaults)
+
+
+def _render_bill(**overrides) -> str:
+    defaults = dict(
+        hospital_name="ZRH Hospital",
+        display_timezone="Asia/Karachi",
+        bill_id="22222222-2222-2222-2222-222222222222",
+        bill_created_at=datetime(2026, 1, 1, 10, 30, tzinfo=UTC),
+        visit_queue_token=None,
+        patient_full_name=None,
+        patient_mr_number=None,
+        patient_age_years=None,
+        patient_phone_number=None,
+        line_items=[("Panadol", "tablet", 2, Decimal("50.00"), Decimal("100.00"))],
+        total_amount=Decimal("100.00"),
+        amount_paid=Decimal("100.00"),
+    )
+    defaults.update(overrides)
+    return render_medicine_bill_receipt(**defaults)
 
 
 def test_render_includes_all_core_fields():
@@ -151,3 +174,51 @@ def test_render_slip_escapes_html_in_discount_reason():
 
     assert "<script>alert(1)</script>" not in html_document
     assert "&lt;script&gt;" in html_document
+
+
+# ---------------------------------------------------------------------
+# Payment method (2026-08-19 addition) — a "Paid via: <method(s)>"
+# summary line on every receipt/slip type, built from the caller-
+# computed distinct list of payment methods actually used (see
+# render_invoice_receipt's own docstring for the full convention).
+# ---------------------------------------------------------------------
+
+
+def test_invoice_receipt_shows_single_payment_method():
+    html_document = _render(payment_methods=["cash"])
+
+    assert "Paid via: Cash" in html_document
+
+
+def test_invoice_receipt_shows_multiple_distinct_payment_methods_in_order():
+    html_document = _render(payment_methods=["bank_transfer", "jazzcash", "cash"])
+
+    assert "Paid via: Bank Transfer, JazzCash, Cash" in html_document
+
+
+def test_invoice_receipt_omits_paid_via_line_when_nothing_paid():
+    html_document = _render(amount_paid=Decimal("0.00"), payment_methods=[])
+
+    assert "Paid via" not in html_document
+
+
+def test_medicine_bill_receipt_shows_payment_method():
+    html_document = _render_bill(payment_methods=["easypaisa"])
+
+    assert "Paid via: EasyPaisa" in html_document
+
+
+def test_medicine_bill_receipt_omits_paid_via_line_when_nothing_paid():
+    html_document = _render_bill(amount_paid=Decimal("0.00"), payment_methods=[])
+
+    assert "Paid via" not in html_document
+
+
+def test_registration_slip_has_no_payment_method_concept():
+    """The Registration Slip is printed before any Invoice/payment
+    exists (Reception's fast-registration flow, before Billing) — it
+    has no `payment_methods` parameter at all, unlike the two receipt
+    types that print after money has actually been collected."""
+    html_document = _render_slip()
+
+    assert "Paid via" not in html_document

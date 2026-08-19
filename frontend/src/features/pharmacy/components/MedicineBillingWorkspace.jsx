@@ -22,6 +22,7 @@ import { Input } from '@/shared/components/ui/Input';
 import { Label } from '@/shared/components/ui/Label';
 import { Badge } from '@/shared/components/ui/Badge';
 import { SearchSelect } from '@/shared/components/SearchSelect';
+import { PaymentMethodSelect } from '@/shared/components/PaymentMethodSelect';
 import { useToast } from '@/shared/components/toast/ToastProvider';
 import {
   Table,
@@ -282,7 +283,12 @@ export function MedicineBillingWorkspace() {
     formState: { errors: finalizeErrors },
   } = useForm({
     resolver: zodResolver(finalizeBillSchema),
-    defaultValues: { initial_payment_amount: '', discount_amount: '', discount_reason: '' },
+    defaultValues: {
+      initial_payment_amount: '',
+      initial_payment_method: '',
+      discount_amount: '',
+      discount_reason: '',
+    },
   });
 
   const grandTotal = items.reduce((sum, item) => sum + Number(item.unit_price) * item.quantity, 0);
@@ -381,6 +387,9 @@ export function MedicineBillingWorkspace() {
         visit_id: selectedVisit ? selectedVisit.id : null,
         items: items.map((item) => ({ medicine_id: item.medicine_id, quantity: item.quantity })),
         initial_payment_amount: values.initial_payment_amount,
+        initial_payment_method: values.initial_payment_amount
+          ? values.initial_payment_method
+          : null,
         // Belt-and-suspenders with handleApplyDiscountToggle's own
         // clearing: even if a stale value somehow survived, an
         // unticked checkbox always sends no discount at all.
@@ -392,7 +401,12 @@ export function MedicineBillingWorkspace() {
       setItems([]);
       resetPatientLinkage();
       setApplyDiscount(false);
-      resetFinalizeForm({ initial_payment_amount: '', discount_amount: '', discount_reason: '' });
+      resetFinalizeForm({
+        initial_payment_amount: '',
+        initial_payment_method: '',
+        discount_amount: '',
+        discount_reason: '',
+      });
       toast.success({
         title: 'Medicine bill finalized',
         description: `Total ${money(bill.total_amount)} · Received ${money(bill.amount_paid)}`,
@@ -605,6 +619,13 @@ export function MedicineBillingWorkspace() {
                       {finalizeErrors.initial_payment_amount.message}
                     </p>
                   ) : null}
+                </div>
+                <div className="sm:w-44">
+                  <PaymentMethodSelect
+                    id="initial_payment_method"
+                    registration={register('initial_payment_method')}
+                    error={finalizeErrors.initial_payment_method}
+                  />
                 </div>
                 <Button
                   type="submit"
