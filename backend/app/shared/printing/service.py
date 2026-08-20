@@ -538,9 +538,8 @@ def render_medicine_bill_receipt(
     display_timezone: str,
     bill_id: str,
     bill_created_at: datetime,
-    visit_queue_token: str | None,
+    bill_queue_token: str | None,
     patient_full_name: str | None,
-    patient_mr_number: str | None,
     patient_age_years: int | None,
     patient_phone_number: str | None,
     line_items: list[tuple[str, str, int, Decimal, Decimal]],
@@ -556,18 +555,40 @@ def render_medicine_bill_receipt(
     design language, same reasons: this document also prints on a plain
     B&W office printer, where layout/typography carries the document,
     not color — see this module's own docstring on the Central Print
-    Service's grayscale convention).
+    Service's grayscale convention). Tightened for density (2026-08-20
+    revision) so two of these fit on one printed A4 page instead of
+    one — see the CSS comments below for the specific spacing values
+    that changed, and this module's own historical note: the original
+    version left roughly half a page of unused space below a typical
+    few-item bill.
 
-    `visit_queue_token`/`patient_full_name`/`patient_mr_number`/
-    `patient_age_years`/`patient_phone_number` are all `None` for a
-    standalone walk-in sale with no linked Visit (see
+    `bill_queue_token` (2026-08-20 addition, replacing the removed
+    `visit_queue_token`/`patient_mr_number` parameters — see
+    app/modules/pharmacy/models.py's `MedicineBill.queue_token`
+    docstring for the full mechanism) is this bill's *own* number, from
+    the same unified sequence Visit uses — never the linked Visit's own
+    token, since every bill draws its own fresh value at creation.
+    `None` only for a bill that predates this feature, in which case
+    the title-box falls back to the pre-existing `MED-<uuid fragment>`
+    display. The MR Number and Queue Token rows that used to appear in
+    the Patient/Visit Reference section below are gone entirely — this
+    bill's own identifying number in the title-box is now the slip's
+    one and only number, and MR Number added little the patient's name
+    didn't already convey on this particular document.
+
+    `patient_full_name`/`patient_age_years`/`patient_phone_number` are
+    all `None` for a standalone walk-in sale with no linked Visit (see
     app/modules/pharmacy/models.py's `MedicineBill.visit_id` docstring)
     — the patient/visit reference section is simply omitted in that
     case rather than rendered with placeholder dashes. When a Visit is
     linked, `patient_age_years`/`patient_phone_number` mirror the same
     two fields `render_registration_slip` already shows (Age, Contact
     Number) — this is the identical `Patient` record, just rendered a
-    second time on a different document.
+    second time on a different document. The remaining reference rows
+    (Patient Name, Age, Contact Number, Billed On) render in the same
+    2-column `.body-grid` `render_registration_slip` already
+    established, instead of one long stacked column — halves this
+    section's height.
 
     `line_items` is `(medicine_name, category, quantity, unit_price,
     line_total)` tuples, already snapshotted at billing time (see
@@ -599,6 +620,11 @@ def render_medicine_bill_receipt(
     pending = total_amount - amount_paid
     subtotal = total_amount + discount_amount
     short_bill_id = bill_id.split("-")[0].upper()
+    # This bill's own token if it has one (every bill created from
+    # 2026-08-20 onward does); the old UUID-fragment display only for
+    # bills that predate the unified sequence — see this function's
+    # own docstring.
+    token_display = bill_queue_token or f"MED-{short_bill_id}"
 
     logo_data_uri = _logo_data_uri()
     logo_html = (
@@ -615,16 +641,23 @@ def render_medicine_bill_receipt(
 
     reference_section = ""
     if patient_full_name is not None:
-        reference_rows = "".join(
-            [
-                _row("Patient Name", patient_full_name),
-                _row("MR Number", patient_mr_number or "—"),
-                _row("Age", f"{patient_age_years} years" if patient_age_years is not None else "—"),
-                _row("Contact Number", patient_phone_number or "—"),
-                _row("Queue Token", visit_queue_token or "—"),
-                _row("Billed On", billed_on),
-            ]
-        )
+        # 2-column layout (2026-08-20 revision) — same `.body-grid`
+        # `render_registration_slip` already uses, instead of one long
+        # stacked column of rows. MR Number and Queue Token are gone
+        # entirely (see this function's own docstring); only these four
+        # remain, two per column.
+        reference_rows = f"""
+    <div class="body-grid">
+      <div>
+        {_row("Patient Name", patient_full_name)}
+        {_row("Age", f"{patient_age_years} years" if patient_age_years is not None else "—")}
+      </div>
+      <div>
+        {_row("Contact Number", patient_phone_number or "—")}
+        {_row("Billed On", billed_on)}
+      </div>
+    </div>
+"""
         reference_section = f"""
     <div class="section-heading">
       <span class="bar"></span>
@@ -669,7 +702,7 @@ def render_medicine_bill_receipt(
 <html>
 <head>
 <meta charset="utf-8">
-<title>Medicine Slip — {_escape(short_bill_id)}</title>
+<title>Medicine Slip — {_escape(token_display)}</title>
 <style>
   :root {{
     --ink: #111111;
@@ -705,16 +738,16 @@ def render_medicine_bill_receipt(
     grid-template-columns: auto 1fr auto;
     align-items: center;
     gap: 20px;
-    padding-bottom: 16px;
+    padding-bottom: 10px;
   }}
   .logo {{
-    height: 56px;
+    height: 46px;
     width: auto;
     object-fit: contain;
   }}
   .identity {{ text-align: center; }}
   .identity .name {{
-    font-size: 21px;
+    font-size: 19px;
     font-weight: 800;
     letter-spacing: 0.5px;
     text-transform: uppercase;
@@ -736,7 +769,13 @@ def render_medicine_bill_receipt(
     white-space: nowrap;
   }}
   .contact-block strong {{ color: var(--ink); font-weight: 600; }}
-  .header-rule {{ border: none; border-top: 2px solid var(--rule-strong); margin: 0 0 18px; }}
+  /* ---------- Density pass (2026-08-20) ----------
+     Every margin/padding value below is deliberately smaller than
+     render_registration_slip's own (which this template originally
+     copied verbatim) — this document has less content per slip and no
+     reason to consume as much vertical space; the goal is two slips
+     per printed A4 page instead of one. */
+  .header-rule {{ border: none; border-top: 2px solid var(--rule-strong); margin: 0 0 12px; }}
 
   /* ---------- Title box ---------- */
   .title-box {{
@@ -744,8 +783,8 @@ def render_medicine_bill_receipt(
     align-items: center;
     justify-content: space-between;
     border: 1.5px solid var(--rule-strong);
-    padding: 10px 18px;
-    margin-bottom: 24px;
+    padding: 8px 16px;
+    margin-bottom: 16px;
   }}
   .title-box .label {{
     font-size: 12px;
@@ -754,7 +793,7 @@ def render_medicine_bill_receipt(
     text-transform: uppercase;
   }}
   .title-box .token {{
-    font-size: 26px;
+    font-size: 22px;
     font-weight: 800;
     letter-spacing: 1px;
     font-family: 'Courier New', monospace;
@@ -765,7 +804,7 @@ def render_medicine_bill_receipt(
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-bottom: 10px;
+    margin-bottom: 6px;
   }}
   .section-heading .bar {{
     width: 4px;
@@ -784,7 +823,7 @@ def render_medicine_bill_receipt(
     justify-content: space-between;
     align-items: baseline;
     gap: 12px;
-    padding: 7px 0;
+    padding: 5px 0;
     border-bottom: 1px solid var(--rule);
   }}
   .row:last-child {{ border-bottom: none; }}
@@ -800,8 +839,19 @@ def render_medicine_bill_receipt(
     text-align: right;
   }}
 
+  /* ---------- Body columns (2026-08-20 addition) ----------
+     Same 2-column grid render_registration_slip's .body-grid already
+     established — the four remaining reference rows (two identity
+     fields removed entirely, see this function's own docstring) sit
+     two per column instead of stacked in one long column. */
+  .body-grid {{
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 28px;
+  }}
+
   /* ---------- Itemized table ---------- */
-  .items {{ margin-top: 26px; }}
+  .items {{ margin-top: 14px; }}
   table {{ width: 100%; border-collapse: collapse; }}
   thead th {{
     text-align: left;
@@ -811,11 +861,11 @@ def render_medicine_bill_receipt(
     text-transform: uppercase;
     color: var(--ink-soft);
     border-bottom: 1.5px solid var(--rule-strong);
-    padding: 0 0 8px;
+    padding: 0 0 6px;
   }}
   tbody td {{
     font-size: 13px;
-    padding: 8px 0;
+    padding: 5px 0;
     border-bottom: 1px solid var(--rule);
   }}
   th.qty, td.qty {{ text-align: center; width: 60px; }}
@@ -832,7 +882,7 @@ def render_medicine_bill_receipt(
     font-size: 14px;
     font-weight: 800;
     color: var(--ink);
-    padding-top: 12px;
+    padding-top: 8px;
     border-top: 2px solid var(--rule-strong);
   }}
   tfoot td.amount {{ text-align: right; }}
@@ -842,8 +892,8 @@ def render_medicine_bill_receipt(
     display: flex;
     gap: 18px;
     border: 1px solid var(--rule-strong);
-    padding: 12px 18px;
-    margin-top: 28px;
+    padding: 8px 14px;
+    margin-top: 14px;
   }}
   .note-box .note-label {{
     font-size: 11px;
@@ -906,7 +956,7 @@ def render_medicine_bill_receipt(
 
     <div class="title-box">
       <span class="label">Medicine Slip</span>
-      <span class="token">MED-{_escape(short_bill_id)}</span>
+      <span class="token">{_escape(token_display)}</span>
     </div>
 
     {reference_section}

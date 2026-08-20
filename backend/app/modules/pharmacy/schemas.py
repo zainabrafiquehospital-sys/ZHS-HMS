@@ -182,6 +182,10 @@ class MedicineBillOut(BaseModel):
 
     id: UUID
     visit_id: UUID | None
+    # This bill's own identifying number (2026-08-20 addition) — `None`
+    # only for bills created before this feature existed; see
+    # MedicineBill.queue_token's own docstring.
+    queue_token: str | None
     total_amount: Decimal
     amount_paid: Decimal
     status: MedicineBillStatus
@@ -206,6 +210,7 @@ class MedicineBillOut(BaseModel):
         return cls(
             id=bill.id,
             visit_id=bill.visit_id,
+            queue_token=bill.queue_token,
             total_amount=bill.total_amount,
             amount_paid=bill.amount_paid,
             status=bill.status,

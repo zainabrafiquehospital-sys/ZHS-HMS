@@ -248,6 +248,123 @@ async def test_full_pharmacy_lifecycle_via_http(api_client, real_session, grant_
     assert matching[0]["total_amount"] == "131.00"
 
 
+# ---------------------------------------------------------------------
+# Unified token sequence (2026-08-20 addition) — a MedicineBill draws
+# its own queue_token from the exact same Postgres sequence Visit uses,
+# so numbers interleave in true chronological order across both entity
+# types. See app/modules/pharmacy/models.py's MedicineBill.queue_token
+# docstring for the full mechanism.
+# ---------------------------------------------------------------------
+
+
+def _token_value(token: str) -> int:
+    """"Token #000295" -> 295, for numeric comparison in the tests
+    below — the exact format both VisitService._generate_queue_token
+    and PharmacyService._generate_queue_token produce."""
+    return int(token.removeprefix("Token #"))
+
+
+async def test_new_bill_has_a_queue_token_in_the_standard_format(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "bill-has-token")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}HasToken"
+    )
+
+    resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": None, "items": [{"medicine_id": medicine_id, "quantity": 1}]},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 201, resp.text
+    token = resp.json()["data"]["queue_token"]
+    assert token is not None
+    assert token.startswith("Token #")
+    assert _token_value(token) > 0
+
+
+async def test_two_bills_created_in_a_row_get_consecutive_tokens(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "bill-consecutive")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}Consecutive"
+    )
+
+    first_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": None, "items": [{"medicine_id": medicine_id, "quantity": 1}]},
+        headers=_auth_header(access_token),
+    )
+    second_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": None, "items": [{"medicine_id": medicine_id, "quantity": 1}]},
+        headers=_auth_header(access_token),
+    )
+
+    first_value = _token_value(first_resp.json()["data"]["queue_token"])
+    second_value = _token_value(second_resp.json()["data"]["queue_token"])
+    assert second_value == first_value + 1
+
+
+async def test_visit_and_medicine_bill_tokens_interleave_chronologically(
+    api_client, real_session, grant_permission
+):
+    """The core requirement, tested directly: registering a Visit, then
+    creating a MedicineBill, then registering a second Visit must
+    produce three strictly consecutive numbers (N, N+1, N+2) — never
+    two rows (of either type) sharing a number, never an unexplained
+    gap that "went to the other type" instead."""
+    actor, access_token = await _create_and_login(api_client, real_session, "interleave")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}Interleave"
+    )
+
+    def _register_visit_resp():
+        return api_client.post(
+            "/api/v1/reception/visits",
+            json={
+                "new_patient": {
+                    "full_name": f"{TEST_PATIENT_NAME_PREFIX}Interleave",
+                    "guardian_name": None,
+                    "gender": "female",
+                    "age_years": 29,
+                    "phone_number": "03001234567",
+                    "cnic": None,
+                    "address": None,
+                },
+                "procedure": "Consultation",
+                "amount": "1000.00",
+                "vitals_required": False,
+            },
+            headers=_auth_header(access_token),
+        )
+
+    visit_1_resp = await _register_visit_resp()
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": None, "items": [{"medicine_id": medicine_id, "quantity": 1}]},
+        headers=_auth_header(access_token),
+    )
+    visit_2_resp = await _register_visit_resp()
+
+    visit_1_value = _token_value(visit_1_resp.json()["data"]["visit"]["queue_token"])
+    bill_value = _token_value(bill_resp.json()["data"]["queue_token"])
+    visit_2_value = _token_value(visit_2_resp.json()["data"]["visit"]["queue_token"])
+
+    assert bill_value == visit_1_value + 1
+    assert visit_2_value == bill_value + 1
+
+
 async def test_standalone_walk_in_bill_has_no_visit(api_client, real_session, grant_permission):
     actor, access_token = await _create_and_login(api_client, real_session, "walk-in")
     await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
@@ -264,6 +381,72 @@ async def test_standalone_walk_in_bill_has_no_visit(api_client, real_session, gr
 
     assert resp.status_code == 201, resp.text
     assert resp.json()["data"]["visit_id"] is None
+
+
+async def test_print_bill_shows_its_own_queue_token_not_uuid_fragment(
+    api_client, real_session, grant_permission
+):
+    """The 2026-08-20 print redesign: a bill created after the unified
+    sequence exists shows its own real token in the title box, never
+    the old `MED-<uuid fragment>` placeholder."""
+    actor, access_token = await _create_and_login(api_client, real_session, "print-own-token")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor, PERMISSION_PHARMACY_READ)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}PrintOwnToken"
+    )
+
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": None, "items": [{"medicine_id": medicine_id, "quantity": 1}]},
+        headers=_auth_header(access_token),
+    )
+    bill_id = bill_resp.json()["data"]["id"]
+    token = bill_resp.json()["data"]["queue_token"]
+
+    print_resp = await api_client.get(
+        f"/api/v1/pharmacy/bills/{bill_id}/print", headers=_auth_header(access_token)
+    )
+    assert print_resp.status_code == 200
+    assert token in print_resp.text
+    assert "MED-" not in print_resp.text
+
+
+async def test_print_bill_omits_mr_number_and_queue_token_rows(
+    api_client, real_session, grant_permission
+):
+    """The Patient/Visit Reference section no longer shows MR Number or
+    a separate Queue Token row at all (2026-08-20) — this bill's own
+    number in the title box is the slip's one and only number."""
+    actor, access_token = await _create_and_login(api_client, real_session, "print-no-mr-row")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor, PERMISSION_PHARMACY_READ)
+    visit_id = await _register_visit(api_client, access_token, "NoMrRow")
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}NoMrRow"
+    )
+
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": visit_id, "items": [{"medicine_id": medicine_id, "quantity": 1}]},
+        headers=_auth_header(access_token),
+    )
+    bill_id = bill_resp.json()["data"]["id"]
+
+    print_resp = await api_client.get(
+        f"/api/v1/pharmacy/bills/{bill_id}/print", headers=_auth_header(access_token)
+    )
+    assert print_resp.status_code == 200
+    assert "MR Number" not in print_resp.text
+    assert "Queue Token" not in print_resp.text
+    # The reference section's rows are still there, just fewer and
+    # 2-column now.
+    assert "Patient Name" in print_resp.text
+    assert "Contact Number" in print_resp.text
+    assert "body-grid" in print_resp.text
 
 
 async def test_create_bill_with_manual_patient_details_prints_correctly(
@@ -308,9 +491,10 @@ async def test_create_bill_with_manual_patient_details_prints_correctly(
     assert "Zainab Rafique" in print_resp.text
     assert "34 years" in print_resp.text
     assert "03211234567" in print_resp.text
-    # No real Patient record exists for this bill — the MR Number row
-    # must render the same "unknown" placeholder a walk-in's queue
-    # token row already uses, never a fabricated value.
+    # Manual Entry still renders the Patient/Visit Reference section
+    # (Name/Age/Contact), just never the walk-in-only "Sale Type" branch
+    # — MR Number is gone from this document entirely regardless of
+    # which of the three reference states a bill is in (2026-08-20).
     assert "Sale Type" not in print_resp.text  # not the walk-in-only branch
 
     list_resp = await api_client.get(

@@ -278,12 +278,19 @@ async def print_bill(
     the pre-existing behavior, unchanged). `render_medicine_bill_receipt`
     itself needs no changes for this — it already renders the reference
     section whenever `patient_full_name` is not `None`, regardless of
-    which of these three sources supplied it."""
+    which of these three sources supplied it.
+
+    The Visit is still fetched (when linked) purely for its Patient —
+    `visit.queue_token` is no longer read here at all (2026-08-20
+    revision): the slip's own identifying number is now `bill.
+    queue_token`, this bill's own draw from the unified sequence, never
+    the linked Visit's own token — see MedicineBill.queue_token's own
+    docstring. MR Number is gone from this document entirely, so
+    `patient.mr_number` is likewise no longer read here."""
     bill = await pharmacy_service.get_bill(bill_id)
     items = await pharmacy_service.get_bill_items(bill.id)
     payments = await pharmacy_service.get_bill_payments(bill.id)
 
-    visit = None
     patient = None
     if bill.visit_id is not None:
         visit = await visit_service.get_visit(bill.visit_id)
@@ -291,17 +298,14 @@ async def print_bill(
 
     if patient is not None:
         patient_full_name = patient.full_name
-        patient_mr_number = patient.mr_number
         patient_age_years = patient.age_years
         patient_phone_number = patient.phone_number
     elif bill.manual_patient_name is not None:
         patient_full_name = bill.manual_patient_name
-        patient_mr_number = None
         patient_age_years = bill.manual_patient_age
         patient_phone_number = bill.manual_patient_phone
     else:
         patient_full_name = None
-        patient_mr_number = None
         patient_age_years = None
         patient_phone_number = None
 
@@ -310,9 +314,8 @@ async def print_bill(
         display_timezone=settings.display_timezone,
         bill_id=str(bill.id),
         bill_created_at=bill.created_at,
-        visit_queue_token=visit.queue_token if visit else None,
+        bill_queue_token=bill.queue_token,
         patient_full_name=patient_full_name,
-        patient_mr_number=patient_mr_number,
         patient_age_years=patient_age_years,
         patient_phone_number=patient_phone_number,
         line_items=[

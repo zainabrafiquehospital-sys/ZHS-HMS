@@ -29,7 +29,11 @@ Four entities:
   `discount_amount`/`discount_reason` (2026-08-19 addition) are an
   optional fixed-amount discount applied at creation time — see
   `discount_amount`'s own column docstring below and
-  PharmacyService.create_bill's docstring for the full mechanism. A
+  PharmacyService.create_bill's docstring for the full mechanism.
+  `queue_token` (2026-08-20 addition) is this bill's own identifying
+  number, drawn from the same unified Postgres sequence Visit uses —
+  see that column's own docstring for the full mechanism, and
+  permanently-nullable rationale for bills predating this feature. A
   bill has at most one of a linked `visit_id`, complete manual patient
   fields (all three together, never partial), or neither (an anonymous
   walk-in) — enforced by this table's own CHECK constraints below, not
@@ -53,7 +57,17 @@ from decimal import Decimal
 from enum import Enum as PyEnum
 from uuid import UUID
 
-from sqlalchemy import Boolean, CheckConstraint, Enum, ForeignKey, Index, Integer, Numeric, String
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.shared.base_entity import BaseEntity
@@ -109,6 +123,22 @@ class MedicineBill(BaseEntity):
     __tablename__ = "medicine_bill"
     __table_args__ = (
         Index("ix_medicine_bill_visit_id", "visit_id"),
+        # Mirrors app/modules/visits/models.py's identical
+        # `ix_visit_queue_token_active` — unique among active
+        # (non-soft-deleted) rows, but a unique index never rejects
+        # multiple NULLs (Postgres treats each NULL as distinct), which
+        # is exactly what every pre-2026-08-20 bill has. Structurally,
+        # two rows (of either MedicineBill or Visit) can never actually
+        # collide on a real token value regardless, since both draw
+        # from the same single Postgres sequence — this index is about
+        # lookup performance/integrity, not preventing an impossible
+        # collision.
+        Index(
+            "ix_medicine_bill_queue_token_active",
+            "queue_token",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         CheckConstraint("total_amount >= 0", name="ck_medicine_bill_total_amount_non_negative"),
         CheckConstraint("amount_paid >= 0", name="ck_medicine_bill_amount_paid_non_negative"),
         CheckConstraint(
@@ -141,6 +171,21 @@ class MedicineBill(BaseEntity):
     # Nullable: a medicine bill may stand alone as a walk-in sale with no
     # registered Visit — see this module's docstring.
     visit_id: Mapped[UUID | None] = mapped_column(ForeignKey("visit.id"))
+    # This bill's own identifying number (2026-08-20 addition) — drawn
+    # from the exact same Postgres sequence Visit.queue_token uses (see
+    # app/modules/visits/constants.py's QUEUE_TOKEN_SEQUENCE_NAME
+    # docstring for the full unification rationale), formatted
+    # identically ("Token #NNNNNN"). Deliberately *permanently*
+    # nullable, unlike every other additive column this codebase has
+    # backfilled to a real value: every bill created before this
+    # feature existed has no honest value to backfill here — there is
+    # no way to reconstruct where it would have fallen in a unified
+    # sequence retroactively — so old rows simply stay NULL forever,
+    # and only bills created from this point forward ever get a real
+    # token. The printed slip falls back to the pre-existing
+    # `MED-<uuid fragment>` display when this is NULL (see
+    # render_medicine_bill_receipt's docstring).
+    queue_token: Mapped[str | None] = mapped_column(String(20))
     total_amount: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)
     # Same shape as app/modules/billing/models.py's Invoice: amount_paid
     # is a maintained running total (updated in the same transaction as

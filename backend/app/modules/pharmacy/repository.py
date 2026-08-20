@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import Sequence, func, select
 from sqlalchemy.orm import InstrumentedAttribute
 
 from app.modules.pharmacy.models import (
@@ -15,7 +15,18 @@ from app.modules.pharmacy.models import (
     MedicineBillItem,
     MedicineBillPayment,
 )
+from app.modules.visits.constants import QUEUE_TOKEN_SEQUENCE_NAME
 from app.shared.repository.base_repository import BaseRepository
+
+# The exact same Postgres sequence app/modules/visits/repository.py's
+# VisitRepository draws from — see QUEUE_TOKEN_SEQUENCE_NAME's own
+# docstring (2026-08-20 addition) for the full unification rationale.
+# Deliberately not a second, independent Sequence object with a
+# different name: this is the single source of every token number
+# either a Visit or a MedicineBill can ever get, which is what
+# guarantees true chronological interleaving with no possible
+# collision.
+_queue_token_sequence = Sequence(QUEUE_TOKEN_SEQUENCE_NAME)
 
 # Whitelist of columns MedicineRepository.list_all may sort by — never
 # accept a raw column/attribute name from a caller, same rationale as
@@ -74,6 +85,18 @@ class MedicineRepository(BaseRepository[Medicine]):
 
 class MedicineBillRepository(BaseRepository[MedicineBill]):
     model = MedicineBill
+
+    async def next_queue_token_value(self) -> int:
+        """Draws the next value from the exact same Postgres sequence
+        `VisitRepository.next_queue_token_value` draws from — see
+        `_queue_token_sequence`'s own module-level docstring above and
+        `MedicineBill.queue_token`'s column docstring for the full
+        unification rationale (2026-08-20 addition). Race-safe the same
+        way the Visit side already is: a Postgres sequence's `nextval`
+        is atomic, so two concurrent bill-creation (or visit-
+        registration) requests can never receive the same value."""
+        result = await self.session.execute(_queue_token_sequence.next_value().select())
+        return result.scalar_one()
 
     async def get_for_update(self, medicine_bill_id: UUID) -> MedicineBill | None:
         """Row-locking variant of `get_by_id`, for `PharmacyService.

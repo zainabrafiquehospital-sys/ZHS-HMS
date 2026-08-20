@@ -348,10 +348,6 @@ function MedicineBillsPanel({ selectedDate }) {
   const [printError, setPrintError] = useState(null);
   const [payingBill, setPayingBill] = useState(null);
 
-  const totalRevenue = useMemo(
-    () => (bills ?? []).reduce((sum, bill) => sum + Number(bill.total_amount), 0),
-    [bills],
-  );
   const revenueByActor = useMemo(
     () => resolveActorSlices(computeRevenueByActor(bills, 'total_amount'), usersById),
     [bills, usersById],
@@ -375,9 +371,11 @@ function MedicineBillsPanel({ selectedDate }) {
 
   return (
     <div className="flex flex-col gap-5">
+      {/* "Total Revenue" removed from here (2026-08-20) — it's now
+          covered, alongside Visit Revenue, by the always-visible combined
+          revenue row above the tabs (see AdminOverview's own render). */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <SummaryTile icon={Pill} label="Total Bills" value={rows.length} />
-        <SummaryTile icon={Receipt} label="Total Revenue" value={formatPkr(totalRevenue)} />
       </div>
 
       <div>
@@ -503,10 +501,21 @@ export function AdminOverview() {
   const patientsById = usePatientsForVisits(visits);
   const receptionistsById = useReceptionistsForVisits(visits);
   const debouncedSearch = useDebouncedValue(searchTerm, 200);
+  // Fetched here too (2026-08-20 addition), not only inside
+  // MedicineBillsPanel below — the combined revenue row must be visible
+  // regardless of which tab is active, and TanStack Query dedupes this
+  // against MedicineBillsPanel's own identical `['pharmacy', 'bills',
+  // 'day', selectedDate]` query (same call, same cache entry) rather
+  // than doubling the network request.
+  const { data: medicineBills } = useMedicineBillsForDay(selectedDate);
 
   const totalRevenue = useMemo(
     () => visits.reduce((sum, visit) => sum + Number(visit.amount), 0),
     [visits],
+  );
+  const medicineRevenue = useMemo(
+    () => (medicineBills ?? []).reduce((sum, bill) => sum + Number(bill.total_amount), 0),
+    [medicineBills],
   );
   const revenueByActor = useMemo(
     () => resolveActorSlices(computeRevenueByActor(visits, 'amount'), receptionistsById),
@@ -552,6 +561,23 @@ export function AdminOverview() {
 
       <PendingApprovals />
 
+      {/* Combined revenue row (2026-08-20 addition) — visible regardless
+          of which tab is active below, same three-way breakdown as the
+          receptionist's own "My Revenue" view (MyRegistrations.jsx):
+          Visit Revenue, Medicine Revenue, and their sum. Previously
+          Admin Overview only ever showed Visit revenue (the Visits tab's
+          own "Total Revenue" tile), with Medicine revenue nowhere in
+          view unless the Medicine Bills tab happened to be open. */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <SummaryTile icon={Receipt} label="Visit Revenue" value={formatPkr(totalRevenue)} />
+        <SummaryTile icon={Receipt} label="Medicine Revenue" value={formatPkr(medicineRevenue)} />
+        <SummaryTile
+          icon={Receipt}
+          label="Total Revenue"
+          value={formatPkr(totalRevenue + medicineRevenue)}
+        />
+      </div>
+
       <Card>
         <CardHeader className="flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
           <Tabs value={activeTab} onValueChange={setActiveTab} tabs={OVERVIEW_TABS} />
@@ -566,9 +592,10 @@ export function AdminOverview() {
             <PageError error={error} reset={refetch} message="Couldn't load visit activity." />
           ) : (
             <>
+              {/* "Total Revenue" removed from here (2026-08-20) — see the
+                  always-visible combined revenue row above the tabs. */}
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <SummaryTile icon={ClipboardList} label="Total Visits" value={visits.length} />
-                <SummaryTile icon={Receipt} label="Total Revenue" value={formatPkr(totalRevenue)} />
               </div>
 
               <div>

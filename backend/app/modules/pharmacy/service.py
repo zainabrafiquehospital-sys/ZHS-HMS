@@ -73,6 +73,7 @@ from app.modules.pharmacy.repository import (
     MedicineBillRepository,
     MedicineRepository,
 )
+from app.modules.visits.constants import QUEUE_TOKEN_PAD_WIDTH, QUEUE_TOKEN_PREFIX
 from app.modules.visits.service import VisitService
 from app.shared.audit.repository import AuditLogRepository
 from app.shared.money import quantize_money
@@ -99,6 +100,16 @@ class PharmacyService:
         self._payment_repo = medicine_bill_payment_repository
         self._visit_service = visit_service
         self._audit_repo = audit_repository
+
+    async def _generate_queue_token(self) -> str:
+        """Mirrors `VisitService._generate_queue_token` exactly — same
+        prefix/pad-width formatting, and (2026-08-20 addition) the same
+        underlying Postgres sequence, drawn via
+        `MedicineBillRepository.next_queue_token_value`. This is what
+        makes a Visit and a MedicineBill created moments apart get
+        truly consecutive, interleaved numbers."""
+        value = await self._bill_repo.next_queue_token_value()
+        return f"{QUEUE_TOKEN_PREFIX}{value:0{QUEUE_TOKEN_PAD_WIDTH}d}"
 
     # ------------------------------------------------------------------
     # Medicine price list (Admin-only, pharmacy:manage)
@@ -203,6 +214,13 @@ class PharmacyService:
         before anything is written, so a bad line item never leaves a
         partially-built bill behind.
 
+        Every new bill draws its own `queue_token` (2026-08-20 addition)
+        from the exact same unified Postgres sequence Visit uses (see
+        `_generate_queue_token`'s own docstring) — this is a fresh draw
+        every time, never the linked Visit's own token, so a bill
+        created between two visit registrations still gets the next
+        number in true chronological order across both entity types.
+
         `initial_payment_amount` (optional, defaults to none) folds
         collecting whatever the patient is paying right now into this
         same call and the same commit, via the shared `_apply_payment`
@@ -273,6 +291,7 @@ class PharmacyService:
 
         bill = MedicineBill(
             visit_id=visit_id,
+            queue_token=await self._generate_queue_token(),
             total_amount=total,
             amount_paid=_ZERO,
             status=MedicineBillStatus.UNPAID,
