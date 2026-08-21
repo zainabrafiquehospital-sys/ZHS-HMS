@@ -54,8 +54,7 @@ async def _make_visit_waiting_doctor(reception_service, doctor, suffix):
             "address": None,
         },
         doctor_user_id=doctor.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
     return visit
@@ -78,8 +77,7 @@ async def _make_unassigned_visit_waiting_doctor(reception_service, receptionist,
             "address": None,
         },
         doctor_user_id=None,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
     return visit

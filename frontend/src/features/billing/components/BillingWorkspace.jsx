@@ -16,6 +16,7 @@ import {
   usePrintInvoice,
 } from '@/features/billing/hooks/useBilling';
 import { generateInvoiceSchema, recordPaymentSchema } from '@/features/billing/schemas/billingSchemas';
+import { VisitProcedureDisplay } from '@/features/visits/components/VisitProcedureDisplay';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
@@ -138,8 +139,20 @@ function GenerateInvoiceForm({ visitId, visit }) {
     // discount_amount/initial_payment_amount both start blank — blank
     // always means "not applicable", never a hidden "pay in full" or
     // "no discount" shortcut (see generateInvoiceSchema's comment).
+    //
+    // `base_description` (2026-08-21 revision): for an itemized visit,
+    // a comma-joined suggestion of its procedure names — this is a
+    // one-time, freely-editable *prefill* for the Invoice's own
+    // separate description field, not a display of the visit's
+    // procedures (that's `visit.procedure_items` below, rendered
+    // itemized) — so joining names here for a starting-point suggestion
+    // the receptionist can retype before submitting is a different
+    // concern from the "never a joined summary string" display rule.
     defaultValues: {
-      base_description: visit?.procedure ?? '',
+      base_description:
+        visit?.procedure_items?.length > 0
+          ? visit.procedure_items.map((item) => item.name).join(', ')
+          : (visit?.procedure ?? ''),
       base_amount: visit?.amount ?? '',
       discount_amount: '',
       discount_reason: '',
@@ -473,7 +486,9 @@ export function BillingWorkspace({ visitId }) {
           {visit ? (
             <>
               <span>Queue Token: <span className="font-mono text-foreground">{visit.queue_token}</span></span>
-              <span>Procedure: <span className="text-foreground">{visit.procedure}</span></span>
+              <span>
+                Procedure: <VisitProcedureDisplay visit={visit} className="inline text-foreground" />
+              </span>
               <span>
                 Status:{' '}
                 <Badge variant="outline" className="capitalize">

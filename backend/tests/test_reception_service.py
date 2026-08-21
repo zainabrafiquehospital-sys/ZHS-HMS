@@ -12,7 +12,11 @@ from app.modules.patients.models import PatientGender
 from app.modules.pharmacy.models import MedicineCategory
 from app.modules.queue.models import QueueDestination, QueueEntryStatus
 from app.modules.reception.exceptions import VisitHasSettledInvoiceError
-from app.modules.visits.exceptions import VisitNotFoundError
+from app.modules.visits.exceptions import (
+    VisitAlreadyItemizedError,
+    VisitNotFoundError,
+    VisitNotItemizedError,
+)
 from app.modules.visits.models import Visit, VisitStatus
 from app.modules.visits.repository import VisitRepository
 from app.shared.audit.models import AuditEntry
@@ -46,6 +50,40 @@ def _new_patient_payload(suffix: str) -> dict:
     }
 
 
+async def _make_legacy_visit(
+    real_session, patient_service, actor: User, suffix: str, *, amount=Decimal("1500.00")
+) -> Visit:
+    """A visit with no `VisitProcedureItem` rows at all — mirrors any
+    visit registered before 2026-08-21 (see app/modules/visits/models.py's
+    `VisitProcedureItem` docstring) via direct ORM construction, bypassing
+    `VisitService.register_visit` (which always itemizes a visit created
+    from now on). Used to test that the original flat procedure/amount
+    admin-edit path is completely unaffected by the itemized-procedures
+    feature for exactly the visits it was never meant to touch."""
+    patient = await patient_service.register_patient(
+        actor=actor,
+        full_name=f"{TEST_PATIENT_NAME_PREFIX}Legacy{suffix}",
+        guardian_name=None,
+        gender=PatientGender.FEMALE,
+        age_years=30,
+        phone_number="03001234567",
+        cnic=None,
+        address=None,
+    )
+    visit = Visit(
+        patient_id=patient.id,
+        doctor_user_id=actor.id,
+        queue_token=f"GYN-{uuid7().hex[-8:]}",
+        procedure="Consultation",
+        amount=amount,
+        vitals_required=False,
+        status=VisitStatus.REGISTERED,
+        created_by=actor.id,
+        updated_by=actor.id,
+    )
+    return await VisitRepository(real_session).add(visit)
+
+
 async def test_register_visit_with_new_patient_routes_to_vitals(real_session, reception_service):
     actor = await _make_actor(real_session, "new-patient-vitals")
 
@@ -54,8 +92,7 @@ async def test_register_visit_with_new_patient_routes_to_vitals(real_session, re
         patient_id=None,
         new_patient=_new_patient_payload("A"),
         doctor_user_id=actor.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=True,
     )
 
@@ -73,8 +110,7 @@ async def test_register_visit_with_new_patient_routes_to_doctor(real_session, re
         patient_id=None,
         new_patient=_new_patient_payload("B"),
         doctor_user_id=actor.id,
-        procedure="Follow-up",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Follow-up", Decimal("1500.00"))],
         vitals_required=False,
     )
 
@@ -102,8 +138,7 @@ async def test_register_visit_with_existing_patient_reuses_same_patient(
         patient_id=existing.id,
         new_patient=None,
         doctor_user_id=actor.id,
-        procedure="Follow-up",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Follow-up", Decimal("1500.00"))],
         vitals_required=False,
     )
 
@@ -120,8 +155,7 @@ async def test_register_visit_with_unknown_patient_id_raises(real_session, recep
             patient_id=uuid7(),
             new_patient=None,
             doctor_user_id=actor.id,
-            procedure="Consultation",
-            amount=Decimal("1500.00"),
+            procedures=[(None, "Consultation", Decimal("1500.00"))],
             vitals_required=False,
         )
 
@@ -143,8 +177,7 @@ async def test_register_visit_auto_assigns_least_busy_online_doctor(
         patient_id=None,
         new_patient=_new_patient_payload("AutoAssign"),
         doctor_user_id=None,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
 
@@ -164,8 +197,7 @@ async def test_register_visit_proceeds_unassigned_when_no_doctor_online(
         patient_id=None,
         new_patient=_new_patient_payload("NoDoctor"),
         doctor_user_id=None,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
 
@@ -183,8 +215,7 @@ async def test_cancel_visit_closes_active_queue_entry_and_cancels_visit(
         patient_id=None,
         new_patient=_new_patient_payload("C"),
         doctor_user_id=actor.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
 
@@ -216,8 +247,7 @@ async def _make_visit_waiting_billing(reception_service, consultation_service, d
         patient_id=None,
         new_patient=_new_patient_payload(suffix),
         doctor_user_id=doctor.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
     consultation = await consultation_service.start_consultation(actor=doctor, visit_id=visit.id)
@@ -230,16 +260,13 @@ async def _make_visit_waiting_billing(reception_service, consultation_service, d
 async def test_admin_update_visit_updates_patient_and_visit_fields(
     real_session, reception_service, patient_service
 ):
+    """Uses a legacy (non-itemized) visit — this is exactly the flat
+    procedure/amount edit path's original, still-fully-supported case
+    (see `_make_legacy_visit`'s own docstring); the itemized-visit
+    sibling of this same admin action is covered by
+    `test_admin_replace_procedure_items_*` below."""
     admin = await _make_actor(real_session, "update-admin")
-    _patient, visit, _entry = await reception_service.register_visit(
-        actor=admin,
-        patient_id=None,
-        new_patient=_new_patient_payload("UpdateTarget"),
-        doctor_user_id=admin.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
-        vitals_required=False,
-    )
+    visit = await _make_legacy_visit(real_session, patient_service, admin, "UpdateTarget")
 
     updated_patient, updated_visit = await reception_service.admin_update_visit(
         actor=admin,
@@ -258,17 +285,11 @@ async def test_admin_update_visit_updates_patient_and_visit_fields(
     assert updated_patient.phone_number == "03001234567"
 
 
-async def test_admin_update_visit_with_no_updates_is_a_noop(real_session, reception_service):
+async def test_admin_update_visit_with_no_updates_is_a_noop(
+    real_session, reception_service, patient_service
+):
     admin = await _make_actor(real_session, "update-noop-admin")
-    _patient, visit, _entry = await reception_service.register_visit(
-        actor=admin,
-        patient_id=None,
-        new_patient=_new_patient_payload("UpdateNoop"),
-        doctor_user_id=admin.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
-        vitals_required=False,
-    )
+    visit = await _make_legacy_visit(real_session, patient_service, admin, "UpdateNoop")
 
     patient, updated_visit = await reception_service.admin_update_visit(
         actor=admin, visit_id=visit.id, updates={}
@@ -276,6 +297,87 @@ async def test_admin_update_visit_with_no_updates_is_a_noop(real_session, recept
 
     assert updated_visit.procedure == "Consultation"
     assert updated_visit.amount == Decimal("1500.00")
+
+
+async def test_admin_update_visit_rejects_flat_fields_against_an_itemized_visit(
+    real_session, reception_service
+):
+    """The inverse of the legacy-visit tests above — a visit registered
+    from 2026-08-21 onward always has procedure items, so its flat
+    (unused) procedure/amount fields are rejected outright rather than
+    silently accepted (see VisitService.update_visit_details's own
+    docstring for the `VisitAlreadyItemizedError` this raises)."""
+    admin = await _make_actor(real_session, "update-itemized-admin")
+    _patient, visit, _entry = await reception_service.register_visit(
+        actor=admin,
+        patient_id=None,
+        new_patient=_new_patient_payload("UpdateItemizedReject"),
+        doctor_user_id=admin.id,
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
+        vitals_required=False,
+    )
+
+    with pytest.raises(VisitAlreadyItemizedError):
+        await reception_service.admin_update_visit(
+            actor=admin, visit_id=visit.id, updates={"procedure": "Ultrasound"}
+        )
+
+
+async def test_admin_replace_procedure_items_replaces_the_whole_set(
+    real_session, reception_service, visit_service
+):
+    """The itemized-visit sibling of the legacy flat-field edit above —
+    replaces the entire procedure-item set in one call and recomputes
+    `Visit.amount` from the new subtotal against the visit's existing,
+    untouched `discount_amount` (see VisitService.
+    admin_replace_procedure_items's own docstring)."""
+    admin = await _make_actor(real_session, "replace-items-admin")
+    _patient, visit, _entry = await reception_service.register_visit(
+        actor=admin,
+        patient_id=None,
+        new_patient=_new_patient_payload("ReplaceItems"),
+        doctor_user_id=admin.id,
+        procedures=[(None, "Checkup", Decimal("800.00")), (None, "Scan", Decimal("700.00"))],
+        vitals_required=False,
+        discount_amount=Decimal("200.00"),
+    )
+    assert visit.amount == Decimal("1300.00")  # 1500 subtotal - 200 discount
+
+    _patient, updated_visit = await reception_service.admin_update_visit(
+        actor=admin,
+        visit_id=visit.id,
+        updates={},
+        procedures=[(None, "Ultrasound", Decimal("2000.00"))],
+    )
+
+    items = await visit_service.list_procedure_items(visit.id)
+    assert len(items) == 1
+    assert items[0].name == "Ultrasound"
+    assert items[0].amount == Decimal("2000.00")
+    # Discount is untouched by this action (a separately confirmed,
+    # explicit scope decision) — recomputed against the SAME 200.00
+    # discount against the NEW 2000.00 subtotal.
+    assert updated_visit.discount_amount == Decimal("200.00")
+    assert updated_visit.amount == Decimal("1800.00")
+
+
+async def test_admin_replace_procedure_items_rejects_against_a_legacy_visit(
+    real_session, reception_service, patient_service
+):
+    """The inverse of the itemized-visit test above — a visit registered
+    before 2026-08-21 has no procedure items to replace at all (see
+    VisitService.admin_replace_procedure_items's own docstring for the
+    `VisitNotItemizedError` this raises)."""
+    admin = await _make_actor(real_session, "replace-items-legacy-admin")
+    visit = await _make_legacy_visit(real_session, patient_service, admin, "ReplaceItemsLegacy")
+
+    with pytest.raises(VisitNotItemizedError):
+        await reception_service.admin_update_visit(
+            actor=admin,
+            visit_id=visit.id,
+            updates={},
+            procedures=[(None, "Ultrasound", Decimal("2000.00"))],
+        )
 
 
 async def test_admin_delete_visit_soft_deletes_and_closes_active_queue_entry(
@@ -287,8 +389,7 @@ async def test_admin_delete_visit_soft_deletes_and_closes_active_queue_entry(
         patient_id=None,
         new_patient=_new_patient_payload("DeleteTarget"),
         doctor_user_id=admin.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
     assert await queue_service.get_active_for_visit(visit.id) is not None
@@ -401,8 +502,7 @@ async def test_get_own_revenue_is_scoped_to_the_caller_only(
         patient_id=None,
         new_patient=_new_patient_payload("RevenueOwnA"),
         doctor_user_id=receptionist_a.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
     await reception_service.register_visit(
@@ -410,8 +510,7 @@ async def test_get_own_revenue_is_scoped_to_the_caller_only(
         patient_id=None,
         new_patient=_new_patient_payload("RevenueOwnB"),
         doctor_user_id=receptionist_b.id,
-        procedure="Consultation",
-        amount=Decimal("9999.00"),
+        procedures=[(None, "Consultation", Decimal("9999.00"))],
         vitals_required=False,
     )
 
@@ -438,8 +537,7 @@ async def test_get_own_revenue_includes_medicine_bills_in_breakdown(
         patient_id=None,
         new_patient=_new_patient_payload("RevenueMedVisit"),
         doctor_user_id=receptionist.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
     await pharmacy_service.create_bill(
@@ -465,8 +563,7 @@ async def test_clear_own_revenue_resets_display_but_leaves_data_intact(
         patient_id=None,
         new_patient=_new_patient_payload("RevenueClear"),
         doctor_user_id=receptionist.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
 
@@ -510,8 +607,7 @@ async def test_clear_own_revenue_does_not_affect_admins_alltime_view(
         patient_id=None,
         new_patient=_new_patient_payload("RevenueAdminView"),
         doctor_user_id=receptionist.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
 
@@ -531,8 +627,7 @@ async def test_clear_own_revenue_only_affects_the_caller(real_session, reception
         patient_id=None,
         new_patient=_new_patient_payload("RevenueIndepA"),
         doctor_user_id=receptionist_a.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
 
@@ -611,8 +706,7 @@ async def test_get_own_revenue_excludes_visits_older_than_24h_even_without_manua
         patient_id=None,
         new_patient=_new_patient_payload("Revenue24hOld"),
         doctor_user_id=receptionist.id,
-        procedure="Consultation",
-        amount=Decimal("100.00"),
+        procedures=[(None, "Consultation", Decimal("100.00"))],
         vitals_required=False,
     )
     old_visit = await _make_backdated_visit(
@@ -655,8 +749,7 @@ async def test_get_own_revenue_manual_clear_within_24h_still_narrows_the_window(
         patient_id=None,
         new_patient=_new_patient_payload("Revenue24hBeforeClear"),
         doctor_user_id=receptionist.id,
-        procedure="Consultation",
-        amount=Decimal("1000.00"),
+        procedures=[(None, "Consultation", Decimal("1000.00"))],
         vitals_required=False,
     )
 
@@ -667,8 +760,7 @@ async def test_get_own_revenue_manual_clear_within_24h_still_narrows_the_window(
         patient_id=None,
         new_patient=_new_patient_payload("Revenue24hAfterClear"),
         doctor_user_id=receptionist.id,
-        procedure="Consultation",
-        amount=Decimal("500.00"),
+        procedures=[(None, "Consultation", Decimal("500.00"))],
         vitals_required=False,
     )
 
@@ -697,8 +789,7 @@ async def test_get_own_revenue_manual_clear_older_than_24h_is_superseded_by_auto
         patient_id=None,
         new_patient=_new_patient_payload("Revenue24hStaleClearSeed"),
         doctor_user_id=receptionist.id,
-        procedure="Consultation",
-        amount=Decimal("0.01"),
+        procedures=[(None, "Consultation", Decimal("0.01"))],
         vitals_required=False,
     )
     visit = await _make_backdated_visit(
@@ -735,8 +826,7 @@ async def test_get_own_revenue_24h_window_does_not_affect_admins_alltime_view(
         patient_id=None,
         new_patient=_new_patient_payload("Revenue24hAdminViewSeed"),
         doctor_user_id=receptionist.id,
-        procedure="Consultation",
-        amount=Decimal("0.01"),
+        procedures=[(None, "Consultation", Decimal("0.01"))],
         vitals_required=False,
     )
     await _make_backdated_visit(

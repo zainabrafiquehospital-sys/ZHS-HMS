@@ -18,13 +18,6 @@ const newPatientSchema = z.object({
   address: z.string().max(2000).optional().or(z.literal('')),
 });
 
-const positiveAmount = z
-  .union([z.string(), z.number()])
-  .transform((value) => (value === '' || value === undefined ? undefined : Number(value)))
-  .refine((value) => value !== undefined && Number.isFinite(value) && value > 0, {
-    message: 'Enter an amount greater than 0',
-  });
-
 // Blank/zero/untouched all mean "no discount" — same convention as
 // features/pharmacy/schemas/pharmacySchemas.js's identical
 // nonNegativeAmount (duplicated locally rather than imported cross-
@@ -40,20 +33,26 @@ const nonNegativeAmount = z
 // No doctor-selection field at all — doctor assignment is always
 // automatic (Phase 6 fast-registration §4), never a receptionist choice.
 // discountAmount/discountReason (2026-08-19 addition) — an optional
-// flat discount off `amount`, applied at registration time; reason is
-// always optional here, same product decision as the medicine-bill
-// discount (no cross-field "reason required" refine, unlike Billing's
-// own generateInvoiceSchema). Whether these fields are shown/applied
-// at all is owned by the "Apply Discount" checkbox in
-// RegisterVisitForm.jsx, not by this schema.
+// flat discount off the procedures' combined total, applied at
+// registration time; reason is always optional here, same product
+// decision as the medicine-bill discount (no cross-field "reason
+// required" refine, unlike Billing's own generateInvoiceSchema).
+// Whether these fields are shown/applied at all is owned by the
+// "Apply Discount" checkbox in RegisterVisitForm.jsx, not by this
+// schema.
+//
+// `procedure`/`amount` (2026-08-21 removal) are gone from this schema
+// entirely — replaced by the itemized `procedureItems` list, which is
+// plain local state in RegisterVisitForm.jsx (not a registered form
+// field here), the same way `applyDiscount`/the discount fields'
+// visibility is already handled ad hoc rather than through this
+// schema. See ProcedureItemsEditor.jsx's own docstring.
 export const registerVisitSchema = z
   .object({
     patientMode: z.enum(['new', 'existing']),
     existingPatientId: z.string().optional(),
     existingPatientLabel: z.string().optional(),
     newPatient: newPatientSchema.optional(),
-    procedure: z.string().min(1, 'Procedure is required').max(200),
-    amount: positiveAmount,
     vitalsRequired: z.boolean().default(false),
     discountAmount: nonNegativeAmount,
     discountReason: z.string().max(200).optional(),

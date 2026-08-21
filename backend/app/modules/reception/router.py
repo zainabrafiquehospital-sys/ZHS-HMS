@@ -51,6 +51,7 @@ router = APIRouter(prefix="/reception", tags=["reception"])
 async def register_visit(
     payload: RegisterVisitRequest,
     reception_service: ReceptionService = Depends(get_reception_service),
+    visit_service: VisitService = Depends(get_visit_service),
     actor: User = Depends(require_permission(PERMISSION_RECEPTION_REGISTER_VISIT)),
 ) -> dict:
     patient, visit, queue_entry = await reception_service.register_visit(
@@ -58,15 +59,17 @@ async def register_visit(
         patient_id=payload.patient_id,
         new_patient=payload.new_patient.model_dump() if payload.new_patient else None,
         doctor_user_id=None,
-        procedure=payload.procedure,
-        amount=payload.amount,
+        procedures=[
+            (item.procedure_id, item.name, item.amount) for item in payload.procedures
+        ],
         vitals_required=payload.vitals_required,
         discount_amount=payload.discount_amount,
         discount_reason=payload.discount_reason,
     )
+    procedure_items = await visit_service.list_procedure_items(visit.id)
     response = RegisterVisitResponse(
         patient=PatientOut.from_patient(patient),
-        visit=VisitOut.from_visit(visit),
+        visit=VisitOut.from_visit(visit, procedure_items),
         queue_entry=QueueEntryOut.from_entry(queue_entry),
     )
     return success_envelope(response.model_dump(mode="json"))
@@ -92,6 +95,7 @@ async def print_registration_slip(
     if visit.doctor_user_id is not None:
         doctor = await user_service.get_user(visit.doctor_user_id)
         doctor_full_name = doctor.full_name
+    procedure_items = await visit_service.list_procedure_items(visit.id)
 
     html_document = render_registration_slip(
         hospital_name=settings.app_name,
@@ -107,6 +111,7 @@ async def print_registration_slip(
         visit_discount_reason=visit.discount_reason,
         visit_created_at=visit.created_at,
         assigned_doctor_full_name=doctor_full_name,
+        visit_procedure_items=[(item.name, item.amount) for item in procedure_items],
     )
     return HTMLResponse(content=html_document)
 
@@ -116,12 +121,14 @@ async def cancel_visit(
     visit_id: UUID,
     payload: CancelVisitRequest,
     reception_service: ReceptionService = Depends(get_reception_service),
+    visit_service: VisitService = Depends(get_visit_service),
     actor: User = Depends(require_permission(PERMISSION_RECEPTION_CANCEL_VISIT)),
 ) -> dict:
     visit = await reception_service.cancel_visit(
         actor=actor, visit_id=visit_id, reason=payload.reason
     )
-    return success_envelope(VisitOut.from_visit(visit).model_dump(mode="json"))
+    procedure_items = await visit_service.list_procedure_items(visit.id)
+    return success_envelope(VisitOut.from_visit(visit, procedure_items).model_dump(mode="json"))
 
 
 # ------------------------------------------------------------------
@@ -140,17 +147,32 @@ async def update_visit(
     visit_id: UUID,
     payload: AdminUpdateVisitRequest,
     reception_service: ReceptionService = Depends(get_reception_service),
+    visit_service: VisitService = Depends(get_visit_service),
     actor: User = Depends(require_permission(PERMISSION_RECEPTION_UPDATE_VISIT)),
 ) -> dict:
     """Corrects a wrongly-entered slip — patient identity fields and/or
-    the visit's own procedure/amount, in one call (see
-    AdminUpdateVisitRequest's own docstring for why this is a single
-    flat form rather than two separate requests)."""
-    patient, visit = await reception_service.admin_update_visit(
-        actor=actor, visit_id=visit_id, updates=payload.model_dump(exclude_unset=True)
+    the visit's own procedure/amount (legacy visits) or procedure items
+    (itemized visits), in one call (see AdminUpdateVisitRequest's own
+    docstring for the full field-shape rationale, including why this is
+    a single flat form rather than several separate requests). Split
+    into three buckets here — `updates` (patient identity + legacy
+    procedure/amount) and `procedures` are kept as two separate
+    parameters to `ReceptionService.admin_update_visit` since
+    `procedures`, when present, is a list of already-parsed
+    `VisitProcedureItemRequest`s, not a flat scalar `model_dump()` could
+    fold in alongside everything else."""
+    updates = payload.model_dump(exclude_unset=True, exclude={"procedures"})
+    procedures = (
+        [(item.procedure_id, item.name, item.amount) for item in payload.procedures]
+        if payload.procedures is not None
+        else None
     )
+    patient, visit = await reception_service.admin_update_visit(
+        actor=actor, visit_id=visit_id, updates=updates, procedures=procedures
+    )
+    procedure_items = await visit_service.list_procedure_items(visit.id)
     response = AdminUpdateVisitResponse(
-        patient=PatientOut.from_patient(patient), visit=VisitOut.from_visit(visit)
+        patient=PatientOut.from_patient(patient), visit=VisitOut.from_visit(visit, procedure_items)
     )
     return success_envelope(response.model_dump(mode="json"))
 

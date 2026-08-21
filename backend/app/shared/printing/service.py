@@ -217,12 +217,16 @@ def render_registration_slip(
     assigned_doctor_full_name: str | None,
     visit_discount_amount: Decimal = Decimal("0.00"),
     visit_discount_reason: str | None = None,
+    visit_procedure_items: list[tuple[str, Decimal]] | None = None,
 ) -> str:
     """Renders Reception's fast-registration slip (Phase 6
     fast-registration §6/§7) — printed immediately after a visit is
     registered, before any doctor may have been assigned yet.
 
-    Layout: A4 single-page, grayscale-only (borders/dividers/typography
+    Layout: A4, at most half a page (verified via a Playwright print-
+    height measurement, same technique/target as
+    `render_medicine_bill_receipt`'s own density pass — two slips fit
+    one printed A4 page), grayscale-only (borders/dividers/typography
     only — no filled color blocks), matching a real front-desk
     registration document rather than a receipt-roll ticket. Previous
     revisions of this template targeted an 80mm thermal roll; this one
@@ -241,20 +245,38 @@ def render_registration_slip(
     `_to_local_time`'s docstring for why `visit_created_at` must be
     converted, not formatted as-is.
 
+    `visit_procedure_items` (2026-08-21 addition) is the hybrid switch
+    between this slip's two possible layouts — a real, confirmed design
+    decision, not a stopgap: a visit registered before 2026-08-21 has
+    none at all (permanently — see app/modules/visits/models.py's
+    `VisitProcedureItem` docstring) and renders exactly as this
+    template always has, byte-for-byte: a single "Procedure" row, a
+    single "Amount" row, plus Discount/Net Amount rows when
+    `visit_discount_amount > 0` — this branch's output is completely
+    unchanged by this addition. A visit registered from 2026-08-21
+    onward always has at least one and instead renders a full itemized
+    `Procedure | Amount` table (mirroring
+    `render_medicine_bill_receipt`'s own `.items` table exactly), with
+    the row-based "Visit Details" section shrinking to just
+    "Registered On" — `visit_procedure`/`visit_amount` are still
+    accepted and still correct in this case (see that column's own
+    docstring) but are not displayed as a single row; the real,
+    itemized breakdown is.
+
     `visit_discount_amount`/`visit_discount_reason` (2026-08-19
     addition) mirror `render_invoice_receipt`'s/
     `render_medicine_bill_receipt`'s identical Total/Discount/Net
-    Amount convention, adapted to this template's row-based (not
-    table-based) layout: `visit_amount` is already post-discount (see
-    VisitService.register_visit's docstring), so the pre-discount
-    original is recovered as `visit_amount + visit_discount_amount`.
-    When `visit_discount_amount == 0` (the common case), only a single
-    "Amount" row renders, byte-for-byte the same output this template
-    has always produced — the Discount/Net Amount rows appear only
-    when a discount was actually applied."""
+    Amount convention either way: `visit_amount` is always already
+    post-discount (see VisitService.register_visit's docstring), so the
+    pre-discount subtotal is always recovered as `visit_amount +
+    visit_discount_amount`. When `visit_discount_amount == 0` (the
+    common case), only a single Amount/Net-Amount figure renders either
+    way — the Discount row appears only when a discount was actually
+    applied."""
     registered_on = _to_local_time(visit_created_at, display_timezone).strftime(
         "%d %b %Y, %I:%M %p"
     )
+    is_itemized = bool(visit_procedure_items)
 
     logo_data_uri = _logo_data_uri()
     logo_html = (
@@ -278,18 +300,69 @@ def render_registration_slip(
         ]
     )
     subtotal = visit_amount + visit_discount_amount
-    visit_row_items = [
-        _row("Procedure", visit_procedure),
-        _row("Amount", _money(subtotal)),
-    ]
-    if visit_discount_amount > 0:
-        discount_label = "Discount"
-        if visit_discount_reason:
-            discount_label = f"Discount ({visit_discount_reason})"
-        visit_row_items.append(_row(discount_label, f"-{_money(visit_discount_amount)}"))
-        visit_row_items.append(_row("Net Amount", _money(visit_amount)))
-    visit_row_items.append(_row("Registered On", registered_on))
-    visit_rows = "".join(visit_row_items)
+
+    if is_itemized:
+        # The itemized layout — "Visit Details" shrinks to just
+        # Registered On; the real Procedure/Amount breakdown lives in
+        # the full-width table below instead (see this function's own
+        # docstring).
+        visit_rows = _row("Registered On", registered_on)
+
+        item_rows = "".join(
+            f"<tr><td>{_escape(name)}</td><td class='amount'>{_money(amount)}</td></tr>"
+            for name, amount in visit_procedure_items
+        )
+        discount_row = ""
+        if visit_discount_amount > 0:
+            discount_label = "Discount"
+            if visit_discount_reason:
+                discount_label = f"Discount ({_escape(visit_discount_reason)})"
+            discount_row = (
+                f'<tr><td>{discount_label}</td>'
+                f"<td class='amount'>-{_money(visit_discount_amount)}</td></tr>"
+            )
+        items_section = f"""
+    <div class="items">
+      <table>
+        <thead>
+          <tr>
+            <th>Procedure</th>
+            <th class="amount">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {item_rows}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td>Total Amount</td>
+            <td class="amount">{_money(subtotal)}</td>
+          </tr>
+          {discount_row}
+          <tr class="net-amount">
+            <td>Net Amount</td>
+            <td class="amount">{_money(visit_amount)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+"""
+    else:
+        # The legacy layout — completely unchanged from before this
+        # feature existed (see this function's own docstring).
+        visit_row_items = [
+            _row("Procedure", visit_procedure),
+            _row("Amount", _money(subtotal)),
+        ]
+        if visit_discount_amount > 0:
+            discount_label = "Discount"
+            if visit_discount_reason:
+                discount_label = f"Discount ({visit_discount_reason})"
+            visit_row_items.append(_row(discount_label, f"-{_money(visit_discount_amount)}"))
+            visit_row_items.append(_row("Net Amount", _money(visit_amount)))
+        visit_row_items.append(_row("Registered On", registered_on))
+        visit_rows = "".join(visit_row_items)
+        items_section = ""
 
     return f"""<!doctype html>
 <html>
@@ -326,21 +399,29 @@ def render_registration_slip(
   }}
 
   /* ---------- Header ---------- */
+  /* ---------- Density pass (2026-08-21) ----------
+     Every margin/padding/font-size value below is deliberately smaller
+     than this template's own original (which predates the itemized-
+     procedures feature) — mirroring render_medicine_bill_receipt's own
+     2026-08-20 density pass exactly (same target values), verified via
+     the same Playwright print-height measurement technique: two slips
+     must fit one printed A4 page, and the new itemized table (when
+     present) pushed the un-tightened version over that budget. */
   .header {{
     display: grid;
     grid-template-columns: auto 1fr auto;
     align-items: center;
     gap: 20px;
-    padding-bottom: 16px;
+    padding-bottom: 8px;
   }}
   .logo {{
-    height: 56px;
+    height: 46px;
     width: auto;
     object-fit: contain;
   }}
   .identity {{ text-align: center; }}
   .identity .name {{
-    font-size: 21px;
+    font-size: 19px;
     font-weight: 800;
     letter-spacing: 0.5px;
     text-transform: uppercase;
@@ -362,7 +443,7 @@ def render_registration_slip(
     white-space: nowrap;
   }}
   .contact-block strong {{ color: var(--ink); font-weight: 600; }}
-  .header-rule {{ border: none; border-top: 2px solid var(--rule-strong); margin: 0 0 18px; }}
+  .header-rule {{ border: none; border-top: 2px solid var(--rule-strong); margin: 0 0 12px; }}
 
   /* ---------- Title box ---------- */
   .title-box {{
@@ -370,8 +451,8 @@ def render_registration_slip(
     align-items: center;
     justify-content: space-between;
     border: 1.5px solid var(--rule-strong);
-    padding: 10px 18px;
-    margin-bottom: 24px;
+    padding: 6px 14px;
+    margin-bottom: 12px;
   }}
   .title-box .label {{
     font-size: 12px;
@@ -380,7 +461,7 @@ def render_registration_slip(
     text-transform: uppercase;
   }}
   .title-box .token {{
-    font-size: 32px;
+    font-size: 22px;
     font-weight: 800;
     letter-spacing: 1px;
   }}
@@ -389,13 +470,13 @@ def render_registration_slip(
   .body-grid {{
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 36px;
+    gap: 28px;
   }}
   .section-heading {{
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-bottom: 10px;
+    margin-bottom: 6px;
   }}
   .section-heading .bar {{
     width: 4px;
@@ -414,7 +495,7 @@ def render_registration_slip(
     justify-content: space-between;
     align-items: baseline;
     gap: 12px;
-    padding: 8px 0;
+    padding: 4px 0;
     border-bottom: 1px solid var(--rule);
   }}
   .row:last-child {{ border-bottom: none; }}
@@ -430,13 +511,52 @@ def render_registration_slip(
     text-align: right;
   }}
 
+  /* ---------- Itemized table (2026-08-21 addition) ----------
+     Reuses render_medicine_bill_receipt's own already-verified
+     .items/table/thead/tbody/tfoot structure exactly — only rendered
+     when this visit has real VisitProcedureItem rows (see this
+     function's own docstring for the legacy-vs-itemized switch). */
+  .items {{ margin-top: 8px; }}
+  table {{ width: 100%; border-collapse: collapse; }}
+  thead th {{
+    text-align: left;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    border-bottom: 1.5px solid var(--rule-strong);
+    padding: 0 0 4px;
+  }}
+  tbody td {{
+    font-size: 13px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--rule);
+  }}
+  th.amount, td.amount {{ text-align: right; width: 130px; }}
+  tfoot td {{
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink-soft);
+    padding-top: 3px;
+    border-bottom: none;
+  }}
+  tfoot tr.net-amount td {{
+    font-size: 14px;
+    font-weight: 800;
+    color: var(--ink);
+    padding-top: 6px;
+    border-top: 2px solid var(--rule-strong);
+  }}
+  tfoot td.amount {{ text-align: right; }}
+
   /* ---------- Note ---------- */
   .note-box {{
     display: flex;
     gap: 18px;
     border: 1px solid var(--rule-strong);
-    padding: 12px 18px;
-    margin-top: 28px;
+    padding: 6px 12px;
+    margin-top: 10px;
   }}
   .note-box .note-label {{
     font-size: 11px;
@@ -518,7 +638,7 @@ def render_registration_slip(
         {visit_rows}
       </div>
     </div>
-
+    {items_section}
     <div class="note-box">
       <span class="note-label">Note</span>
       <span class="note-text">

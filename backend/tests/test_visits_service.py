@@ -52,8 +52,7 @@ async def test_register_visit_generates_queue_token_and_routes_to_vitals(
         actor=actor,
         patient_id=patient.id,
         doctor_user_id=actor.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=True,
     )
 
@@ -76,8 +75,7 @@ async def test_register_visit_amount_is_quantized_to_two_decimal_places(
         actor=actor,
         patient_id=patient.id,
         doctor_user_id=actor.id,
-        procedure="Normal Delivery",
-        amount=Decimal("20000"),
+        procedures=[(None, "Normal Delivery", Decimal("20000"))],
         vitals_required=False,
     )
 
@@ -98,8 +96,7 @@ async def test_register_visit_without_discount_has_zero_discount_fields(
         actor=actor,
         patient_id=patient.id,
         doctor_user_id=actor.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
 
@@ -123,8 +120,7 @@ async def test_register_visit_with_discount_stores_post_discount_amount(
         actor=actor,
         patient_id=patient.id,
         doctor_user_id=actor.id,
-        procedure="Consultation",
-        amount=Decimal("2000.00"),
+        procedures=[(None, "Consultation", Decimal("2000.00"))],
         vitals_required=False,
         discount_amount=Decimal("500.00"),
         discount_reason="Referral",
@@ -148,8 +144,7 @@ async def test_register_visit_discount_reason_is_optional(
         actor=actor,
         patient_id=patient.id,
         doctor_user_id=actor.id,
-        procedure="Consultation",
-        amount=Decimal("1000.00"),
+        procedures=[(None, "Consultation", Decimal("1000.00"))],
         vitals_required=False,
         discount_amount=Decimal("100.00"),
     )
@@ -169,8 +164,7 @@ async def test_register_visit_discount_exceeding_amount_rejected(
             actor=actor,
             patient_id=patient.id,
             doctor_user_id=actor.id,
-            procedure="Consultation",
-            amount=Decimal("500.00"),
+            procedures=[(None, "Consultation", Decimal("500.00"))],
             vitals_required=False,
             discount_amount=Decimal("500.01"),
         )
@@ -187,8 +181,7 @@ async def test_register_visit_negative_discount_rejected(
             actor=actor,
             patient_id=patient.id,
             doctor_user_id=actor.id,
-            procedure="Consultation",
-            amount=Decimal("500.00"),
+            procedures=[(None, "Consultation", Decimal("500.00"))],
             vitals_required=False,
             discount_amount=Decimal("-10.00"),
         )
@@ -204,8 +197,7 @@ async def test_register_visit_routes_directly_to_doctor_when_vitals_not_required
         actor=actor,
         patient_id=patient.id,
         doctor_user_id=actor.id,
-        procedure="Follow-up",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Follow-up", Decimal("1500.00"))],
         vitals_required=False,
     )
 
@@ -219,8 +211,7 @@ async def test_full_happy_path_transition_sequence(real_session, patient_service
         actor=actor,
         patient_id=patient.id,
         doctor_user_id=actor.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=True,
     )
     assert visit.status == VisitStatus.WAITING_VITALS
@@ -254,8 +245,7 @@ async def test_invalid_transition_raises(real_session, patient_service, visit_se
         actor=actor,
         patient_id=patient.id,
         doctor_user_id=actor.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
     assert visit.status == VisitStatus.WAITING_DOCTOR
@@ -273,8 +263,7 @@ async def test_cancel_visit_from_non_terminal_status(real_session, patient_servi
         actor=actor,
         patient_id=patient.id,
         doctor_user_id=actor.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
 
@@ -306,8 +295,7 @@ async def test_get_by_queue_token_finds_visit(real_session, patient_service, vis
         actor=actor,
         patient_id=patient.id,
         doctor_user_id=actor.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
 

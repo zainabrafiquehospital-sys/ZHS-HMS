@@ -78,8 +78,7 @@ async def test_search_by_queue_token_finds_visit(real_session, patient_service, 
         actor=actor,
         patient_id=patient.id,
         doctor_user_id=actor.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
     search_service = SearchService(patient_service=patient_service, visit_service=visit_service)
@@ -106,8 +105,7 @@ async def test_search_by_visit_id_finds_visit(real_session, patient_service, vis
         actor=actor,
         patient_id=patient.id,
         doctor_user_id=actor.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
     search_service = SearchService(patient_service=patient_service, visit_service=visit_service)

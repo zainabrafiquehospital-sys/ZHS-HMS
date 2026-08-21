@@ -55,8 +55,7 @@ async def _make_visit_waiting_billing(reception_service, consultation_service, d
             "address": None,
         },
         doctor_user_id=doctor.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
     consultation = await consultation_service.start_consultation(actor=doctor, visit_id=visit.id)

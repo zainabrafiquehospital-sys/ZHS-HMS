@@ -112,8 +112,7 @@ class ReceptionService:
         patient_id: UUID | None,
         new_patient: dict[str, Any] | None,
         doctor_user_id: UUID | None,
-        procedure: str,
-        amount: Decimal,
+        procedures: list[tuple[UUID | None, str | None, Decimal | None]],
         vitals_required: bool,
         discount_amount: Decimal = Decimal("0.00"),
         discount_reason: str | None = None,
@@ -135,12 +134,18 @@ class ReceptionService:
         claims it the moment they start its consultation (see
         consultation/service.py's `start_consultation`).
 
+        `procedures` (2026-08-21 addition, replacing the old single
+        `procedure`/`amount` pair) passes straight through to
+        VisitService.register_visit, which owns the actual catalog-
+        lookup/price-lock/subtotal logic — see that method's own
+        docstring.
+
         `discount_amount`/`discount_reason` (both optional, 2026-08-19
-        addition) pass straight through to VisitService.register_visit,
-        which owns the actual validation and the amount/discount
-        arithmetic — see that method's own docstring for the full
-        mechanism and why it makes a registration-time discount actually
-        flow through to Billing and every revenue read."""
+        addition) pass straight through too, which owns the actual
+        validation and the amount/discount arithmetic — see that
+        method's own docstring for the full mechanism and why it makes a
+        registration-time discount actually flow through to Billing and
+        every revenue read."""
         if patient_id is not None:
             patient = await self._patient_service.get_patient(patient_id)
         else:
@@ -154,8 +159,7 @@ class ReceptionService:
             actor=actor,
             patient_id=patient.id,
             doctor_user_id=doctor_user_id,
-            procedure=procedure,
-            amount=amount,
+            procedures=procedures,
             vitals_required=vitals_required,
             discount_amount=discount_amount,
             discount_reason=discount_reason,
@@ -213,19 +217,31 @@ class ReceptionService:
     # ------------------------------------------------------------------
 
     async def admin_update_visit(
-        self, *, actor: User, visit_id: UUID, updates: dict[str, Any]
+        self,
+        *,
+        actor: User,
+        visit_id: UUID,
+        updates: dict[str, Any],
+        procedures: list[tuple[UUID | None, str | None, Decimal | None]] | None = None,
     ) -> tuple[Patient, Visit]:
         """Splits the caller's already-validated flat `updates` dict
         (see AdminUpdateVisitRequest's own docstring for why the schema
-        is flat with no field-name collisions) between the two
+        is flat with no field-name collisions) between the three
         already-existing, already-tested update paths this reuses rather
         than reimplements — `PatientService.update_patient` for identity
-        fields, `VisitService.update_visit_details` for `procedure`/
-        `amount`. Router-level splitting (which keys go where) is
-        request-shape knowledge, kept at the API boundary rather than
-        duplicated here, mirroring register_visit's own docstring on
-        where schema-shape decisions belong; this method just receives
-        two already-separated dicts, not the raw request."""
+        fields, `VisitService.update_visit_details` for the legacy flat
+        `procedure`/`amount`, `VisitService.admin_replace_procedure_items`
+        for `procedures` (2026-08-21 addition, kept as its own parameter
+        rather than folded into `updates` since it's a list of already-
+        parsed `VisitProcedureItemRequest`s, not a flat scalar — the
+        router does that one extra split for the same "request-shape
+        knowledge stays at the API boundary" reason it already splits
+        `updates` itself). Only one of `procedure`/`amount` vs.
+        `procedures` is ever meaningful for a given visit — see
+        `VisitService.update_visit_details`'s/
+        `admin_replace_procedure_items`'s own docstrings for the exact
+        rejection if both are attempted against the wrong kind of visit;
+        this method just passes each bucket to its own path unchanged."""
         visit = await self._visit_service.get_visit(visit_id)
         patient = await self._patient_service.get_patient(visit.patient_id)
 
@@ -240,6 +256,10 @@ class ReceptionService:
             visit = await self._visit_service.update_visit_details(
                 actor=actor, visit_id=visit_id, updates=visit_updates
             )
+        if procedures is not None:
+            visit = await self._visit_service.admin_replace_procedure_items(
+                actor=actor, visit_id=visit_id, procedures=procedures
+            )
 
         await self._audit_repo.record(
             module="reception",
@@ -250,6 +270,7 @@ class ReceptionService:
             metadata={
                 "patient_fields": sorted(patient_updates.keys()),
                 "visit_fields": sorted(visit_updates.keys()),
+                "procedures_replaced": procedures is not None,
             },
         )
         await self._session.commit()

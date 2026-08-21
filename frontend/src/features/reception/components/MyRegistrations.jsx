@@ -9,6 +9,7 @@ import {
   usePatientsForVisits,
   usePrintRegistrationSlip,
 } from '@/features/reception/hooks/useReception';
+import { VisitProcedureDisplay } from '@/features/visits/components/VisitProcedureDisplay';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
@@ -259,7 +260,9 @@ export function MyRegistrations() {
                       >
                         {patient?.address || '—'}
                       </TableCell>
-                      <TableCell className="max-w-[160px] truncate">{visit.procedure}</TableCell>
+                      <TableCell className="max-w-[160px]">
+                        <VisitProcedureDisplay visit={visit} className="truncate" />
+                      </TableCell>
                       <TableCell>
                         {visit.doctor_user_id ? (
                           <Badge variant="success">Assigned</Badge>

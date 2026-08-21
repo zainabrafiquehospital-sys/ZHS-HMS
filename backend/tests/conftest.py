@@ -59,7 +59,11 @@ from app.modules.queue.repository import QueueEntryRepository
 from app.modules.queue.service import QueueService
 from app.modules.reception.repository import ReceptionRepository
 from app.modules.reception.service import ReceptionService
-from app.modules.visits.repository import VisitRepository
+from app.modules.visits.repository import (
+    ProcedureRepository,
+    VisitProcedureItemRepository,
+    VisitRepository,
+)
 from app.modules.visits.service import VisitService
 from app.modules.vitals.repository import VitalsRecordRepository
 from app.modules.vitals.service import VitalsService
@@ -108,6 +112,12 @@ TEST_PATIENT_NAME_PREFIX = "Patient Test "
 # TEST_PATIENT_NAME_PREFIX exists — PharmacyService also commits
 # internally (see app/modules/pharmacy/service.py's module docstring).
 TEST_MEDICINE_NAME_PREFIX = "Medicine Test "
+
+# Every procedure catalog entry created through VisitService's
+# create_procedure by the itemized-procedures test suite (2026-08-21
+# addition) uses this name prefix — identical rationale to
+# TEST_MEDICINE_NAME_PREFIX above.
+TEST_PROCEDURE_NAME_PREFIX = "Procedure Test "
 
 
 @pytest.fixture
@@ -376,6 +386,25 @@ async def real_session():
                 text(f"DELETE FROM consultation WHERE visit_id IN ({visit_owned_by_test_data})"),
                 cleanup_params,
             )
+            # visit_procedure_item rows must likewise be deleted before
+            # visit — same no-ON-DELETE-clause reasoning (see
+            # app/modules/visits/models.py's `VisitProcedureItem`
+            # docstring, 2026-08-21 addition).
+            await session.execute(
+                text(
+                    "DELETE FROM audit_log WHERE entity_id IN "
+                    "(SELECT id FROM visit_procedure_item WHERE visit_id IN "
+                    f"({visit_owned_by_test_data}))"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM visit_procedure_item WHERE visit_id IN "
+                    f"({visit_owned_by_test_data})"
+                ),
+                cleanup_params,
+            )
             await session.execute(
                 text(f"DELETE FROM audit_log WHERE entity_id IN ({visit_owned_by_test_data})"),
                 cleanup_params,
@@ -412,6 +441,26 @@ async def real_session():
             await session.execute(
                 text("DELETE FROM medicine WHERE name LIKE :pattern"),
                 {"pattern": f"{TEST_MEDICINE_NAME_PREFIX}%"},
+            )
+            # procedure catalog rows created directly through
+            # VisitService's create_procedure (2026-08-21 addition) —
+            # identical rationale/shape to medicine's own cleanup
+            # immediately above. Any visit_procedure_item still
+            # referencing one of these was already deleted above (it's
+            # always tied to a test visit, which is always tied to a
+            # test patient or test-user doctor — see
+            # visit_owned_by_test_data's own comment), so this is safe
+            # to delete on its own.
+            await session.execute(
+                text(
+                    "DELETE FROM audit_log WHERE entity_id IN "
+                    "(SELECT id FROM procedure WHERE name LIKE :pattern)"
+                ),
+                {"pattern": f"{TEST_PROCEDURE_NAME_PREFIX}%"},
+            )
+            await session.execute(
+                text("DELETE FROM procedure WHERE name LIKE :pattern"),
+                {"pattern": f"{TEST_PROCEDURE_NAME_PREFIX}%"},
             )
             await session.execute(
                 text('DELETE FROM "user" WHERE email LIKE :pattern'),
@@ -488,6 +537,8 @@ def visit_service(real_session) -> VisitService:
         session=real_session,
         visit_repository=VisitRepository(real_session),
         audit_repository=AuditLogRepository(real_session),
+        procedure_repository=ProcedureRepository(real_session),
+        procedure_item_repository=VisitProcedureItemRepository(real_session),
     )
 
 

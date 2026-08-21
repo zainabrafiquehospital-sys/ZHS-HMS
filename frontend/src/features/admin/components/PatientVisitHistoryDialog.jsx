@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Printer, X } from 'lucide-react';
 import { usePatientVisitHistory } from '@/features/admin/hooks/usePatientDirectory';
 import { usePrintRegistrationSlip } from '@/features/reception/hooks/useReception';
+import { VisitProcedureDisplay } from '@/features/visits/components/VisitProcedureDisplay';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
@@ -111,7 +112,9 @@ export function PatientVisitHistoryDialog({ patient, onClose }) {
                       <TableCell className="whitespace-nowrap font-mono text-xs">
                         {visit.queue_token}
                       </TableCell>
-                      <TableCell className="max-w-[160px] truncate">{visit.procedure}</TableCell>
+                      <TableCell className="max-w-[160px]">
+                        <VisitProcedureDisplay visit={visit} className="truncate" />
+                      </TableCell>
                       <TableCell>
                         <Badge
                           variant={VISIT_STATUS_BADGE_VARIANT[visit.status] ?? 'outline'}

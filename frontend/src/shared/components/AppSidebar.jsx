@@ -14,6 +14,7 @@ import {
   PackageSearch,
   BookUser,
   Users,
+  ListChecks,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { ROUTES } from '@/core/constants/routes';
@@ -66,6 +67,16 @@ const NAV_ITEMS = [
     label: 'Medicines',
     icon: PackageSearch,
     permission: 'pharmacy:manage',
+  },
+  // Same "own top-level entry, permission-gated only" shape as Medicines
+  // above — an Admin sub-screen, not a landing module (see access.js's
+  // MODULE_ACCESS, which deliberately omits it for the same reason,
+  // 2026-08-21 addition).
+  {
+    href: ROUTES.ADMIN_PROCEDURES,
+    label: 'Procedures',
+    icon: ListChecks,
+    permission: 'procedures:manage',
   },
   // Same "own top-level entry, permission-gated only" shape as Medicines
   // above — an Admin sub-screen, not a landing module (see access.js's

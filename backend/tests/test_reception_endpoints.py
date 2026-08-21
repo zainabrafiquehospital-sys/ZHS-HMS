@@ -12,8 +12,11 @@ from app.modules.reception.constants import (
     PERMISSION_RECEPTION_REGISTER_VISIT,
     PERMISSION_RECEPTION_UPDATE_VISIT,
 )
-from app.modules.visits.constants import PERMISSION_VISITS_READ
-from tests.conftest import TEST_PATIENT_NAME_PREFIX, make_test_email
+from app.modules.visits.constants import (
+    PERMISSION_PROCEDURES_MANAGE,
+    PERMISSION_VISITS_READ,
+)
+from tests.conftest import TEST_PATIENT_NAME_PREFIX, TEST_PROCEDURE_NAME_PREFIX, make_test_email
 
 _PASSWORD = "Str0ng!Passw0rd#2026"
 
@@ -69,8 +72,7 @@ async def test_register_visit_without_permission_is_forbidden(api_client, real_s
         "/api/v1/reception/visits",
         json={
             "new_patient": _new_patient_body("NoPerm"),
-            "procedure": "Consultation",
-            "amount": "1500.00",
+            "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": True,
         },
         headers=_auth_header(access_token),
@@ -90,8 +92,7 @@ async def test_register_visit_both_patient_id_and_new_patient_returns_422(
         json={
             "patient_id": str(actor.id),
             "new_patient": _new_patient_body("Both"),
-            "procedure": "Consultation",
-            "amount": "1500.00",
+            "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": True,
         },
         headers=_auth_header(access_token),
@@ -108,8 +109,7 @@ async def test_register_visit_success_with_new_patient(api_client, real_session,
         "/api/v1/reception/visits",
         json={
             "new_patient": _new_patient_body("Success"),
-            "procedure": "Consultation",
-            "amount": "1500.00",
+            "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": True,
         },
         headers=_auth_header(access_token),
@@ -140,8 +140,7 @@ async def test_register_visit_auto_assigns_online_doctor(
         "/api/v1/reception/visits",
         json={
             "new_patient": _new_patient_body("AutoAssign"),
-            "procedure": "Consultation",
-            "amount": "1500.00",
+            "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
         },
         headers=_auth_header(receptionist_token),
@@ -166,8 +165,7 @@ async def test_register_visit_leaves_unassigned_without_online_doctor(
         "/api/v1/reception/visits",
         json={
             "new_patient": _new_patient_body("NoDoctorOnline"),
-            "procedure": "Consultation",
-            "amount": "1500.00",
+            "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
         },
         headers=_auth_header(access_token),
@@ -184,8 +182,7 @@ async def test_print_registration_slip_success(api_client, real_session, grant_p
         "/api/v1/reception/visits",
         json={
             "new_patient": _new_patient_body("PrintSlip"),
-            "procedure": "Consultation",
-            "amount": "1500.00",
+            "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
         },
         headers=_auth_header(access_token),
@@ -237,8 +234,7 @@ async def test_register_visit_with_discount_computes_post_discount_amount(
         "/api/v1/reception/visits",
         json={
             "new_patient": _new_patient_body("DiscountBasic"),
-            "procedure": "Consultation",
-            "amount": "2000.00",
+            "procedures": [{"name": "Consultation", "amount": "2000.00"}],
             "vitals_required": False,
             "discount_amount": "500.00",
             "discount_reason": "Referral",
@@ -261,8 +257,7 @@ async def test_register_visit_discount_reason_is_optional(api_client, real_sessi
         "/api/v1/reception/visits",
         json={
             "new_patient": _new_patient_body("DiscountNoReason"),
-            "procedure": "Consultation",
-            "amount": "1000.00",
+            "procedures": [{"name": "Consultation", "amount": "1000.00"}],
             "vitals_required": False,
             "discount_amount": "100.00",
         },
@@ -285,8 +280,7 @@ async def test_register_visit_discount_exceeding_amount_rejected(
         "/api/v1/reception/visits",
         json={
             "new_patient": _new_patient_body("DiscountExceeds"),
-            "procedure": "Consultation",
-            "amount": "500.00",
+            "procedures": [{"name": "Consultation", "amount": "500.00"}],
             "vitals_required": False,
             "discount_amount": "500.01",
         },
@@ -309,8 +303,7 @@ async def test_print_registration_slip_with_discount_shows_lines_in_correct_orde
         "/api/v1/reception/visits",
         json={
             "new_patient": _new_patient_body("DiscountPrintOrder"),
-            "procedure": "Consultation",
-            "amount": "2000.00",
+            "procedures": [{"name": "Consultation", "amount": "2000.00"}],
             "vitals_required": False,
             "discount_amount": "300.00",
             "discount_reason": "Staff discount",
@@ -345,8 +338,7 @@ async def test_print_registration_slip_without_discount_omits_discount_line(
         "/api/v1/reception/visits",
         json={
             "new_patient": _new_patient_body("PlainPrintSlip"),
-            "procedure": "Consultation",
-            "amount": "800.00",
+            "procedures": [{"name": "Consultation", "amount": "800.00"}],
             "vitals_required": False,
         },
         headers=_auth_header(access_token),
@@ -358,7 +350,16 @@ async def test_print_registration_slip_without_discount_omits_discount_line(
     )
     assert resp.status_code == 200
     assert "Discount" not in resp.text
-    assert "Net Amount" not in resp.text
+    # This visit is always itemized (2026-08-21 addition) — the itemized
+    # table's tfoot always shows both "Total Amount" and "Net Amount"
+    # rows regardless of discount, exactly mirroring
+    # render_medicine_bill_receipt's/render_invoice_receipt's identical
+    # always-shown convention (see render_registration_slip's own
+    # docstring) — unlike the legacy row-based layout (still exercised
+    # directly in test_printing_service.py), which only added a Net
+    # Amount row once a discount actually applied.
+    assert "Net Amount" in resp.text
+    assert "Total Amount" in resp.text
 
 
 async def test_register_visit_discount_flows_through_to_my_revenue(
@@ -376,8 +377,7 @@ async def test_register_visit_discount_flows_through_to_my_revenue(
         "/api/v1/reception/visits",
         json={
             "new_patient": _new_patient_body("DiscountRevenueFlow"),
-            "procedure": "Consultation",
-            "amount": "3000.00",
+            "procedures": [{"name": "Consultation", "amount": "3000.00"}],
             "vitals_required": False,
             "discount_amount": "1000.00",
             "discount_reason": "Loyalty",
@@ -404,8 +404,7 @@ async def test_cancel_visit_requires_permission(api_client, real_session, grant_
         "/api/v1/reception/visits",
         json={
             "new_patient": _new_patient_body("CancelNoPerm"),
-            "procedure": "Consultation",
-            "amount": "1500.00",
+            "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
         },
         headers=_auth_header(access_token),
@@ -429,8 +428,7 @@ async def test_cancel_visit_success(api_client, real_session, grant_permission):
         "/api/v1/reception/visits",
         json={
             "new_patient": _new_patient_body("CancelSuccess"),
-            "procedure": "Consultation",
-            "amount": "1500.00",
+            "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
         },
         headers=_auth_header(access_token),
@@ -459,8 +457,7 @@ async def _register_visit_http(api_client, access_token, suffix: str) -> str:
         "/api/v1/reception/visits",
         json={
             "new_patient": _new_patient_body(suffix),
-            "procedure": "Consultation",
-            "amount": "1500.00",
+            "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
         },
         headers=_auth_header(access_token),
@@ -522,8 +519,7 @@ async def test_update_visit_admin_can_correct_a_different_receptionists_slip(
         f"/api/v1/reception/visits/{visit_id}",
         json={
             "full_name": f"{TEST_PATIENT_NAME_PREFIX}CorrectedByAdmin",
-            "procedure": "Ultrasound",
-            "amount": "2500.00",
+            "procedures": [{"name": "Ultrasound", "amount": "2500.00"}],
         },
         headers=_auth_header(admin_token),
     )
@@ -531,8 +527,14 @@ async def test_update_visit_admin_can_correct_a_different_receptionists_slip(
     assert resp.status_code == 200
     body = resp.json()["data"]
     assert body["patient"]["full_name"] == f"{TEST_PATIENT_NAME_PREFIX}CorrectedByAdmin"
-    assert body["visit"]["procedure"] == "Ultrasound"
+    # `_register_visit_http` always registers an itemized visit (2026-08-21
+    # addition) — this replaces its entire procedure-item set rather than
+    # the (now-unused-for-this-visit) flat procedure/amount fields; see
+    # VisitService.admin_replace_procedure_items's own docstring.
     assert body["visit"]["amount"] == "2500.00"
+    assert len(body["visit"]["procedure_items"]) == 1
+    assert body["visit"]["procedure_items"][0]["name"] == "Ultrasound"
+    assert body["visit"]["procedure_items"][0]["amount"] == "2500.00"
 
 
 async def test_delete_visit_requires_permission(api_client, real_session, grant_permission):
@@ -692,3 +694,132 @@ async def test_get_own_revenue_never_reflects_another_receptionists_visits(
     assert resp_b.status_code == 200
     assert resp_b.json()["data"]["visits_count"] == 0
     assert resp_b.json()["data"]["total_revenue"] == "0.00"
+
+
+# ---------------------------------------------------------------------
+# Itemized procedures — catalog-linked and manual entries coexisting
+# (2026-08-21 addition). See app/modules/visits/models.py's
+# `VisitProcedureItem` docstring for the full per-item (not per-visit)
+# mutual-exclusivity rationale this proves.
+# ---------------------------------------------------------------------
+
+
+async def test_register_visit_with_catalog_and_manual_procedures_together(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "catalog-plus-manual")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(actor, PERMISSION_PROCEDURES_MANAGE)
+    create_resp = await api_client.post(
+        "/api/v1/visits/procedures",
+        json={"name": f"{TEST_PROCEDURE_NAME_PREFIX}CatalogPlusManual", "price": "1000.00"},
+        headers=_auth_header(access_token),
+    )
+    procedure_id = create_resp.json()["data"]["id"]
+
+    resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("CatalogPlusManual"),
+            "procedures": [
+                {"procedure_id": procedure_id},
+                {"name": "Custom Follow-up", "amount": "250.00"},
+            ],
+            "vitals_required": False,
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 201, resp.text
+    visit = resp.json()["data"]["visit"]
+    assert visit["amount"] == "1250.00"  # 1000.00 (catalog) + 250.00 (manual)
+    items = visit["procedure_items"]
+    assert len(items) == 2
+    catalog_item = next(item for item in items if item["procedure_id"] == procedure_id)
+    manual_item = next(item for item in items if item["procedure_id"] is None)
+    assert catalog_item["name"] == f"{TEST_PROCEDURE_NAME_PREFIX}CatalogPlusManual"
+    assert catalog_item["amount"] == "1000.00"
+    assert manual_item["name"] == "Custom Follow-up"
+    assert manual_item["amount"] == "250.00"
+
+
+async def test_register_visit_catalog_procedure_price_is_locked_not_client_supplied(
+    api_client, real_session, grant_permission
+):
+    """Confirmed design decision: unlike a manual entry, a catalog-linked
+    procedure's price is always taken from the catalog itself — the
+    request schema rejects an attempt to also send name/amount for it
+    (see VisitProcedureItemRequest's own docstring), so there is no way
+    for a client-supplied price to silently override the catalog one."""
+    actor, access_token = await _create_and_login(api_client, real_session, "catalog-price-lock")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(actor, PERMISSION_PROCEDURES_MANAGE)
+    create_resp = await api_client.post(
+        "/api/v1/visits/procedures",
+        json={"name": f"{TEST_PROCEDURE_NAME_PREFIX}PriceLock", "price": "1200.00"},
+        headers=_auth_header(access_token),
+    )
+    procedure_id = create_resp.json()["data"]["id"]
+
+    resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("PriceLock"),
+            "procedures": [{"procedure_id": procedure_id, "name": "Sneaky", "amount": "1.00"}],
+            "vitals_required": False,
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 422
+
+
+async def test_register_visit_rejects_inactive_catalog_procedure(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "catalog-inactive")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(actor, PERMISSION_PROCEDURES_MANAGE)
+    create_resp = await api_client.post(
+        "/api/v1/visits/procedures",
+        json={"name": f"{TEST_PROCEDURE_NAME_PREFIX}Inactive", "price": "900.00"},
+        headers=_auth_header(access_token),
+    )
+    procedure_id = create_resp.json()["data"]["id"]
+    await api_client.patch(
+        f"/api/v1/visits/procedures/{procedure_id}",
+        json={"is_active": False},
+        headers=_auth_header(access_token),
+    )
+
+    resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("CatalogInactive"),
+            "procedures": [{"procedure_id": procedure_id}],
+            "vitals_required": False,
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "PROCEDURE_INACTIVE"
+
+
+async def test_register_visit_manual_entry_requires_name_and_amount(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "manual-incomplete")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+
+    resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("ManualIncomplete"),
+            "procedures": [{"name": "Consultation"}],  # no amount
+            "vitals_required": False,
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 422

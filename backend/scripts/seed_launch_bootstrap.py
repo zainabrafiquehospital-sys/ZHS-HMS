@@ -116,7 +116,12 @@ from app.modules.reception.constants import (
     PERMISSION_RECEPTION_UPDATE_VISIT,
 )
 from app.modules.search.constants import PERMISSION_SEARCH_READ
-from app.modules.visits.constants import PERMISSION_VISITS_CREATE, PERMISSION_VISITS_READ
+from app.modules.visits.constants import (
+    PERMISSION_PROCEDURES_MANAGE,
+    PERMISSION_PROCEDURES_READ,
+    PERMISSION_VISITS_CREATE,
+    PERMISSION_VISITS_READ,
+)
 from app.modules.vitals.constants import PERMISSION_VITALS_READ, PERMISSION_VITALS_RECORD
 from app.shared.audit.repository import AuditLogRepository
 
@@ -232,6 +237,16 @@ PERMISSION_CATALOG: list[tuple[str, str, str]] = [
         "register-visit action; no endpoint grants this independently yet.",
     ),
     (PERMISSION_VISITS_READ, "View Visits", "View visit records."),
+    (
+        PERMISSION_PROCEDURES_MANAGE,
+        "Manage Procedure Catalog",
+        "Create, edit, delete, and activate/deactivate entries on the procedure price list.",
+    ),
+    (
+        PERMISSION_PROCEDURES_READ,
+        "View Procedure Catalog",
+        "Search the procedure catalog when registering a visit.",
+    ),
     (PERMISSION_VITALS_READ, "View Vitals", "View recorded vitals."),
     (PERMISSION_VITALS_RECORD, "Record Vitals", "Record a vitals reading for a visit."),
     (
@@ -281,6 +296,12 @@ RECEPTIONIST_PERMISSION_CODES: list[str] = [
     #   RegisterVisitForm) and GET /patients/{id} (usePatientsForVisits — used by
     #   both Today's Registrations and every other worklist that joins Visit to Patient).
     PERMISSION_VISITS_READ,  # GET /visits — Today's Registrations table.
+    # Procedure catalog (2026-08-21 addition) — search the catalog when
+    # registering a visit. Deliberately NOT PERMISSION_PROCEDURES_MANAGE:
+    # editing the catalog itself is Admin-only (see app/modules/visits/
+    # constants.py's module docstring), same split as Pharmacy's own
+    # read/manage pair immediately below.
+    PERMISSION_PROCEDURES_READ,  # GET /visits/procedures/search
     # Recommended addition beyond the originally proposed list — powers the
     # existing Reception dashboard card on "/" (app/modules/dashboard/router.py);
     # every other pre-existing demo role already includes it. Read-only, no

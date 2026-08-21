@@ -24,11 +24,12 @@ export const MODULE_ACCESS = [
   { route: ROUTES.VITALS, permission: 'vitals:read', label: 'Vitals' },
   { route: ROUTES.BILLING, permission: 'billing:read', label: 'Billing' },
   { route: ROUTES.PHARMACY, permission: 'pharmacy:bill', label: 'Pharmacy' },
-  // ADMIN_MEDICINES is not listed here — it's an Admin sub-screen, not a
-  // landing module in its own right; ROUTES.ADMIN (above) already covers
-  // "where does an admin-only account land" for anyone holding
-  // pharmacy:manage (only ever granted alongside the full admin catalog —
-  // see scripts/seed_launch_bootstrap.py).
+  // ADMIN_MEDICINES/ADMIN_PROCEDURES are not listed here — both are
+  // Admin sub-screens, not landing modules in their own right;
+  // ROUTES.ADMIN (above) already covers "where does an admin-only
+  // account land" for anyone holding pharmacy:manage/procedures:manage
+  // (each only ever granted alongside the full admin catalog — see
+  // scripts/seed_launch_bootstrap.py).
 ];
 
 /** Does `permissions` (the user's effective permission-code list)

@@ -21,15 +21,37 @@ from app.modules.auth.models import User
 from app.modules.visits.constants import QUEUE_TOKEN_PAD_WIDTH, QUEUE_TOKEN_PREFIX
 from app.modules.visits.exceptions import (
     InvalidVisitStatusTransitionError,
+    ProcedureInactiveError,
+    ProcedureNotFoundError,
+    VisitAlreadyItemizedError,
     VisitDiscountExceedsAmountError,
     VisitNotFoundError,
+    VisitNotItemizedError,
 )
-from app.modules.visits.models import Visit, VisitStatus
-from app.modules.visits.repository import VISIT_SORTABLE_COLUMNS, VisitRepository
+from app.modules.visits.models import (
+    ITEMIZED_PROCEDURE_PLACEHOLDER,
+    Procedure,
+    Visit,
+    VisitProcedureItem,
+    VisitStatus,
+)
+from app.modules.visits.repository import (
+    PROCEDURE_SORTABLE_COLUMNS,
+    VISIT_SORTABLE_COLUMNS,
+    ProcedureRepository,
+    VisitProcedureItemRepository,
+    VisitRepository,
+)
 from app.shared.audit.repository import AuditLogRepository
 from app.shared.money import quantize_money
 
 _ZERO = Decimal("0.00")
+
+# One (procedure_id, name, amount) resolved procedure line — `name`/
+# `amount` are the already-resolved-and-locked values (catalog-derived
+# when `procedure_id` is set, freely-provided when it's None), never
+# the raw, not-yet-validated request shape. See `_resolve_procedures`.
+ResolvedProcedure = tuple[UUID | None, str, Decimal]
 
 # Phase 6 architecture §4.1's Visit Lifecycle State Machine, plus the
 # `COMPLETED -> PAYMENT_PENDING` reopening transition added by the
@@ -63,10 +85,14 @@ class VisitService:
         session: AsyncSession,
         visit_repository: VisitRepository,
         audit_repository: AuditLogRepository,
+        procedure_repository: ProcedureRepository,
+        procedure_item_repository: VisitProcedureItemRepository,
     ) -> None:
         self._session = session
         self._visit_repo = visit_repository
         self._audit_repo = audit_repository
+        self._procedure_repo = procedure_repository
+        self._procedure_item_repo = procedure_item_repository
 
     async def _generate_queue_token(self) -> str:
         # No separator between prefix and digits: QUEUE_TOKEN_PREFIX
@@ -78,14 +104,47 @@ class VisitService:
         value = await self._visit_repo.next_queue_token_value()
         return f"{QUEUE_TOKEN_PREFIX}{value:0{QUEUE_TOKEN_PAD_WIDTH}d}"
 
+    async def _get_procedure(self, procedure_id: UUID) -> Procedure:
+        procedure = await self._procedure_repo.get_by_id(procedure_id)
+        if procedure is None:
+            raise ProcedureNotFoundError
+        return procedure
+
+    async def _resolve_procedures(
+        self, procedures: list[tuple[UUID | None, str | None, Decimal | None]]
+    ) -> list[ResolvedProcedure]:
+        """Turns the caller's raw `(procedure_id, manual_name,
+        manual_amount)` request triples into resolved, trustworthy
+        `(procedure_id, name, amount)` lines — shared by `register_visit`
+        and `admin_replace_procedure_items` so both go through the exact
+        same catalog-lookup/price-lock logic.
+
+        A catalog-linked entry (`procedure_id` given) has its `name`/
+        `amount` always re-derived from the Procedure row itself, never
+        trusted from the caller (mirrors `PharmacyService.create_bill`'s
+        identical `medicine_name_snapshot`/`unit_price_snapshot`
+        derivation) — `ProcedureInactiveError` if it's been deactivated,
+        exactly like a deactivated Medicine can't be billed. A manual
+        entry (`procedure_id` is `None`) uses the caller's own
+        `manual_name`/`manual_amount` directly, stripped/quantized."""
+        resolved: list[ResolvedProcedure] = []
+        for procedure_id, manual_name, manual_amount in procedures:
+            if procedure_id is not None:
+                procedure = await self._get_procedure(procedure_id)
+                if not procedure.is_active:
+                    raise ProcedureInactiveError(procedure.name)
+                resolved.append((procedure_id, procedure.name, procedure.price))
+            else:
+                resolved.append((None, manual_name.strip(), quantize_money(manual_amount)))
+        return resolved
+
     async def register_visit(
         self,
         *,
         actor: User,
         patient_id: UUID,
         doctor_user_id: UUID | None,
-        procedure: str,
-        amount: Decimal,
+        procedures: list[tuple[UUID | None, str | None, Decimal | None]],
         vitals_required: bool,
         discount_amount: Decimal = _ZERO,
         discount_reason: str | None = None,
@@ -105,22 +164,33 @@ class VisitService:
         starts its consultation first (see
         consultation/service.py's `start_consultation`).
 
+        `procedures` (2026-08-21 addition, replacing the old single
+        `procedure: str, amount: Decimal` pair) is one or more raw
+        `(procedure_id, manual_name, manual_amount)` triples — resolved
+        via `_resolve_procedures` into a real `VisitProcedureItem` row
+        each, exactly like `PharmacyService.create_bill`'s own line
+        items. The subtotal is `sum(item.amount for item in
+        procedures)`; `Visit.amount` ends up `subtotal - discount_amount`
+        — the exact same post-discount meaning `Visit.amount` has always
+        had (see that column's own docstring), just sourced from a real
+        item sum instead of one typed number. `Visit.procedure` itself
+        is never populated from `procedures` — it is set to
+        `ITEMIZED_PROCEDURE_PLACEHOLDER` and must never be displayed;
+        see models.py's `VisitProcedureItem` docstring for the full
+        "never retrofitted onto an older Visit" rationale, which is also
+        why this is a wholly new code path rather than a variation on
+        however a pre-2026-08-21 Visit was created.
+
         `discount_amount` (optional, defaults to none, 2026-08-19
-        addition) is a flat discount off the entered `amount` — same
-        shape as `PharmacyService.create_bill`'s identical parameter:
-        validated here against `amount` (`VisitDiscountExceedsAmountError`
-        if it exceeds it), never against the already-discounted stored
-        value. The stored `Visit.amount` ends up already post-discount
-        (`amount - discount_amount`) — deliberately the same column,
-        same meaning it always had to every existing reader (Billing's
-        Generate Invoice prefill, every revenue aggregate), so a
-        registration-time discount flows through to what's ultimately
-        billed and reported without any of those call sites needing to
-        know a discount happened at all. `discount_reason` is always
-        optional here, even when `discount_amount > 0` — the same
-        product decision the medicine-bill discount already made, not
-        Invoice's own required-reason rule. Independent of Billing's own
-        separate Invoice-level discount, applied later at Generate
+        addition) is a flat discount off the procedures' combined
+        subtotal — same shape as `PharmacyService.create_bill`'s
+        identical parameter: validated here against that subtotal
+        (`VisitDiscountExceedsAmountError` if it exceeds it), never
+        against the already-discounted stored value. `discount_reason`
+        is always optional here, even when `discount_amount > 0` — the
+        same product decision the medicine-bill discount already made,
+        not Invoice's own required-reason rule. Independent of Billing's
+        own separate Invoice-level discount, applied later at Generate
         Invoice time against whatever `Visit.amount` is by then — the
         two stack rather than conflict."""
         discount_amount = quantize_money(discount_amount) if discount_amount else _ZERO
@@ -129,16 +199,18 @@ class VisitService:
         discount_reason = discount_reason.strip() if discount_reason else None
         if discount_amount == _ZERO:
             discount_reason = None
-        amount = quantize_money(amount)
-        if discount_amount > amount:
-            raise VisitDiscountExceedsAmountError(str(amount))
-        net_amount = amount - discount_amount
+
+        resolved_procedures = await self._resolve_procedures(procedures)
+        subtotal = sum((amount for _, _, amount in resolved_procedures), _ZERO)
+        if discount_amount > subtotal:
+            raise VisitDiscountExceedsAmountError(str(subtotal))
+        net_amount = subtotal - discount_amount
 
         visit = Visit(
             patient_id=patient_id,
             doctor_user_id=doctor_user_id,
             queue_token=await self._generate_queue_token(),
-            procedure=procedure,
+            procedure=ITEMIZED_PROCEDURE_PLACEHOLDER,
             amount=net_amount,
             discount_amount=discount_amount,
             discount_reason=discount_reason,
@@ -148,6 +220,17 @@ class VisitService:
             updated_by=actor.id,
         )
         await self._visit_repo.add(visit)
+        for procedure_id, name, item_amount in resolved_procedures:
+            await self._procedure_item_repo.add(
+                VisitProcedureItem(
+                    visit_id=visit.id,
+                    procedure_id=procedure_id,
+                    name=name,
+                    amount=item_amount,
+                    created_by=actor.id,
+                    updated_by=actor.id,
+                )
+            )
         await self._audit_repo.record(
             module="visits",
             action="visits.registered",
@@ -180,6 +263,22 @@ class VisitService:
         matches, unlike `get_visit`: a search miss is an expected,
         routine outcome here, not an error condition."""
         return await self._visit_repo.get_by_queue_token(queue_token)
+
+    async def list_procedure_items(self, visit_id: UUID) -> list[VisitProcedureItem]:
+        """Empty for every visit registered before 2026-08-21, by design
+        — see models.py's `VisitProcedureItem` docstring. Callers use
+        this emptiness as the one signal for whether to render the
+        itemized breakdown or the visit's legacy `procedure`/`amount`
+        fields."""
+        return await self._procedure_item_repo.list_for_visit(visit_id)
+
+    async def list_procedure_items_for_visits(
+        self, visit_ids: list[UUID]
+    ) -> dict[UUID, list[VisitProcedureItem]]:
+        """Batched sibling of `list_procedure_items` — backs `GET
+        /visits`'s list response (see VisitProcedureItemRepository.
+        list_for_visits's own docstring for the N+1-avoidance shape)."""
+        return await self._procedure_item_repo.list_for_visits(visit_ids)
 
     async def count_by_status(self) -> dict[VisitStatus, int]:
         """Read-only aggregate added for the Dashboard module (§22)."""
@@ -350,13 +449,31 @@ class VisitService:
         transition methods, vitals_required is fixed by the routing
         decision already acted on). Not a generic field-level PATCH: the
         caller (ReceptionService.admin_update_visit) is responsible for
-        only ever passing these two keys, mirroring how UserService.
+        only ever passing these keys, mirroring how UserService.
         update_user's docstring reasons about never letting a generic
         update endpoint reach a field that has its own dedicated,
-        business-rule-guarded mutation path."""
+        business-rule-guarded mutation path.
+
+        2026-08-21 bifurcation: only applies to a visit registered
+        before 2026-08-21 (one with no `VisitProcedureItem` rows at
+        all) — `procedure`/`amount` are its only record of what was
+        billed, exactly as they have always been, so this method's
+        original behavior is completely unchanged for it. A visit with
+        procedure items rejects `procedure`/`amount` outright
+        (`VisitAlreadyItemizedError`) — its procedures are corrected
+        through `admin_replace_procedure_items` instead, never through
+        these now-unused flat fields. See models.py's
+        `VisitProcedureItem` docstring for why a legacy visit is never
+        itemized *by this method* either — that path is deliberately
+        out of scope this pass (see `admin_replace_procedure_items`'s
+        own docstring)."""
         visit = await self.get_visit(visit_id)
         if not updates:
             return visit
+        if ("procedure" in updates or "amount" in updates) and await self._procedure_item_repo.list_for_visit(
+            visit_id
+        ):
+            raise VisitAlreadyItemizedError
 
         for field in ("procedure", "amount"):
             if field in updates:
@@ -372,6 +489,77 @@ class VisitService:
             entity_id=visit.id,
             actor_user_id=actor.id,
             metadata={"fields": sorted(updates.keys())},
+        )
+        await self._session.commit()
+        return await self._visit_repo.get_by_id(visit.id)
+
+    async def admin_replace_procedure_items(
+        self,
+        *,
+        actor: User,
+        visit_id: UUID,
+        procedures: list[tuple[UUID | None, str | None, Decimal | None]],
+    ) -> Visit:
+        """Replaces a visit's *entire* procedure-item set in one call —
+        the itemized-era sibling of `update_visit_details`'s flat
+        `procedure`/`amount` edit, for a visit that already has at
+        least one `VisitProcedureItem` (2026-08-21 addition). Rejects
+        outright (`VisitNotItemizedError`) against a visit with none —
+        a pre-2026-08-21 visit's procedures are corrected through
+        `update_visit_details`'s original flat fields instead; this
+        method deliberately never itemizes a legacy visit for the first
+        time (a confirmed, explicit scope decision — see this module's
+        own docstring).
+
+        Soft-deletes every existing item, resolves the caller's new set
+        through the exact same `_resolve_procedures` catalog-lookup/
+        price-lock logic `register_visit` uses, and recomputes
+        `Visit.amount` from the new subtotal against the visit's
+        EXISTING, untouched `discount_amount` (re-validating
+        `VisitDiscountExceedsAmountError` in case the new, possibly
+        smaller subtotal no longer covers it) — `discount_amount`/
+        `discount_reason` themselves are never read from `updates` or
+        modified by this method at all (a separately confirmed, explicit
+        scope decision: procedure correction and discount correction
+        stay fully independent actions, exactly as `update_visit_details`
+        has never touched discount either)."""
+        visit = await self.get_visit(visit_id)
+        existing_items = await self._procedure_item_repo.list_for_visit(visit_id)
+        if not existing_items:
+            raise VisitNotItemizedError
+        if not procedures:
+            raise ValidationError("At least one procedure is required.")
+
+        resolved_procedures = await self._resolve_procedures(procedures)
+        subtotal = sum((amount for _, _, amount in resolved_procedures), _ZERO)
+        if visit.discount_amount > subtotal:
+            raise VisitDiscountExceedsAmountError(str(subtotal))
+
+        now = datetime.now(UTC)
+        for item in existing_items:
+            await self._procedure_item_repo.soft_delete(item, deleted_at=now, deleted_by=actor.id)
+        for procedure_id, name, item_amount in resolved_procedures:
+            await self._procedure_item_repo.add(
+                VisitProcedureItem(
+                    visit_id=visit.id,
+                    procedure_id=procedure_id,
+                    name=name,
+                    amount=item_amount,
+                    created_by=actor.id,
+                    updated_by=actor.id,
+                )
+            )
+
+        visit.amount = subtotal - visit.discount_amount
+        visit.updated_by = actor.id
+        await self._visit_repo.add(visit)
+        await self._audit_repo.record(
+            module="visits",
+            action="visits.procedure_items_replaced_by_admin",
+            entity_type="visit",
+            entity_id=visit.id,
+            actor_user_id=actor.id,
+            metadata={"item_count": len(resolved_procedures)},
         )
         await self._session.commit()
         return await self._visit_repo.get_by_id(visit.id)
@@ -407,3 +595,99 @@ class VisitService:
             metadata={"queue_token": visit.queue_token, "status": visit.status.value},
         )
         await self._session.commit()
+
+    # ------------------------------------------------------------------
+    # Procedure catalog (2026-08-21 addition, Admin-only, procedures:manage)
+    # — mirrors PharmacyService's own "Medicine price list" section
+    # exactly. Unlike Medicine, this catalog also supports a genuine
+    # delete (not only activate/deactivate) — see models.py's
+    # `Procedure` docstring for why that's safe: a `VisitProcedureItem`
+    # already snapshots its name/price at add-time, so deleting (or
+    # deactivating) the catalog entry never affects any visit that
+    # already used it, only prevents *future* selection.
+    # ------------------------------------------------------------------
+
+    async def create_procedure(self, *, actor: User, name: str, price: Decimal) -> Procedure:
+        procedure = Procedure(
+            name=name,
+            price=quantize_money(price),
+            is_active=True,
+            created_by=actor.id,
+            updated_by=actor.id,
+        )
+        await self._procedure_repo.add(procedure)
+        await self._audit_repo.record(
+            module="visits",
+            action="visits.procedure_created",
+            entity_type="procedure",
+            entity_id=procedure.id,
+            actor_user_id=actor.id,
+            metadata={"name": name},
+        )
+        await self._session.commit()
+        return await self._get_procedure(procedure.id)
+
+    async def get_procedure(self, procedure_id: UUID) -> Procedure:
+        return await self._get_procedure(procedure_id)
+
+    async def update_procedure(
+        self, *, actor: User, procedure_id: UUID, updates: dict
+    ) -> Procedure:
+        """Partial update — `updates` comes straight from
+        `UpdateProcedureRequest.model_dump(exclude_unset=True)`, same
+        `exclude_unset` semantics as `PharmacyService.update_medicine`."""
+        procedure = await self._get_procedure(procedure_id)
+        if not updates:
+            return procedure
+
+        for field in ("name", "price", "is_active"):
+            if field in updates:
+                value = updates[field]
+                if field == "price" and value is not None:
+                    value = quantize_money(value)
+                setattr(procedure, field, value)
+
+        procedure.updated_by = actor.id
+        await self._procedure_repo.add(procedure)
+        await self._audit_repo.record(
+            module="visits",
+            action="visits.procedure_updated",
+            entity_type="procedure",
+            entity_id=procedure.id,
+            actor_user_id=actor.id,
+            metadata={"fields": sorted(updates.keys())},
+        )
+        await self._session.commit()
+        return await self._get_procedure(procedure.id)
+
+    async def delete_procedure(self, *, actor: User, procedure_id: UUID) -> None:
+        """Soft-deletes a Procedure catalog entry — safe regardless of
+        whether it has ever been selected for a visit, see this
+        section's own docstring."""
+        procedure = await self._get_procedure(procedure_id)
+        now = datetime.now(UTC)
+        await self._procedure_repo.soft_delete(procedure, deleted_at=now, deleted_by=actor.id)
+        await self._audit_repo.record(
+            module="visits",
+            action="visits.procedure_deleted",
+            entity_type="procedure",
+            entity_id=procedure_id,
+            actor_user_id=actor.id,
+            metadata={"name": procedure.name},
+        )
+        await self._session.commit()
+
+    async def search_procedures(self, *, search: str, limit: int = 20) -> list[Procedure]:
+        return await self._procedure_repo.search_active(search=search, limit=limit)
+
+    async def list_procedures(
+        self, *, search: str | None, sort_by: str, sort_desc: bool, page: int, page_size: int
+    ) -> tuple[list[Procedure], int]:
+        sort_column = PROCEDURE_SORTABLE_COLUMNS[sort_by]
+        return await self._procedure_repo.list_all(
+            search=search,
+            sort_column=sort_column,
+            sort_desc=sort_desc,
+            limit=page_size,
+            offset=(page - 1) * page_size,
+        )

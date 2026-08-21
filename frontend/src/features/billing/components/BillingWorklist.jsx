@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useBillingWorklist, usePatientsForVisits } from '@/features/billing/hooks/useBilling';
+import { VisitProcedureDisplay } from '@/features/visits/components/VisitProcedureDisplay';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
@@ -45,7 +46,9 @@ export function BillingWorklist() {
                     <TableCell>
                       {patient ? `${patient.full_name} (${patient.mr_number})` : '…'}
                     </TableCell>
-                    <TableCell>{visit.procedure}</TableCell>
+                    <TableCell>
+                      <VisitProcedureDisplay visit={visit} />
+                    </TableCell>
                     <TableCell>
                       <Badge
                         variant={visit.status === 'payment_pending' ? 'warning' : 'outline'}

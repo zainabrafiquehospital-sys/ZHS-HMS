@@ -1,8 +1,17 @@
-"""HTTP endpoints for the Visit module — read-only. Visit creation and
-status transitions are exposed as VisitService methods other modules'
-routers call into (Reception creates; Vitals/Consultation/Billing
-transition) — see schemas.py's module docstring for why there is no
-public create/update endpoint here."""
+"""HTTP endpoints for the Visit module. Visit creation and status
+transitions are exposed as VisitService methods other modules' routers
+call into (Reception creates; Vitals/Consultation/Billing transition) —
+see schemas.py's module docstring for why there is no public visit
+create/update endpoint here.
+
+`/procedures/*` (2026-08-21 addition) is the one exception — the
+admin-managed procedure catalog's own CRUD, gated on `procedures:manage`
+(search on `procedures:read`, also granted to Receptionist), mirroring
+app/modules/pharmacy/router.py's `/medicines/*` endpoints almost
+exactly. Declared before `/{visit_id}` below — same routing-order
+precaution that module's own `/bills/mine`/`/bills/stats/by-creator`
+need against `/bills/{bill_id}`, otherwise FastAPI would try to parse
+the literal path segment `procedures` as a `visit_id` UUID and 422."""
 
 from datetime import date as date_type
 from uuid import UUID
@@ -11,15 +20,118 @@ from fastapi import APIRouter, Depends, Query
 
 from app.modules.auth.dependencies import require_permission
 from app.modules.auth.models import User
-from app.modules.visits.constants import PERMISSION_VISITS_READ
+from app.modules.visits.constants import (
+    PERMISSION_PROCEDURES_MANAGE,
+    PERMISSION_PROCEDURES_READ,
+    PERMISSION_VISITS_READ,
+)
 from app.modules.visits.dependencies import get_visit_service
 from app.modules.visits.models import VisitStatus
-from app.modules.visits.schemas import VisitCreatorStatOut, VisitOut, VisitSortField
+from app.modules.visits.schemas import (
+    CreateProcedureRequest,
+    ProcedureOut,
+    ProcedureSortField,
+    UpdateProcedureRequest,
+    VisitCreatorStatOut,
+    VisitOut,
+    VisitSortField,
+)
 from app.modules.visits.service import VisitService
 from app.shared.envelope import success_envelope
 from app.shared.pagination import PaginationMeta, SortOrder
 
 router = APIRouter(prefix="/visits", tags=["visits"])
+
+
+# ----------------------------------------------------------------------
+# Procedure catalog — Admin-only management (2026-08-21 addition)
+# ----------------------------------------------------------------------
+
+
+@router.post("/procedures", status_code=201)
+async def create_procedure(
+    payload: CreateProcedureRequest,
+    visit_service: VisitService = Depends(get_visit_service),
+    actor: User = Depends(require_permission(PERMISSION_PROCEDURES_MANAGE)),
+) -> dict:
+    procedure = await visit_service.create_procedure(
+        actor=actor, name=payload.name, price=payload.price
+    )
+    return success_envelope(ProcedureOut.from_procedure(procedure).model_dump(mode="json"))
+
+
+@router.get("/procedures")
+async def list_procedures(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=200),
+    sort_by: ProcedureSortField = Query(default=ProcedureSortField.NAME),
+    sort_order: SortOrder = Query(default=SortOrder.ASC),
+    visit_service: VisitService = Depends(get_visit_service),
+    _actor: User = Depends(require_permission(PERMISSION_PROCEDURES_MANAGE)),
+) -> dict:
+    """Admin management listing — every procedure, active and inactive
+    alike (see repository.py's `ProcedureRepository.list_all` docstring)."""
+    procedures, total = await visit_service.list_procedures(
+        search=search,
+        sort_by=sort_by.value,
+        sort_desc=sort_order == SortOrder.DESC,
+        page=page,
+        page_size=page_size,
+    )
+    body = [
+        ProcedureOut.from_procedure(procedure).model_dump(mode="json") for procedure in procedures
+    ]
+    meta = PaginationMeta(page=page, page_size=page_size, total=total).model_dump(mode="json")
+    return success_envelope(body, meta)
+
+
+@router.get("/procedures/search")
+async def search_procedures(
+    search: str = Query(min_length=1, max_length=200),
+    visit_service: VisitService = Depends(get_visit_service),
+    _actor: User = Depends(require_permission(PERMISSION_PROCEDURES_READ)),
+) -> dict:
+    """Active-only, case-insensitive partial name match — backs the
+    receptionist's procedure autocomplete at registration time.
+    Unpaginated by design, same rationale as
+    `pharmacy/router.py`'s `search_medicines`."""
+    procedures = await visit_service.search_procedures(search=search)
+    body = [
+        ProcedureOut.from_procedure(procedure).model_dump(mode="json") for procedure in procedures
+    ]
+    return success_envelope(body)
+
+
+@router.patch("/procedures/{procedure_id}")
+async def update_procedure(
+    procedure_id: UUID,
+    payload: UpdateProcedureRequest,
+    visit_service: VisitService = Depends(get_visit_service),
+    actor: User = Depends(require_permission(PERMISSION_PROCEDURES_MANAGE)),
+) -> dict:
+    procedure = await visit_service.update_procedure(
+        actor=actor, procedure_id=procedure_id, updates=payload.model_dump(exclude_unset=True)
+    )
+    return success_envelope(ProcedureOut.from_procedure(procedure).model_dump(mode="json"))
+
+
+@router.delete("/procedures/{procedure_id}")
+async def delete_procedure(
+    procedure_id: UUID,
+    visit_service: VisitService = Depends(get_visit_service),
+    actor: User = Depends(require_permission(PERMISSION_PROCEDURES_MANAGE)),
+) -> dict:
+    """Soft-deletes a procedure catalog entry — safe regardless of
+    whether it has ever been selected for a visit (see
+    VisitService.delete_procedure's own docstring)."""
+    await visit_service.delete_procedure(actor=actor, procedure_id=procedure_id)
+    return success_envelope(None)
+
+
+# ----------------------------------------------------------------------
+# Visits — read-only
+# ----------------------------------------------------------------------
 
 
 @router.get("")
@@ -63,7 +175,17 @@ async def list_visits(
         page=page,
         page_size=page_size,
     )
-    body = [VisitOut.from_visit(visit).model_dump(mode="json") for visit in visits]
+    # Batched — one extra query for every visit on this page, not one
+    # query per visit (see VisitProcedureItemRepository.list_for_visits's
+    # own N+1-avoidance docstring). Empty for every pre-2026-08-21 visit,
+    # by design.
+    items_by_visit = await visit_service.list_procedure_items_for_visits(
+        [visit.id for visit in visits]
+    )
+    body = [
+        VisitOut.from_visit(visit, items_by_visit.get(visit.id, [])).model_dump(mode="json")
+        for visit in visits
+    ]
     meta = PaginationMeta(page=page, page_size=page_size, total=total).model_dump(mode="json")
     return success_envelope(body, meta)
 
@@ -98,4 +220,5 @@ async def get_visit(
     _actor: User = Depends(require_permission(PERMISSION_VISITS_READ)),
 ) -> dict:
     visit = await visit_service.get_visit(visit_id)
-    return success_envelope(VisitOut.from_visit(visit).model_dump(mode="json"))
+    procedure_items = await visit_service.list_procedure_items(visit.id)
+    return success_envelope(VisitOut.from_visit(visit, procedure_items).model_dump(mode="json"))

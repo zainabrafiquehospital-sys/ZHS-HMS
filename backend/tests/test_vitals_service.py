@@ -36,8 +36,7 @@ async def _register(reception_service, doctor, suffix, vitals_required):
             "address": None,
         },
         doctor_user_id=doctor.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=vitals_required,
     )
     return visit, entry

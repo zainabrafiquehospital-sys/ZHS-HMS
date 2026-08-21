@@ -6,6 +6,10 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { registerVisitSchema } from '@/features/reception/schemas/registerVisitSchema';
 import { useRegisterVisit } from '@/features/reception/hooks/useReception';
 import { patientsService } from '@/features/patients/api/patientsService';
+import {
+  ProcedureItemsEditor,
+  procedureItemToRequestPayload,
+} from '@/features/visits/components/ProcedureItemsEditor';
 import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
 import { Label } from '@/shared/components/ui/Label';
@@ -28,14 +32,12 @@ const DEFAULT_VALUES = {
     cnic: '',
     address: '',
   },
-  procedure: '',
-  amount: '',
   vitalsRequired: false,
   discountAmount: '',
   discountReason: '',
 };
 
-function buildPayload(values, applyDiscount) {
+function buildPayload(values, applyDiscount, procedureItems) {
   const isNew = values.patientMode === 'new';
   return {
     patient_id: isNew ? null : values.existingPatientId,
@@ -50,8 +52,7 @@ function buildPayload(values, applyDiscount) {
           address: values.newPatient.address || null,
         }
       : null,
-    procedure: values.procedure,
-    amount: Number(values.amount),
+    procedures: procedureItems.map(procedureItemToRequestPayload),
     vitals_required: values.vitalsRequired,
     // Belt-and-suspenders with handleApplyDiscountToggle's own
     // clearing (below): even if a stale value somehow survived, an
@@ -79,15 +80,25 @@ export function RegisterVisitForm({ onRegistered }) {
 
   const patientMode = watch('patientMode');
   const existingPatientLabel = watch('existingPatientLabel');
+  // The itemized procedure breakdown (2026-08-21 addition, replacing
+  // the old flat procedure/amount fields) — plain local state, not a
+  // registered form field, the same way `applyDiscount` right below
+  // already is; see ProcedureItemsEditor.jsx's own docstring for the
+  // full shape/rationale.
+  const [procedureItems, setProcedureItems] = useState([]);
+  const [procedureItemsError, setProcedureItemsError] = useState(null);
   // Mirrors MedicineBillingWorkspace.jsx's "Apply Discount" checkbox
   // exactly (2026-08-19 addition): unticked, the two discount fields
   // stay hidden and no discount is ever sent, regardless of any stale
   // value typed before unticking (see handleApplyDiscountToggle below).
   const [applyDiscount, setApplyDiscount] = useState(false);
-  const watchedAmount = watch('amount');
   const watchedDiscount = watch('discountAmount');
+  const procedureItemsTotal = procedureItems.reduce(
+    (sum, item) => sum + Number(item.amount || 0),
+    0,
+  );
   const netAmountPreview =
-    Number(watchedAmount || 0) - (applyDiscount ? Number(watchedDiscount || 0) : 0);
+    procedureItemsTotal - (applyDiscount ? Number(watchedDiscount || 0) : 0);
 
   function handleApplyDiscountToggle(checked) {
     setApplyDiscount(checked);
@@ -98,9 +109,17 @@ export function RegisterVisitForm({ onRegistered }) {
   }
 
   async function onSubmit(values) {
+    setProcedureItemsError(null);
+    if (procedureItems.length === 0) {
+      setProcedureItemsError('Add at least one procedure.');
+      return;
+    }
     try {
-      const response = await registerVisit.mutateAsync(buildPayload(values, applyDiscount));
+      const response = await registerVisit.mutateAsync(
+        buildPayload(values, applyDiscount, procedureItems),
+      );
       reset(DEFAULT_VALUES);
+      setProcedureItems([]);
       setApplyDiscount(false);
       onRegistered?.(response.data);
       // RegistrationSummary (rendered by the parent via onRegistered)
@@ -242,25 +261,16 @@ export function RegisterVisitForm({ onRegistered }) {
             </>
           )}
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="procedure">Procedure</Label>
-              <Input
-                id="procedure"
-                placeholder="e.g. Consultation, Follow-up, Normal Delivery"
-                {...register('procedure')}
-              />
-              {errors.procedure ? (
-                <p className="text-xs text-destructive">{errors.procedure.message}</p>
-              ) : null}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="amount">Amount</Label>
-              <Input id="amount" type="number" min="0" step="0.01" {...register('amount')} />
-              {errors.amount ? (
-                <p className="text-xs text-destructive">{errors.amount.message}</p>
-              ) : null}
-            </div>
+          {/* Itemized procedures (2026-08-21 addition, replacing the old
+              flat Procedure/Amount fields) — catalog search + manual
+              fallback, one or more line items, each with its own price;
+              see ProcedureItemsEditor.jsx's own docstring. */}
+          <div className="flex flex-col gap-1.5">
+            <Label>Procedures</Label>
+            <ProcedureItemsEditor items={procedureItems} onChange={setProcedureItems} />
+            {procedureItemsError ? (
+              <p className="text-xs text-destructive">{procedureItemsError}</p>
+            ) : null}
           </div>
 
           <Controller
@@ -279,15 +289,16 @@ export function RegisterVisitForm({ onRegistered }) {
             )}
           />
 
-          {/* Optional flat discount off Amount (2026-08-19 addition) —
-              same toggle shape as the "Vitals required" checkbox above:
-              unticked, no discount fields show and none is applied;
-              ticked, it reveals the amount + optional reason and a live
-              Net Amount preview. Flows through to Billing's Generate
-              Invoice prefill and every revenue figure automatically —
-              see VisitService.register_visit's own docstring — since
-              the Visit's stored `amount` ends up already post-discount.
-              Plain local state, not a registered form field — mirrors
+          {/* Optional flat discount off the procedures' combined total
+              (2026-08-19 addition) — same toggle shape as the "Vitals
+              required" checkbox above: unticked, no discount fields show
+              and none is applied; ticked, it reveals the amount +
+              optional reason and a live Net Amount preview. Flows
+              through to Billing's Generate Invoice prefill and every
+              revenue figure automatically — see VisitService.
+              register_visit's own docstring — since the Visit's stored
+              `amount` ends up already post-discount. Plain local state,
+              not a registered form field — mirrors
               MedicineBillingWorkspace.jsx's own applyDiscount toggle. */}
           <label className="flex items-center gap-2 text-sm text-foreground">
             <input

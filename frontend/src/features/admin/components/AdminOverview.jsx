@@ -13,6 +13,11 @@ import {
 } from '@/features/admin/hooks/useAdminOverview';
 import { adminUpdateVisitSchema } from '@/features/reception/schemas/adminUpdateVisitSchema';
 import {
+  ProcedureItemsEditor,
+  procedureItemToRequestPayload,
+} from '@/features/visits/components/ProcedureItemsEditor';
+import { VisitProcedureDisplay } from '@/features/visits/components/VisitProcedureDisplay';
+import {
   useDeleteMedicineBill,
   useMedicineBillDetail,
   useMedicineBillsForDay,
@@ -169,19 +174,90 @@ function RecordBillPaymentDialog({ bill, onClose }) {
   );
 }
 
+/** The Patient-identity half of the "Edit Slip" form — shared by both
+ * `EditVisitDialogLegacy` and `EditVisitDialogItemized` below (2026-08-21
+ * split), since patient-identity correction is completely unaffected by
+ * whether the visit itself is itemized. */
+function PatientIdentityFields({ register, errors }) {
+  return (
+    <>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="admin-edit-full-name">Patient Name</Label>
+        <Input id="admin-edit-full-name" {...register('full_name')} />
+        {errors.full_name ? (
+          <p className="text-xs text-destructive">{errors.full_name.message}</p>
+        ) : null}
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="admin-edit-age">Age</Label>
+          <Input id="admin-edit-age" type="number" {...register('age_years')} />
+          {errors.age_years ? (
+            <p className="text-xs text-destructive">{errors.age_years.message}</p>
+          ) : null}
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="admin-edit-gender">Gender</Label>
+          <Select id="admin-edit-gender" {...register('gender')}>
+            <option value="">—</option>
+            <option value="female">Female</option>
+            <option value="male">Male</option>
+            <option value="other">Other</option>
+          </Select>
+        </div>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="admin-edit-phone">Phone Number</Label>
+        <Input id="admin-edit-phone" {...register('phone_number')} />
+        {errors.phone_number ? (
+          <p className="text-xs text-destructive">{errors.phone_number.message}</p>
+        ) : null}
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="admin-edit-guardian">Guardian Name</Label>
+        <Input id="admin-edit-guardian" {...register('guardian_name')} />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="admin-edit-cnic">CNIC</Label>
+        <Input id="admin-edit-cnic" {...register('cnic')} />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="admin-edit-address">Address</Label>
+        <Textarea id="admin-edit-address" rows={2} {...register('address')} />
+      </div>
+    </>
+  );
+}
+
 /** Admin-only "Edit Slip" (2026-08-19 addition, `reception:update_visit`
  * — see receptionService.updateVisit's docstring) — corrects a wrongly-
  * entered registration: the linked patient's identity fields and/or the
- * visit's own procedure/amount, in one form/one call. Never rendered
- * for anyone without that permission — the Edit button that opens this
- * is itself gated (see the "Actions" column below); this dialog is not
- * a second authorization boundary, the backend's own `require_permission`
- * check already is. Pre-filled with the visit/patient's *current*
- * values (not blank) — every field is sent back on submit regardless of
- * whether it was actually touched, which is safe (unchanged fields
- * round-trip to the same value) and far simpler than dirty-field
- * tracking for a form this size. */
+ * visit's own procedure/amount (or procedure items), in one form/one
+ * call. Never rendered for anyone without that permission — the Edit
+ * button that opens this is itself gated (see the "Actions" column
+ * below); this dialog is not a second authorization boundary, the
+ * backend's own `require_permission` check already is.
+ *
+ * 2026-08-21 bifurcation: which variant renders depends purely on
+ * whether this visit already has any `procedure_items` (see
+ * backend/app/modules/visits/schemas.py's `VisitOut.procedure_items`
+ * docstring) — `GET /visits` already returns this for every row, no
+ * extra fetch needed here, unlike the medicine-bill admin-edit dialog's
+ * own fetch-on-open step. A visit registered before 2026-08-21 (empty
+ * `procedure_items`, forever) gets the original flat Procedure/Amount
+ * form, completely unchanged. A visit registered from then on gets the
+ * itemized procedure editor instead — see `VisitService.
+ * update_visit_details`'s/`admin_replace_procedure_items`'s own
+ * docstrings for why a legacy visit is never converted to itemized
+ * through this dialog (a confirmed, explicit scope decision). */
 function EditVisitDialog({ visit, patient, onClose }) {
+  if (visit.procedure_items?.length > 0) {
+    return <EditVisitDialogItemized visit={visit} patient={patient} onClose={onClose} />;
+  }
+  return <EditVisitDialogLegacy visit={visit} patient={patient} onClose={onClose} />;
+}
+
+function EditVisitDialogLegacy({ visit, patient, onClose }) {
   const updateVisit = useUpdateVisit();
   const [error, setError] = useState(null);
   const {
@@ -230,50 +306,7 @@ function EditVisitDialog({ visit, patient, onClose }) {
       onConfirm={handleSubmit(onSubmit)}
       description={
         <div className="flex max-h-[60vh] flex-col gap-3 overflow-y-auto pr-1">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="admin-edit-full-name">Patient Name</Label>
-            <Input id="admin-edit-full-name" {...register('full_name')} />
-            {errors.full_name ? (
-              <p className="text-xs text-destructive">{errors.full_name.message}</p>
-            ) : null}
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="admin-edit-age">Age</Label>
-              <Input id="admin-edit-age" type="number" {...register('age_years')} />
-              {errors.age_years ? (
-                <p className="text-xs text-destructive">{errors.age_years.message}</p>
-              ) : null}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="admin-edit-gender">Gender</Label>
-              <Select id="admin-edit-gender" {...register('gender')}>
-                <option value="">—</option>
-                <option value="female">Female</option>
-                <option value="male">Male</option>
-                <option value="other">Other</option>
-              </Select>
-            </div>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="admin-edit-phone">Phone Number</Label>
-            <Input id="admin-edit-phone" {...register('phone_number')} />
-            {errors.phone_number ? (
-              <p className="text-xs text-destructive">{errors.phone_number.message}</p>
-            ) : null}
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="admin-edit-guardian">Guardian Name</Label>
-            <Input id="admin-edit-guardian" {...register('guardian_name')} />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="admin-edit-cnic">CNIC</Label>
-            <Input id="admin-edit-cnic" {...register('cnic')} />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="admin-edit-address">Address</Label>
-            <Textarea id="admin-edit-address" rows={2} {...register('address')} />
-          </div>
+          <PatientIdentityFields register={register} errors={errors} />
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="admin-edit-procedure">Procedure</Label>
             <Input id="admin-edit-procedure" {...register('procedure')} />
@@ -286,6 +319,87 @@ function EditVisitDialog({ visit, patient, onClose }) {
             <Input id="admin-edit-amount" type="number" step="0.01" {...register('amount')} />
             {errors.amount ? (
               <p className="text-xs text-destructive">{errors.amount.message}</p>
+            ) : null}
+          </div>
+          {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        </div>
+      }
+    />
+  );
+}
+
+/** The itemized-visit sibling of `EditVisitDialogLegacy` (2026-08-21
+ * addition) — same patient-identity half, but replaces the flat
+ * Procedure/Amount fields with `ProcedureItemsEditor`, pre-filled from
+ * `visit.procedure_items` and submitted as a full replacement of the
+ * visit's entire procedure-item set (see VisitService.
+ * admin_replace_procedure_items's own docstring). Discount is
+ * deliberately untouched by this dialog, exactly as it always has been
+ * — a separately confirmed, explicit scope decision. */
+function EditVisitDialogItemized({ visit, patient, onClose }) {
+  const updateVisit = useUpdateVisit();
+  const [error, setError] = useState(null);
+  const [procedureItems, setProcedureItems] = useState(() =>
+    visit.procedure_items.map((item) => ({
+      key: item.id,
+      procedure_id: item.procedure_id,
+      name: item.name,
+      amount: item.amount,
+    })),
+  );
+  const [procedureItemsError, setProcedureItemsError] = useState(null);
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm({
+    resolver: zodResolver(adminUpdateVisitSchema),
+    defaultValues: {
+      full_name: patient?.full_name ?? '',
+      guardian_name: patient?.guardian_name ?? '',
+      gender: patient?.gender ?? '',
+      age_years: patient?.age_years ?? '',
+      phone_number: patient?.phone_number ?? '',
+      cnic: patient?.cnic ?? '',
+      address: patient?.address ?? '',
+    },
+  });
+
+  async function onSubmit(values) {
+    setError(null);
+    setProcedureItemsError(null);
+    if (procedureItems.length === 0) {
+      setProcedureItemsError('At least one procedure is required.');
+      return;
+    }
+    const updates = { ...values, procedures: procedureItems.map(procedureItemToRequestPayload) };
+    for (const key of ['guardian_name', 'gender', 'cnic', 'address']) {
+      if (updates[key] === '') delete updates[key];
+    }
+    try {
+      await updateVisit.mutateAsync({ visitId: visit.id, updates });
+      onClose();
+    } catch (submitError) {
+      setError(submitError.message || 'Unable to update this visit.');
+    }
+  }
+
+  return (
+    <ConfirmDialog
+      open
+      title={`Edit Slip — ${visit.queue_token}`}
+      confirmLabel={isSubmitting ? 'Saving…' : 'Save Changes'}
+      cancelLabel="Cancel"
+      onCancel={onClose}
+      onConfirm={handleSubmit(onSubmit)}
+      description={
+        <div className="flex max-h-[70vh] flex-col gap-3 overflow-y-auto pr-1">
+          <PatientIdentityFields register={register} errors={errors} />
+          <div className="flex flex-col gap-1.5">
+            <Label>Procedures</Label>
+            <ProcedureItemsEditor items={procedureItems} onChange={setProcedureItems} />
+            {procedureItemsError ? (
+              <p className="text-xs text-destructive">{procedureItemsError}</p>
             ) : null}
           </div>
           {error ? <p className="text-xs text-destructive">{error}</p> : null}
@@ -937,8 +1051,8 @@ export function AdminOverview() {
                             <TableCell className="whitespace-nowrap">
                               {patient?.phone_number || '—'}
                             </TableCell>
-                            <TableCell className="max-w-[160px] truncate">
-                              {visit.procedure}
+                            <TableCell className="max-w-[160px]">
+                              <VisitProcedureDisplay visit={visit} className="truncate" />
                             </TableCell>
                             <TableCell>
                               {visit.doctor_user_id ? (

@@ -12,6 +12,7 @@ import {
 } from '@/features/consultation/hooks/useConsultation';
 import { useVitalsForVisits } from '@/features/vitals/hooks/useVitals';
 import { getWorstSeverity, SEVERITY_BADGE_VARIANT, SEVERITY_LABEL } from '@/features/vitals/utils/vitalsSeverity';
+import { VisitProcedureDisplay } from '@/features/visits/components/VisitProcedureDisplay';
 import { VISIT_STATUS_BADGE_VARIANT } from '@/shared/constants/visitStatus';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
@@ -60,7 +61,9 @@ function QueueTable({ visits, patientsById, vitalsByVisitId, isLoadingVitals, ac
               <TableCell>
                 {patient ? `${patient.full_name} (${patient.mr_number})` : '…'}
               </TableCell>
-              <TableCell>{visit.procedure}</TableCell>
+              <TableCell>
+                <VisitProcedureDisplay visit={visit} />
+              </TableCell>
               <TableCell>
                 <VitalsBadge
                   records={vitalsByVisitId[visit.id]}
@@ -119,7 +122,9 @@ function VitalsPendingTable({ entries, patientsById }) {
               <TableCell>
                 {patient ? `${patient.full_name} (${patient.mr_number})` : '…'}
               </TableCell>
-              <TableCell>{visit.procedure}</TableCell>
+              <TableCell>
+                <VisitProcedureDisplay visit={visit} />
+              </TableCell>
               <TableCell className="text-muted-foreground">
                 {VITALS_PENDING_REASON_LABEL[reason]}
               </TableCell>

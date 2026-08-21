@@ -5,6 +5,21 @@ conventions exactly."""
 PERMISSION_VISITS_CREATE = "visits:create"
 PERMISSION_VISITS_READ = "visits:read"
 
+# Procedure catalog (2026-08-21 addition) — mirrors
+# app/modules/pharmacy/constants.py's `pharmacy:manage`/`pharmacy:read`
+# split exactly: one Admin-only permission for the full catalog CRUD
+# (create/update/delete/list-all — a single combined permission,
+# deliberately not split the way `pharmacy:update_bill`/
+# `pharmacy:delete_bill` are, since that split exists specifically for
+# admin-correcting-someone-else's-transaction scenarios; catalog
+# management here is 100% admin-only either way, so there is no
+# "grant one without the other" scenario worth preserving — confirmed
+# design decision, same shape as Medicine's own single `pharmacy:manage`
+# permission), and one permission granted to Receptionist too, gating
+# only the registration-time search.
+PERMISSION_PROCEDURES_MANAGE = "procedures:manage"
+PERMISSION_PROCEDURES_READ = "procedures:read"
+
 # Queue Token format (Phase 6 architecture §18): a fixed prefix plus a
 # zero-padded sequence value. See VisitRepository.next_queue_token_value
 # for the race-safe generation (a real Postgres SEQUENCE, mirroring

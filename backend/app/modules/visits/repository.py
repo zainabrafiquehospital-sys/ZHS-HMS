@@ -10,12 +10,20 @@ from sqlalchemy import Sequence, func, select, update
 from sqlalchemy.orm import InstrumentedAttribute
 
 from app.modules.visits.constants import QUEUE_TOKEN_SEQUENCE_NAME
-from app.modules.visits.models import Visit, VisitStatus
+from app.modules.visits.models import Procedure, Visit, VisitProcedureItem, VisitStatus
 from app.shared.repository.base_repository import BaseRepository
 
 VISIT_SORTABLE_COLUMNS: dict[str, InstrumentedAttribute] = {
     "created_at": Visit.created_at,
     "status": Visit.status,
+}
+
+# Whitelist of columns ProcedureRepository.list_all may sort by — never
+# accept a raw column/attribute name from a caller, same rationale as
+# app/modules/pharmacy/repository.py's MEDICINE_SORTABLE_COLUMNS.
+PROCEDURE_SORTABLE_COLUMNS: dict[str, InstrumentedAttribute] = {
+    "created_at": Procedure.created_at,
+    "name": Procedure.name,
 }
 
 # See app/modules/patients/repository.py's `_mr_number_sequence` for the
@@ -188,3 +196,97 @@ class VisitRepository(BaseRepository[Visit]):
         result = await self.session.execute(stmt)
         count, revenue = result.one()
         return count, (revenue if revenue is not None else Decimal("0.00"))
+
+
+class ProcedureRepository(BaseRepository[Procedure]):
+    """Mirrors app/modules/pharmacy/repository.py's `MedicineRepository`
+    almost exactly (2026-08-21 addition)."""
+
+    model = Procedure
+
+    async def search_active(self, *, search: str, limit: int) -> list[Procedure]:
+        """Backs the receptionist-facing autocomplete (`GET
+        /visits/procedures/search`) — active procedures only, case-
+        insensitive partial name match, same `ILIKE` pattern as
+        `MedicineRepository.search_active`."""
+        pattern = f"%{search}%"
+        stmt = self._exclude_soft_deleted(
+            select(Procedure)
+            .where(Procedure.is_active.is_(True), Procedure.name.ilike(pattern))
+            .order_by(Procedure.name.asc())
+            .limit(limit),
+            include_deleted=False,
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_all(
+        self,
+        *,
+        search: str | None,
+        sort_column: InstrumentedAttribute,
+        sort_desc: bool,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[Procedure], int]:
+        """Backs the admin management screen (`GET /visits/procedures`)
+        — every procedure, active and inactive alike, so a deactivated
+        entry stays visible and re-activatable there. Soft-deleted
+        procedures are excluded (unlike Medicine, this catalog also
+        supports a genuine delete, not only activate/deactivate — see
+        models.py's `Procedure` docstring)."""
+        conditions = [Procedure.deleted_at.is_(None)]
+        if search:
+            conditions.append(Procedure.name.ilike(f"%{search}%"))
+
+        stmt = select(Procedure).where(*conditions)
+        total = (
+            await self.session.execute(select(func.count()).select_from(stmt.subquery()))
+        ).scalar_one()
+
+        order_column = sort_column.desc() if sort_desc else sort_column.asc()
+        stmt = stmt.order_by(order_column, Procedure.id).limit(limit).offset(offset)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all()), total
+
+
+class VisitProcedureItemRepository(BaseRepository[VisitProcedureItem]):
+    """Mirrors app/modules/pharmacy/repository.py's
+    `MedicineBillItemRepository` (2026-08-21 addition)."""
+
+    model = VisitProcedureItem
+
+    async def list_for_visit(self, visit_id: UUID) -> list[VisitProcedureItem]:
+        stmt = self._exclude_soft_deleted(
+            select(VisitProcedureItem)
+            .where(VisitProcedureItem.visit_id == visit_id)
+            .order_by(VisitProcedureItem.created_at.asc()),
+            include_deleted=False,
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_for_visits(
+        self, visit_ids: list[UUID]
+    ) -> dict[UUID, list[VisitProcedureItem]]:
+        """Batched sibling of `list_for_visit` — one query for every
+        given visit's procedure items, not one query per visit (the
+        same N+1 avoidance as `MedicineBillItemRepository.
+        count_items_for_bills`), backing `GET /visits`'s list response.
+        A visit with zero matching rows (every visit registered before
+        2026-08-21, by design — see models.py's `VisitProcedureItem`
+        docstring) simply has no entry in the returned dict; callers
+        should default to `[]`."""
+        if not visit_ids:
+            return {}
+        stmt = self._exclude_soft_deleted(
+            select(VisitProcedureItem)
+            .where(VisitProcedureItem.visit_id.in_(visit_ids))
+            .order_by(VisitProcedureItem.visit_id, VisitProcedureItem.created_at.asc()),
+            include_deleted=False,
+        )
+        result = await self.session.execute(stmt)
+        items_by_visit: dict[UUID, list[VisitProcedureItem]] = {}
+        for item in result.scalars().all():
+            items_by_visit.setdefault(item.visit_id, []).append(item)
+        return items_by_visit

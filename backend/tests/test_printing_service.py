@@ -176,6 +176,105 @@ def test_render_slip_escapes_html_in_discount_reason():
 
 
 # ---------------------------------------------------------------------
+# Itemized procedures (2026-08-21 addition) — the hybrid switch between
+# this slip's two layouts. `visit_procedure_items` empty/omitted (every
+# test above) exercises the legacy, byte-for-byte-unchanged branch;
+# non-empty exercises the new itemized table. See
+# render_registration_slip's own docstring for the full mechanism.
+# ---------------------------------------------------------------------
+
+
+def test_render_slip_with_one_procedure_item_shows_itemized_table():
+    html_document = _render_slip(
+        visit_amount=Decimal("800.00"),
+        visit_procedure_items=[("Checkup", Decimal("800.00"))],
+    )
+
+    assert "Checkup" in html_document
+    assert "800.00" in html_document
+    assert "Total Amount" in html_document
+    assert "Net Amount" in html_document
+    assert 'class="items"' in html_document
+    # The legacy row-based "Procedure" label must not also render.
+    assert '<span class="label">Procedure</span>' not in html_document
+
+
+def test_render_slip_with_multiple_procedure_items_lists_each_on_its_own_line():
+    html_document = _render_slip(
+        visit_amount=Decimal("1800.00"),
+        visit_procedure_items=[
+            ("Checkup", Decimal("800.00")),
+            ("Scan", Decimal("700.00")),
+            ("Follow-up", Decimal("300.00")),
+        ],
+    )
+
+    assert "Checkup" in html_document
+    assert "Scan" in html_document
+    assert "Follow-up" in html_document
+    assert "800.00" in html_document
+    assert "700.00" in html_document
+    assert "300.00" in html_document
+    assert "1,800.00" in html_document  # subtotal: 800 + 700 + 300
+
+
+def test_render_slip_itemized_without_discount_still_shows_net_amount():
+    """Unlike the legacy layout (single Amount row, no Net Amount unless
+    discounted), the itemized table always shows both Total Amount and
+    Net Amount — mirroring render_medicine_bill_receipt's/
+    render_invoice_receipt's identical always-shown convention."""
+    html_document = _render_slip(
+        visit_amount=Decimal("800.00"),
+        visit_procedure_items=[("Checkup", Decimal("800.00"))],
+    )
+
+    assert "Discount" not in html_document
+    assert "Total Amount" in html_document
+    assert "Net Amount" in html_document
+
+
+def test_render_slip_itemized_with_discount_shows_lines_in_correct_order():
+    html_document = _render_slip(
+        visit_amount=Decimal("1500.00"),
+        visit_discount_amount=Decimal("300.00"),
+        visit_discount_reason="Staff discount",
+        visit_procedure_items=[
+            ("Checkup", Decimal("1000.00")),
+            ("Scan", Decimal("800.00")),
+        ],
+    )
+
+    assert "Discount (Staff discount)" in html_document
+    assert "1,800.00" in html_document  # subtotal
+    assert "1,500.00" in html_document  # net
+
+    total_idx = html_document.index("Total Amount")
+    discount_idx = html_document.index("Discount (Staff discount)")
+    net_idx = html_document.index("Net Amount")
+    assert total_idx < discount_idx < net_idx
+
+
+def test_render_slip_itemized_escapes_html_in_procedure_name():
+    html_document = _render_slip(
+        visit_amount=Decimal("500.00"),
+        visit_procedure_items=[("<script>alert(1)</script>", Decimal("500.00"))],
+    )
+
+    assert "<script>alert(1)</script>" not in html_document
+    assert "&lt;script&gt;" in html_document
+
+
+def test_render_slip_empty_procedure_items_list_falls_back_to_legacy_layout():
+    """An explicitly-empty list must behave identically to the omitted/
+    None default — both mean "not itemized" (see this function's own
+    docstring: `visit_procedure_items` is falsy either way)."""
+    html_document = _render_slip(visit_procedure_items=[])
+
+    assert ">Amount<" in html_document
+    assert 'class="items"' not in html_document
+
+
+# ---------------------------------------------------------------------
 # Payment method (2026-08-19 addition) — a "Paid via: <method(s)>"
 # summary line on every receipt/slip type, built from the caller-
 # computed distinct list of payment methods actually used (see

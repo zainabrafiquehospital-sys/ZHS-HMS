@@ -10,7 +10,42 @@ module never reaches back into any of theirs. Queue routing (which role's
 worklist a Visit currently sits in) is a deliberately separate, faster-
 changing concept the Queue module (not yet built) will own — §4.1 is
 explicit that a doctor-initiated vitals detour changes Queue routing
-without moving the Visit out of `IN_CONSULTATION`."""
+without moving the Visit out of `IN_CONSULTATION`.
+
+Two more entities (2026-08-21 addition — itemized procedures):
+- `Procedure` — the admin-managed procedure price list, mirroring
+  app/modules/pharmacy/models.py's `Medicine` almost exactly (no
+  category — nothing about a procedure needs one). `is_active` is the
+  same "no longer offered" soft flag Medicine's own column is; unlike
+  Medicine, the admin screen for this catalog also supports a genuine
+  soft-delete (see VisitService's procedure-catalog methods) — a
+  deliberate, explicitly-confirmed broadening beyond Medicine's own
+  create/edit/activate-only shape, since nothing about a historical
+  `VisitProcedureItem` depends on its source Procedure row still
+  existing (it already snapshots the name at add-time, see below).
+- `VisitProcedureItem` — one procedure line on a Visit **registered
+  from 2026-08-21 onward only**. `procedure_id` is nullable and is the
+  per-item (not per-visit) discriminator between a catalog-linked entry
+  (snapshotted `name`/`amount` from the Procedure at add-time, its
+  price locked — never client-editable, mirroring
+  `MedicineBillItem.unit_price_snapshot`'s identical price-integrity
+  rule) and a manual/free-typed entry (`procedure_id IS NULL`, `name`/
+  `amount` both freely provided) — the two shapes coexist as separate
+  rows on the very same Visit, never mutually exclusive at the parent
+  level the way `MedicineBill.manual_patient_*` is.
+
+  Deliberately NOT retrofitted onto any visit registered before this
+  feature shipped — an explicit, confirmed decision: every visit
+  registered before 2026-08-21 keeps its original single `Visit.
+  procedure`/`Visit.amount` fields as its only record of what was
+  billed, forever, with zero conversion. This is why `Visit.procedure`
+  stays `NOT NULL` unchanged below despite no longer being read for
+  display on a Visit that has procedure items — see that column's own
+  docstring for the exact reasoning and the placeholder value a
+  from-now-on Visit stores there instead. Every caller (print, every
+  list/detail view) decides which of the two shapes to render for a
+  given Visit purely by checking whether it has any `VisitProcedureItem`
+  rows at all — never by a date/version flag on the Visit itself."""
 
 from decimal import Decimal
 from enum import Enum as PyEnum
@@ -22,6 +57,16 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.shared.base_entity import BaseEntity
 
 _MONEY = Numeric(10, 2)
+
+# Stored in Visit.procedure for every visit registered from 2026-08-21
+# onward (see Visit.procedure's own docstring) — the column is NOT NULL
+# and stays that way unchanged, so a real, obviously-synthetic value is
+# written rather than reusing whatever the receptionist's first
+# procedure happened to be named (which would risk some future reader
+# mistaking it for a real single-procedure summary again, exactly what
+# this feature moved away from). No code should ever display this
+# string — every reader checks for VisitProcedureItem rows first.
+ITEMIZED_PROCEDURE_PLACEHOLDER = "(itemized — see procedure items)"
 
 
 class VisitStatus(PyEnum):
@@ -82,18 +127,34 @@ class Visit(BaseEntity):
     # consultation/service.py's `start_consultation`).
     doctor_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("user.id"))
     queue_token: Mapped[str] = mapped_column(String(20), nullable=False)
+    # For a visit registered before 2026-08-21: the real, single
+    # procedure name, exactly as it always has been — still the only
+    # record of what this visit was for, never touched by the itemized-
+    # procedures feature. For a visit registered from 2026-08-21 onward
+    # (which always has one or more `VisitProcedureItem` rows instead):
+    # `ITEMIZED_PROCEDURE_PLACEHOLDER`, a fixed value nothing ever
+    # displays — deliberately kept `NOT NULL` unchanged (not relaxed to
+    # nullable) rather than dropped or widened, since this feature was
+    # explicitly confirmed to leave every existing column's definition
+    # untouched. Every reader — print, every list/detail view, the
+    # admin edit dialog — decides which of the two to use purely by
+    # checking whether the Visit has any procedure items at all.
     procedure: Mapped[str] = mapped_column(String(200), nullable=False)
-    # The procedure's price, entered once by Reception at registration —
-    # Billing later reads this value as the invoice's starting line item
+    # The visit's total charge. For a pre-2026-08-21 visit: entered once
+    # by Reception at registration, exactly as it always has been —
+    # Billing reads this value as the invoice's starting line item
     # rather than asking Reception to type the same amount a second time
     # (see billing's GenerateInvoiceRequest usage in the frontend).
     # Already post-discount (2026-08-19 addition, see discount_amount's
     # own docstring below) — every existing reader of this column
     # (Billing's prefill, every revenue aggregate) already treats it as
-    # "the real amount", so keeping that meaning here is what makes a
-    # registration-time discount actually flow through everywhere else
-    # in the system for free, rather than needing every such call site
-    # updated to separately subtract a discount.
+    # "the real amount". For a visit registered from 2026-08-21 onward:
+    # the same post-discount meaning, computed instead from the sum of
+    # its `VisitProcedureItem` rows minus `discount_amount` — see
+    # VisitService.register_visit's docstring. Either way this column
+    # keeps being the one true "how much was this visit billed for"
+    # figure every revenue aggregate and Billing's prefill can keep
+    # reading directly, with zero changes to either of those call sites.
     amount: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)
     # A fixed-amount discount applied once, at registration time only
     # (2026-08-19 addition) — same shape and rationale as
@@ -124,3 +185,60 @@ class Visit(BaseEntity):
         nullable=False,
         default=VisitStatus.REGISTERED,
     )
+
+
+class Procedure(BaseEntity):
+    """The admin-managed procedure price list (2026-08-21 addition) —
+    see this module's own docstring for the full rationale. Mirrors
+    `app/modules/pharmacy/models.py`'s `Medicine` almost exactly."""
+
+    __tablename__ = "procedure"
+    __table_args__ = (
+        Index("ix_procedure_name", "name"),
+        Index("ix_procedure_is_active", "is_active"),
+        CheckConstraint("price > 0", name="ck_procedure_price_positive"),
+    )
+
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    price: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)
+    # "No longer offered" — distinct from `deleted_at`, mirrors
+    # Medicine.is_active's identical rationale exactly: deactivated
+    # procedures are excluded from Reception's registration-time search
+    # but remain visible/re-activatable on the admin management screen.
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class VisitProcedureItem(BaseEntity):
+    """One procedure line on a Visit registered from 2026-08-21 onward
+    — see this module's own docstring for the full rationale, including
+    why this is never retrofitted onto any older Visit."""
+
+    __tablename__ = "visit_procedure_item"
+    __table_args__ = (
+        Index("ix_visit_procedure_item_visit_id", "visit_id"),
+        CheckConstraint("amount > 0", name="ck_visit_procedure_item_amount_positive"),
+    )
+
+    visit_id: Mapped[UUID] = mapped_column(ForeignKey("visit.id"), nullable=False)
+    # None for a manual/free-typed entry — the per-item (not per-visit)
+    # discriminator between the two coexisting shapes this table holds;
+    # see this module's own docstring for the full rationale.
+    procedure_id: Mapped[UUID | None] = mapped_column(ForeignKey("procedure.id"))
+    # Snapshotted from the catalog Procedure's own name at add-time when
+    # `procedure_id` is set (so a later rename/deactivation of the
+    # catalog entry never rewrites a historical slip — the exact same
+    # "billed record is immutable, even if its source changes later"
+    # principle `MedicineBillItem.medicine_name_snapshot` already
+    # follows), or the receptionist's own free-typed value when
+    # `procedure_id` is None.
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Locked to the catalog Procedure's own price at add-time when
+    # `procedure_id` is set — never client-editable in that case,
+    # mirroring `MedicineBillItem.unit_price_snapshot`'s identical
+    # price-integrity rule exactly (confirmed design decision: unlike
+    # `Visit.amount`'s own historically-freely-typed single value, a
+    # catalog-selected procedure's price is fixed, same as a medicine's
+    # unit price). Freely provided by the receptionist when
+    # `procedure_id` is None — a manual entry has no catalog price to
+    # lock to at all.
+    amount: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)

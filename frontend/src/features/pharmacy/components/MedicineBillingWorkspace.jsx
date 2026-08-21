@@ -16,6 +16,7 @@ import {
   finalizeBillSchema,
   manualPatientSchema,
 } from '@/features/pharmacy/schemas/pharmacySchemas';
+import { VisitProcedureDisplay } from '@/features/visits/components/VisitProcedureDisplay';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
@@ -194,7 +195,10 @@ function VisitLinkPanel({
                           <span className="font-mono font-medium text-foreground">
                             {visit.queue_token}
                           </span>
-                          <span className="text-muted-foreground">{visit.procedure}</span>
+                          <VisitProcedureDisplay
+                            visit={visit}
+                            className="text-muted-foreground"
+                          />
                           <Badge
                             variant={VISIT_STATUS_BADGE_VARIANT[visit.status] ?? 'outline'}
                             className="capitalize"

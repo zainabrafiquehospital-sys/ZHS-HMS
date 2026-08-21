@@ -1,11 +1,18 @@
 """Pydantic request/response schemas for the Reception module — the
 composite "register a visit" action (Phase 6 architecture §6, revised
 for fast registration): exactly one of an existing `patient_id` or a
-full `new_patient` identity block, plus procedure + amount, and the
-Yes/No vitals-required decision that sets the Visit's initial queue
-destination. There is deliberately no doctor-selection field — doctor
-assignment is always automatic (see ReceptionService.register_visit's
-docstring)."""
+full `new_patient` identity block, plus one or more procedure line
+items, and the Yes/No vitals-required decision that sets the Visit's
+initial queue destination. There is deliberately no doctor-selection
+field — doctor assignment is always automatic (see
+ReceptionService.register_visit's docstring).
+
+`procedures` (2026-08-21 addition, replacing the old flat `procedure`/
+`amount` fields) is one or more `VisitProcedureItemRequest`s — see that
+schema's own docstring for the catalog-linked-vs-manual shape. Every
+visit registered from now on has at least one; see
+app/modules/visits/models.py's `VisitProcedureItem` docstring for why
+this never touches any visit registered before today."""
 
 from datetime import datetime
 from decimal import Decimal
@@ -15,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.modules.patients.models import PatientGender
 from app.modules.patients.schemas import PatientIdentityFields, PatientOut
 from app.modules.queue.schemas import QueueEntryOut
-from app.modules.visits.schemas import VisitOut
+from app.modules.visits.schemas import VisitOut, VisitProcedureItemRequest
 from app.shared.schema_types import LaxDecimal, LaxUUID
 
 
@@ -24,16 +31,16 @@ class RegisterVisitRequest(BaseModel):
 
     patient_id: LaxUUID | None = None
     new_patient: PatientIdentityFields | None = None
-    procedure: str = Field(min_length=1, max_length=200)
-    amount: LaxDecimal = Field(gt=0)
+    procedures: list[VisitProcedureItemRequest] = Field(min_length=1)
     vitals_required: bool
-    # Optional flat discount off `amount`, applied at registration time
-    # only (2026-08-19 addition) — same shape as
+    # Optional flat discount off the procedures' combined subtotal,
+    # applied at registration time only (2026-08-19 addition, unaffected
+    # by the 2026-08-21 itemization — see VisitService.register_visit's
+    # docstring for the full mechanism, now validated against the sum
+    # of `procedures` rather than a single typed amount). Same shape as
     # app/modules/pharmacy/schemas.py's CreateMedicineBillRequest.
     # discount_amount/discount_reason: `discount_reason` is always
-    # optional here too, even when `discount_amount > 0` (see
-    # VisitService.register_visit's docstring for the full mechanism —
-    # `amount` ends up already post-discount on the stored Visit).
+    # optional here too, even when `discount_amount > 0`.
     discount_amount: LaxDecimal = Field(default=Decimal("0"), ge=0)
     discount_reason: str | None = Field(default=None, max_length=200)
 
@@ -71,25 +78,47 @@ class RegisterVisitResponse(BaseModel):
 
 class AdminUpdateVisitRequest(BaseModel):
     """A single flat "Edit Slip" form covering both halves of what a
-    printed registration slip actually shows — Visit's own two
-    correctable fields (`procedure`/`amount`) and Patient's editable
-    identity fields (the exact same set `UpdatePatientRequest` already
-    validates, deliberately not re-declared as a shared class the way
-    `PatientIdentityFields` is: unlike create-vs-update on Patient
-    alone, there is no second call site that would ever need this exact
-    combined shape). Every field optional/PATCH-style (`exclude_unset`)
-    — ReceptionService.admin_update_visit splits this into the two
-    already-existing, already-tested update paths (`PatientService.
-    update_patient`, `VisitService.update_visit_details`) rather than
-    this schema (or the service) reimplementing either one's validation.
-    No field-name collision between the two halves, so a flat shape is
-    unambiguous — no `visit: {...}` / `patient: {...}` nesting needed."""
+    printed registration slip actually shows — Visit's own correctable
+    fields and Patient's editable identity fields (the exact same set
+    `UpdatePatientRequest` already validates, deliberately not
+    re-declared as a shared class the way `PatientIdentityFields` is:
+    unlike create-vs-update on Patient alone, there is no second call
+    site that would ever need this exact combined shape). Every field
+    optional/PATCH-style (`exclude_unset`) — ReceptionService.
+    admin_update_visit splits this into the already-existing update
+    paths (`PatientService.update_patient`, `VisitService.
+    update_visit_details`) rather than this schema (or the service)
+    reimplementing either one's validation. No field-name collision
+    between the two halves, so a flat shape is unambiguous — no
+    `visit: {...}` / `patient: {...}` nesting needed.
+
+    Visit's own fields (2026-08-21 revision) now bifurcate on which
+    kind of visit is being edited — never both meaningful on the same
+    call, enforced at the service layer (VisitService.
+    update_visit_details), not here, since which one applies depends on
+    the *target visit's own current state* (whether it already has
+    `VisitProcedureItem` rows), not on anything this request alone can
+    know:
+    - `procedure`/`amount`: the original flat fields, exactly as they
+      have always worked — apply only to a visit registered before
+      2026-08-21 (which has no procedure items to edit at all; see
+      models.py's `VisitProcedureItem` docstring for why that's never
+      retrofitted).
+    - `procedures`: replaces a visit's *entire* procedure-item set in
+      one call — applies only to a visit registered from 2026-08-21
+      onward. Deliberately does not touch `discount_amount`/
+      `discount_reason` at all (a confirmed, explicit scope decision —
+      discount correction stays a fully separate concern from procedure
+      correction, exactly as `update_visit_details` has never touched
+      discount either)."""
 
     model_config = ConfigDict(strict=True)
 
-    # Visit's own fields.
+    # Visit's own fields — see this schema's own docstring for the
+    # legacy-vs-itemized bifurcation.
     procedure: str | None = Field(default=None, min_length=1, max_length=200)
     amount: LaxDecimal | None = Field(default=None, gt=0)
+    procedures: list[VisitProcedureItemRequest] | None = Field(default=None, min_length=1)
 
     # Patient's fields — same constraints as UpdatePatientRequest.
     full_name: str | None = Field(default=None, min_length=1, max_length=150)

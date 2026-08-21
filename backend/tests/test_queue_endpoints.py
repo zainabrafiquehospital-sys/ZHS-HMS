@@ -58,8 +58,7 @@ async def _make_visit(patient_service, visit_service, actor, suffix: str):
         actor=actor,
         patient_id=patient.id,
         doctor_user_id=actor.id,
-        procedure="Consultation",
-        amount=Decimal("1500.00"),
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
     )
 
