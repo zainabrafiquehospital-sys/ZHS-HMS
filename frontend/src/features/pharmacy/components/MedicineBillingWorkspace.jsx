@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2, PackagePlus, X } from 'lucide-react';
@@ -225,10 +225,12 @@ function VisitLinkPanel({
  * "Advance Received" payment together in one call (see
  * app/modules/pharmacy/service.py's `create_bill`'s
  * `initial_payment_amount`, atomically recorded alongside creation,
- * never a separate later request), then prints the slip. Leaving
- * Advance Received blank/zero still creates the bill `UNPAID`, exactly
- * as before — this only folds in the payment step for the common case
- * where the patient is paying something right now.
+ * never a separate later request), then prints the slip. Advance
+ * Received defaults to the full Net Total once items are added
+ * (2026-08-21 fix — payment is normally collected in full before the
+ * slip is printed) but stays freely editable for a genuine partial
+ * payment, or clearable to still create the bill `UNPAID`, exactly as
+ * a blank/zero amount always has.
  *
  * Recording an *additional* payment later, toward whatever's still
  * Pending on an already-created bill, now lives in Admin Overview's
@@ -280,7 +282,7 @@ export function MedicineBillingWorkspace() {
     watch,
     setValue,
     reset: resetFinalizeForm,
-    formState: { errors: finalizeErrors },
+    formState: { errors: finalizeErrors, dirtyFields },
   } = useForm({
     resolver: zodResolver(finalizeBillSchema),
     defaultValues: {
@@ -295,6 +297,21 @@ export function MedicineBillingWorkspace() {
   const watchedDiscount = watch('discount_amount');
   const discountForPreview = applyDiscount && watchedDiscount ? Number(watchedDiscount) : 0;
   const netTotal = grandTotal - (Number.isFinite(discountForPreview) ? discountForPreview : 0);
+
+  // Advance Received defaults to the full Net Total (2026-08-21 fix) —
+  // payment is always collected before the slip is printed, so a
+  // normal full-payment bill (the common case) should be Received/Paid
+  // without the receptionist retyping the total. `setValue` here never
+  // passes `shouldDirty`, so this keeps auto-syncing to the Net Total
+  // as items/discount change right up until the receptionist actually
+  // types into the field themselves — at that point `dirtyFields`
+  // flips true (their value differs from the original `''` default)
+  // and this effect backs off, leaving a genuine partial payment alone.
+  useEffect(() => {
+    if (items.length > 0 && !dirtyFields.initial_payment_amount) {
+      setValue('initial_payment_amount', netTotal);
+    }
+  }, [netTotal, items.length, dirtyFields.initial_payment_amount, setValue]);
 
   function handleApplyDiscountToggle(checked) {
     setApplyDiscount(checked);
@@ -598,12 +615,15 @@ export function MedicineBillingWorkspace() {
                 </>
               ) : null}
 
-              {/* Optional payment collected in the same step — leave
-                  blank to finalize unpaid, as before; typing the same
-                  amount as the Grand Total records it as paid in full
-                  immediately. Recorded atomically with the bill itself
-                  (see PharmacyService.create_bill's docstring) — never
-                  a separate, possibly-failing second request. */}
+              {/* Optional payment collected in the same step — defaults
+                  to the full Net Total once items are added (2026-08-21
+                  fix, see the auto-sync effect above), since payment is
+                  normally collected in full before the slip is printed;
+                  still freely editable down to a genuine partial amount,
+                  or cleared to finalize unpaid, exactly as before.
+                  Recorded atomically with the bill itself (see
+                  PharmacyService.create_bill's docstring) — never a
+                  separate, possibly-failing second request. */}
               <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
                 <div className="flex flex-col gap-1.5 sm:w-48">
                   <Label htmlFor="initial_payment_amount">Advance Received (Rs.)</Label>
