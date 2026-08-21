@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  computeCombinedRevenueByActor,
   computeRevenueByActor,
   MAX_NAMED_SLICES,
   OTHER_ACTOR_ID,
@@ -99,6 +100,58 @@ describe('computeRevenueByActor', () => {
   it('treats a null/undefined record list as empty', () => {
     expect(computeRevenueByActor(null, 'amount')).toEqual([]);
     expect(computeRevenueByActor(undefined, 'amount')).toEqual([]);
+  });
+});
+
+describe('computeCombinedRevenueByActor', () => {
+  it("sums a receptionist's revenue across both sources into one total (2026-08-20 fix)", () => {
+    // The exact scenario reported: a receptionist with PKR 6,350 in
+    // Visit revenue plus PKR 1,200 in Medicine Bill revenue must show
+    // as PKR 7,550 combined, not 6,350.
+    const visits = [record('user-1', '6350.00')];
+    const bills = [{ created_at: '2026-08-12T10:00:00.000Z', created_by: 'user-1', total_amount: '1200.00' }];
+
+    const breakdown = computeCombinedRevenueByActor([
+      { records: visits, amountKey: 'amount' },
+      { records: bills, amountKey: 'total_amount' },
+    ]);
+
+    expect(breakdown).toEqual([{ actorId: 'user-1', amount: 7550 }]);
+  });
+
+  it('combines per-actor totals from independent sources before ranking', () => {
+    // user-2's combined total (80 + 50 = 130) should outrank user-1's
+    // (100 + 0), even though user-1 leads on visits alone.
+    const visits = [record('user-1', '100'), record('user-2', '80')];
+    const bills = [{ created_at: '2026-08-12T10:00:00.000Z', created_by: 'user-2', total_amount: '50' }];
+
+    const breakdown = computeCombinedRevenueByActor([
+      { records: visits, amountKey: 'amount' },
+      { records: bills, amountKey: 'total_amount' },
+    ]);
+
+    expect(breakdown.map((e) => e.actorId)).toEqual(['user-2', 'user-1']);
+    expect(breakdown.find((e) => e.actorId === 'user-2').amount).toBe(130);
+  });
+
+  it('still folds beyond-top-3 contributors into one Other bucket across combined sources', () => {
+    const visits = [record('a', '100'), record('b', '80'), record('c', '60'), record('d', '40')];
+    const bills = [{ created_at: '2026-08-12T10:00:00.000Z', created_by: 'e', total_amount: '20' }];
+
+    const breakdown = computeCombinedRevenueByActor([
+      { records: visits, amountKey: 'amount' },
+      { records: bills, amountKey: 'total_amount' },
+    ]);
+
+    expect(breakdown).toHaveLength(MAX_NAMED_SLICES + 1);
+    const other = breakdown.find((e) => e.actorId === OTHER_ACTOR_ID);
+    expect(other.amount).toBe(60); // d (40) + e (20)
+  });
+
+  it('treats missing/empty sources as contributing nothing', () => {
+    expect(computeCombinedRevenueByActor([])).toEqual([]);
+    expect(computeCombinedRevenueByActor(null)).toEqual([]);
+    expect(computeCombinedRevenueByActor([{ records: [], amountKey: 'amount' }])).toEqual([]);
   });
 });
 

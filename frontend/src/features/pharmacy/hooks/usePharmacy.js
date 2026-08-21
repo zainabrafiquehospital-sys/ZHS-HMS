@@ -83,6 +83,53 @@ export function useMedicineBillsForDay(dayKey) {
   });
 }
 
+/** Full detail for one bill (manual_patient_age/_phone, discount_reason
+ * — not present on `useMedicineBillsForDay`'s lighter summary rows) —
+ * fetched on demand to pre-fill the admin "Edit Bill" dialog
+ * (2026-08-20 addition). Disabled until a `billId` is actually
+ * supplied, same `enabled: Boolean(...)` convention as every other
+ * on-demand hook here. */
+export function useMedicineBillDetail(billId) {
+  return useQuery({
+    queryKey: ['pharmacy', 'bills', 'detail', billId],
+    queryFn: () => pharmacyService.getBill(billId).then((res) => res.data),
+    enabled: Boolean(billId),
+  });
+}
+
+/** Admin-only "Edit Bill" (2026-08-20 addition) — corrects a
+ * mistakenly-created bill's manual patient details and/or discount
+ * (see pharmacyService.updateBill's docstring). Same invalidation
+ * shape as features/admin/hooks/useAdminOverview.js's `useUpdateVisit`
+ * — every cached day-scoped bill list (`['pharmacy', 'bills', 'day']`
+ * is a prefix match, not one specific day) plus this bill's own detail
+ * query, so the corrected values appear immediately without a manual
+ * refresh. */
+export function useUpdateMedicineBill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ billId, updates }) => pharmacyService.updateBill(billId, updates),
+    onSuccess: (_data, { billId }) => {
+      queryClient.invalidateQueries({ queryKey: ['pharmacy', 'bills', 'day'] });
+      queryClient.invalidateQueries({ queryKey: ['pharmacy', 'bills', 'detail', billId] });
+    },
+  });
+}
+
+/** Admin-only medicine bill deletion (see pharmacyService.deleteBill's
+ * docstring) — same invalidation shape as `useDeleteVisit`; the
+ * deleted bill simply stops appearing in the next day-scoped fetch
+ * (the backend already excludes soft-deleted bills from every query). */
+export function useDeleteMedicineBill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (billId) => pharmacyService.deleteBill(billId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pharmacy', 'bills', 'day'] });
+    },
+  });
+}
+
 /** Every medicine bill this receptionist has personally created,
  * newest first, no date restriction (2026-08-19 addition) — the
  * medicine-bill sibling of `useMyRegistrations` (features/reception/

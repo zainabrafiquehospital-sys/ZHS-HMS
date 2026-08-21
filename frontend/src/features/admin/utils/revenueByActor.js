@@ -15,6 +15,28 @@ export const OTHER_ACTOR_ID = '__other__';
 // of how many actually posted revenue that day.
 export const MAX_NAMED_SLICES = 3;
 
+/** Sorts a `Map<actorId, amount>` descending by revenue and caps it at
+ * `MAX_NAMED_SLICES`, folding everyone beyond that into one final
+ * `{ actorId: OTHER_ACTOR_ID, amount }` entry — shared fold logic
+ * behind both `computeRevenueByActor` (one record source) and
+ * `computeCombinedRevenueByActor` (several sources summed together
+ * first) below, so the top-N-plus-Other rule is defined in exactly one
+ * place. With `MAX_NAMED_SLICES` or fewer contributors, there is no
+ * "Other" entry at all. */
+function foldToNamedSlicesPlusOther(totalsByActor) {
+  const sorted = [...totalsByActor.entries()]
+    .map(([actorId, amount]) => ({ actorId, amount }))
+    .sort((a, b) => b.amount - a.amount);
+
+  if (sorted.length <= MAX_NAMED_SLICES) return sorted;
+
+  const named = sorted.slice(0, MAX_NAMED_SLICES);
+  const otherAmount = sorted
+    .slice(MAX_NAMED_SLICES)
+    .reduce((sum, entry) => sum + entry.amount, 0);
+  return [...named, { actorId: OTHER_ACTOR_ID, amount: otherAmount }];
+}
+
 /** Buckets `records` (each shaped `{ created_at, created_by,
  * [amountKey]: number|string }`) into per-receptionist revenue totals,
  * derived live every time this is called from whatever day's records
@@ -28,31 +50,43 @@ export const MAX_NAMED_SLICES = 3;
  * its own distinct bucket, exactly like any other actor id, and
  * competes for a named slot on the same footing.
  *
- * Sorted descending by revenue and capped at `MAX_NAMED_SLICES`: the
- * top contributors are returned as their own `{ actorId, amount }`
- * entries, and everyone beyond that is summed into one final
- * `{ actorId: OTHER_ACTOR_ID, amount }` entry — never more entries
- * than the palette can safely carry (see `MAX_NAMED_SLICES`'s own
- * comment). With `MAX_NAMED_SLICES` or fewer contributors that day,
- * there is no "Other" entry at all. */
+ * Sorted descending by revenue and capped at `MAX_NAMED_SLICES` (see
+ * `foldToNamedSlicesPlusOther`). For revenue combined across more than
+ * one record source (e.g. Visits + Medicine Bills), use
+ * `computeCombinedRevenueByActor` instead — this single-source form is
+ * kept as-is for callers that only ever have one. */
 export function computeRevenueByActor(records, amountKey) {
   const totalsByActor = new Map();
   for (const record of records ?? []) {
     const actorId = record.created_by ?? null;
     totalsByActor.set(actorId, (totalsByActor.get(actorId) ?? 0) + Number(record[amountKey]));
   }
+  return foldToNamedSlicesPlusOther(totalsByActor);
+}
 
-  const sorted = [...totalsByActor.entries()]
-    .map(([actorId, amount]) => ({ actorId, amount }))
-    .sort((a, b) => b.amount - a.amount);
-
-  if (sorted.length <= MAX_NAMED_SLICES) return sorted;
-
-  const named = sorted.slice(0, MAX_NAMED_SLICES);
-  const otherAmount = sorted
-    .slice(MAX_NAMED_SLICES)
-    .reduce((sum, entry) => sum + entry.amount, 0);
-  return [...named, { actorId: OTHER_ACTOR_ID, amount: otherAmount }];
+/** Same output shape as `computeRevenueByActor`, but sums a
+ * receptionist's revenue across *multiple* record sources into one
+ * total before ranking/capping — e.g. their Visit revenue plus their
+ * Medicine Bill revenue, so a receptionist who does a lot of medicine
+ * billing but few visits still competes for a named slice on their true
+ * combined contribution, not just one entity type's share of it
+ * (2026-08-20 fix: the chart previously under-reported everyone's
+ * total by only ever looking at Visit revenue).
+ *
+ * `sources` is `[{ records, amountKey }, ...]` — each source is
+ * bucketed by `created_by` exactly as `computeRevenueByActor` would,
+ * and all buckets are summed together per actor *before* the single
+ * top-N-plus-Other fold runs, so the ranking reflects the combined
+ * total, not each source's own separate ranking. */
+export function computeCombinedRevenueByActor(sources) {
+  const totalsByActor = new Map();
+  for (const { records, amountKey } of sources ?? []) {
+    for (const record of records ?? []) {
+      const actorId = record.created_by ?? null;
+      totalsByActor.set(actorId, (totalsByActor.get(actorId) ?? 0) + Number(record[amountKey]));
+    }
+  }
+  return foldToNamedSlicesPlusOther(totalsByActor);
 }
 
 /** Resolves `computeRevenueByActor`'s output to what

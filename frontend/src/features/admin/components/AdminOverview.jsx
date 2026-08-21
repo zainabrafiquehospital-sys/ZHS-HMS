@@ -13,18 +13,27 @@ import {
 } from '@/features/admin/hooks/useAdminOverview';
 import { adminUpdateVisitSchema } from '@/features/reception/schemas/adminUpdateVisitSchema';
 import {
+  useDeleteMedicineBill,
+  useMedicineBillDetail,
   useMedicineBillsForDay,
   usePrintMedicineBill,
   useRecordMedicineBillPayment,
+  useUpdateMedicineBill,
   useUsersForMedicineBills,
   useVisitsForMedicineBills,
 } from '@/features/pharmacy/hooks/usePharmacy';
-import { recordMedicineBillPaymentSchema } from '@/features/pharmacy/schemas/pharmacySchemas';
+import {
+  adminUpdateMedicineBillSchema,
+  recordMedicineBillPaymentSchema,
+} from '@/features/pharmacy/schemas/pharmacySchemas';
 import { PendingApprovals } from '@/features/admin/components/PendingApprovals';
 import { DateNavigator } from '@/features/admin/components/DateNavigator';
 import { LeadsSection } from '@/features/admin/components/LeadsSection';
 import { RevenueByActorPieChart } from '@/features/admin/components/RevenueByActorPieChart';
-import { computeRevenueByActor, resolveActorSlices } from '@/features/admin/utils/revenueByActor';
+import {
+  computeCombinedRevenueByActor,
+  resolveActorSlices,
+} from '@/features/admin/utils/revenueByActor';
 import { Card, CardContent, CardHeader } from '@/shared/components/ui/Card';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
@@ -333,6 +342,197 @@ function DeleteVisitDialog({ visit, onClose }) {
   );
 }
 
+/** Admin-only "Edit Bill" (2026-08-20 addition, `pharmacy:update_bill`
+ * — see pharmacyService.updateBill's docstring) — the medicine-bill
+ * sibling of `EditVisitDialog` above. Unlike that dialog, `bill` here
+ * is only the lighter `MedicineBillSummaryOut` row the table already
+ * has (no `manual_patient_age`/`_phone`/`discount_reason` — see that
+ * schema's own docstring), so this fetches the full bill detail itself
+ * (`useMedicineBillDetail`) before rendering the actual form, rather
+ * than assuming the caller already has every field. Manual patient
+ * fields are only shown/submitted when the bill has no linked
+ * `visit_id` — a visit-linked bill's identity is corrected through
+ * that Visit's own existing "Edit Slip" action instead (see
+ * PharmacyService.admin_update_bill's docstring for the exact
+ * server-side rejection this mirrors). The backend's own settled-
+ * payment block (MEDICINE_BILL_HAS_SETTLED_PAYMENT) surfaces here as a
+ * plain error message, not a separate UI state — same discipline as
+ * `DeleteVisitDialog`'s own paid-invoice block. */
+function EditMedicineBillDialog({ bill, onClose }) {
+  const { data: fullBill, isLoading } = useMedicineBillDetail(bill.id);
+
+  if (isLoading || !fullBill) {
+    return (
+      <ConfirmDialog
+        open
+        title="Edit Medicine Bill"
+        confirmLabel="Loading…"
+        cancelLabel="Cancel"
+        onCancel={onClose}
+        onConfirm={() => {}}
+        description={<p className="text-sm text-muted-foreground">Loading bill details…</p>}
+      />
+    );
+  }
+
+  return <EditMedicineBillForm bill={fullBill} onClose={onClose} />;
+}
+
+function EditMedicineBillForm({ bill, onClose }) {
+  const updateBill = useUpdateMedicineBill();
+  const [error, setError] = useState(null);
+  const isWalkIn = bill.visit_id == null;
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm({
+    resolver: zodResolver(adminUpdateMedicineBillSchema),
+    defaultValues: {
+      manual_patient_name: bill.manual_patient_name ?? '',
+      manual_patient_age: bill.manual_patient_age ?? '',
+      manual_patient_phone: bill.manual_patient_phone ?? '',
+      discount_amount: bill.discount_amount,
+      discount_reason: bill.discount_reason ?? '',
+    },
+  });
+
+  async function onSubmit(values) {
+    setError(null);
+    const updates = { ...values };
+    // Blank optional fields mean "leave unchanged" (see
+    // adminUpdateMedicineBillSchema's own docstring) — never send an
+    // empty string for a field the admin didn't actually clear out.
+    for (const key of ['manual_patient_name', 'manual_patient_phone', 'discount_reason']) {
+      if (updates[key] === '') delete updates[key];
+    }
+    // A visit-linked bill has no manual patient fields to submit at
+    // all — sending them (even unchanged) would trip the backend's own
+    // MEDICINE_BILL_MANUAL_PATIENT_CONFLICTS_WITH_VISIT rejection.
+    if (!isWalkIn) {
+      delete updates.manual_patient_name;
+      delete updates.manual_patient_age;
+      delete updates.manual_patient_phone;
+    }
+    try {
+      await updateBill.mutateAsync({ billId: bill.id, updates });
+      onClose();
+    } catch (submitError) {
+      setError(submitError.message || 'Unable to update this medicine bill.');
+    }
+  }
+
+  return (
+    <ConfirmDialog
+      open
+      title={`Edit Medicine Bill — ${bill.queue_token ?? bill.id.slice(0, 8)}`}
+      confirmLabel={isSubmitting ? 'Saving…' : 'Save Changes'}
+      cancelLabel="Cancel"
+      onCancel={onClose}
+      onConfirm={handleSubmit(onSubmit)}
+      description={
+        <div className="flex max-h-[60vh] flex-col gap-3 overflow-y-auto pr-1">
+          {isWalkIn ? (
+            <>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="admin-bill-edit-name">Patient Name</Label>
+                <Input id="admin-bill-edit-name" {...register('manual_patient_name')} />
+                {errors.manual_patient_name ? (
+                  <p className="text-xs text-destructive">{errors.manual_patient_name.message}</p>
+                ) : null}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="admin-bill-edit-age">Age</Label>
+                  <Input id="admin-bill-edit-age" type="number" {...register('manual_patient_age')} />
+                  {errors.manual_patient_age ? (
+                    <p className="text-xs text-destructive">{errors.manual_patient_age.message}</p>
+                  ) : null}
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="admin-bill-edit-phone">Contact Number</Label>
+                  <Input id="admin-bill-edit-phone" {...register('manual_patient_phone')} />
+                  {errors.manual_patient_phone ? (
+                    <p className="text-xs text-destructive">{errors.manual_patient_phone.message}</p>
+                  ) : null}
+                </div>
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              This bill is linked to a visit — its patient details are corrected through that
+              visit's own "Edit Slip" action on the Visits tab, not here.
+            </p>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="admin-bill-edit-discount-amount">Discount (Rs.)</Label>
+              <Input
+                id="admin-bill-edit-discount-amount"
+                type="number"
+                step="0.01"
+                {...register('discount_amount')}
+              />
+              {errors.discount_amount ? (
+                <p className="text-xs text-destructive">{errors.discount_amount.message}</p>
+              ) : null}
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="admin-bill-edit-discount-reason">Discount Reason</Label>
+              <Input id="admin-bill-edit-discount-reason" {...register('discount_reason')} />
+            </div>
+          </div>
+          {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        </div>
+      }
+    />
+  );
+}
+
+/** Admin-only medicine bill deletion (2026-08-20 addition,
+ * `pharmacy:delete_bill`) — the medicine-bill sibling of
+ * `DeleteVisitDialog` above; same full-ConfirmDialog-with-explicit-
+ * description discipline, never a single-click button. The backend's
+ * own settled-payment block (MEDICINE_BILL_HAS_SETTLED_PAYMENT, see
+ * PharmacyService.admin_delete_bill) surfaces here as a plain error
+ * message, not a separate UI state. */
+function DeleteMedicineBillDialog({ bill, onClose }) {
+  const deleteBill = useDeleteMedicineBill();
+  const [error, setError] = useState(null);
+
+  async function handleConfirm() {
+    setError(null);
+    try {
+      await deleteBill.mutateAsync(bill.id);
+      onClose();
+    } catch (deleteError) {
+      setError(deleteError.message || 'Unable to delete this medicine bill.');
+    }
+  }
+
+  return (
+    <ConfirmDialog
+      open
+      variant="destructive"
+      title={`Delete Medicine Bill — ${bill.queue_token ?? bill.id.slice(0, 8)}?`}
+      confirmLabel={deleteBill.isPending ? 'Deleting…' : 'Delete Bill'}
+      cancelLabel="Cancel"
+      onCancel={onClose}
+      onConfirm={handleConfirm}
+      description={
+        <div className="flex flex-col gap-2">
+          <p>
+            This permanently removes this medicine bill from every list — it will no longer be
+            reachable or reprintable. Any linked visit is not affected, and this cannot be undone
+            through the app.
+          </p>
+          {error ? <p className="text-destructive">{error}</p> : null}
+        </div>
+      }
+    />
+  );
+}
+
 /** The Medicine Bills tab — mirrors the Visits tab's own day-scoped,
  * read-only shape (same `selectedDate`, same "view/reprint" action
  * pattern as Billing's own `usePrintInvoice`), but reads `GET
@@ -347,11 +547,11 @@ function MedicineBillsPanel({ selectedDate }) {
   const printBill = usePrintMedicineBill();
   const [printError, setPrintError] = useState(null);
   const [payingBill, setPayingBill] = useState(null);
-
-  const revenueByActor = useMemo(
-    () => resolveActorSlices(computeRevenueByActor(bills, 'total_amount'), usersById),
-    [bills, usersById],
-  );
+  // Admin-only Edit/Delete (2026-08-20 addition) — at most one dialog
+  // open at a time, keyed by the specific bill it targets, same shape
+  // as the Visits tab's editingVisit/deletingVisit state.
+  const [editingBill, setEditingBill] = useState(null);
+  const [deletingBill, setDeletingBill] = useState(null);
 
   async function handlePrint(billId) {
     setPrintError(null);
@@ -371,16 +571,16 @@ function MedicineBillsPanel({ selectedDate }) {
 
   return (
     <div className="flex flex-col gap-5">
-      {/* "Total Revenue" removed from here (2026-08-20) — it's now
-          covered, alongside Visit Revenue, by the always-visible combined
-          revenue row above the tabs (see AdminOverview's own render). */}
+      {/* "Total Revenue" tile (2026-08-20) and the "Revenue by
+          Receptionist" pie chart (2026-08-20 update) are both gone from
+          here — the tile is covered by the always-visible combined
+          revenue row above the tabs, and the chart itself is now one
+          single combined instance in that same always-visible area
+          (see AdminOverview's own render) rather than a separate,
+          Medicine-Bill-only chart that under-reported a receptionist
+          who also does Visit revenue. */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <SummaryTile icon={Pill} label="Total Bills" value={rows.length} />
-      </div>
-
-      <div>
-        <p className="mb-2 text-xs font-medium text-muted-foreground">Revenue by Receptionist</p>
-        <RevenueByActorPieChart data={revenueByActor} />
       </div>
 
       {rows.length === 0 ? (
@@ -471,6 +671,22 @@ function MedicineBillsPanel({ selectedDate }) {
                         <Printer className="h-4 w-4" />
                         Reprint
                       </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setEditingBill(bill)}
+                        title="Correct this bill's details"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setDeletingBill(bill)}
+                        title="Delete this medicine bill"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
                     </div>
                   </TableCell>
                 </TableRow>
@@ -482,6 +698,12 @@ function MedicineBillsPanel({ selectedDate }) {
       {printError ? <p className="text-sm text-destructive">{printError}</p> : null}
       {payingBill ? (
         <RecordBillPaymentDialog bill={payingBill} onClose={() => setPayingBill(null)} />
+      ) : null}
+      {editingBill ? (
+        <EditMedicineBillDialog bill={editingBill} onClose={() => setEditingBill(null)} />
+      ) : null}
+      {deletingBill ? (
+        <DeleteMedicineBillDialog bill={deletingBill} onClose={() => setDeletingBill(null)} />
       ) : null}
     </div>
   );
@@ -502,12 +724,15 @@ export function AdminOverview() {
   const receptionistsById = useReceptionistsForVisits(visits);
   const debouncedSearch = useDebouncedValue(searchTerm, 200);
   // Fetched here too (2026-08-20 addition), not only inside
-  // MedicineBillsPanel below — the combined revenue row must be visible
-  // regardless of which tab is active, and TanStack Query dedupes this
-  // against MedicineBillsPanel's own identical `['pharmacy', 'bills',
-  // 'day', selectedDate]` query (same call, same cache entry) rather
-  // than doubling the network request.
+  // MedicineBillsPanel below — the combined revenue row (and, as of this
+  // fix, the combined revenue-by-receptionist chart) must be visible
+  // regardless of which tab is active, and TanStack Query dedupes both
+  // of these against MedicineBillsPanel's own identical queries (same
+  // query keys — `['pharmacy', 'bills', 'day', selectedDate]` and
+  // `['admin', 'users', userId]` respectively — same cache entries)
+  // rather than doubling any network request.
   const { data: medicineBills } = useMedicineBillsForDay(selectedDate);
+  const medicineBillActorsById = useUsersForMedicineBills(medicineBills);
 
   const totalRevenue = useMemo(
     () => visits.reduce((sum, visit) => sum + Number(visit.amount), 0),
@@ -517,9 +742,23 @@ export function AdminOverview() {
     () => (medicineBills ?? []).reduce((sum, bill) => sum + Number(bill.total_amount), 0),
     [medicineBills],
   );
+  // 2026-08-20 fix: this used to be Visit revenue only (`computeRevenueByActor(visits, 'amount')`),
+  // so a receptionist's Medicine Bill revenue never counted toward their
+  // slice — under-reporting their true combined contribution (e.g. PKR
+  // 6,350 shown when the real combined total was PKR 7,550). Now one
+  // combined chart for both entity types, matching the combined revenue
+  // tiles above it; the previous separate per-tab charts are gone (see
+  // MedicineBillsPanel's own comment).
   const revenueByActor = useMemo(
-    () => resolveActorSlices(computeRevenueByActor(visits, 'amount'), receptionistsById),
-    [visits, receptionistsById],
+    () =>
+      resolveActorSlices(
+        computeCombinedRevenueByActor([
+          { records: visits, amountKey: 'amount' },
+          { records: medicineBills, amountKey: 'total_amount' },
+        ]),
+        { ...receptionistsById, ...medicineBillActorsById },
+      ),
+    [visits, medicineBills, receptionistsById, medicineBillActorsById],
   );
 
   const statusCounts = useMemo(() => {
@@ -578,6 +817,18 @@ export function AdminOverview() {
         />
       </div>
 
+      {/* Combined "Revenue by Receptionist" chart (2026-08-20 fix) — one
+          instance, visible regardless of which tab is active, reflecting
+          each receptionist's Visit + Medicine Bill revenue together
+          (see the `revenueByActor` memo above). Replaces the two
+          separate per-tab charts this used to be (Visits-only and
+          Medicine-Bills-only), which each under-reported a receptionist
+          who earned revenue from both. */}
+      <div>
+        <p className="mb-2 text-xs font-medium text-muted-foreground">Revenue by Receptionist</p>
+        <RevenueByActorPieChart data={revenueByActor} />
+      </div>
+
       <Card>
         <CardHeader className="flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
           <Tabs value={activeTab} onValueChange={setActiveTab} tabs={OVERVIEW_TABS} />
@@ -592,17 +843,12 @@ export function AdminOverview() {
             <PageError error={error} reset={refetch} message="Couldn't load visit activity." />
           ) : (
             <>
-              {/* "Total Revenue" removed from here (2026-08-20) — see the
-                  always-visible combined revenue row above the tabs. */}
+              {/* "Total Revenue" tile and the "Revenue by Receptionist"
+                  chart are both gone from here (2026-08-20) — see the
+                  always-visible combined revenue row and combined chart
+                  above the tabs. */}
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <SummaryTile icon={ClipboardList} label="Total Visits" value={visits.length} />
-              </div>
-
-              <div>
-                <p className="mb-2 text-xs font-medium text-muted-foreground">
-                  Revenue by Receptionist
-                </p>
-                <RevenueByActorPieChart data={revenueByActor} />
               </div>
 
               {Object.keys(statusCounts).length > 0 ? (

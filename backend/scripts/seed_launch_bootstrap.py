@@ -102,8 +102,10 @@ from app.modules.patients.constants import (
 )
 from app.modules.pharmacy.constants import (
     PERMISSION_PHARMACY_BILL,
+    PERMISSION_PHARMACY_DELETE_BILL,
     PERMISSION_PHARMACY_MANAGE,
     PERMISSION_PHARMACY_READ,
+    PERMISSION_PHARMACY_UPDATE_BILL,
 )
 from app.modules.queue.constants import PERMISSION_QUEUE_MANAGE, PERMISSION_QUEUE_READ
 from app.modules.reception.constants import (
@@ -247,6 +249,19 @@ PERMISSION_CATALOG: list[tuple[str, str, str]] = [
         "Manage Medicine Price List",
         "Create, edit, and deactivate entries on the medicine price list.",
     ),
+    (
+        PERMISSION_PHARMACY_UPDATE_BILL,
+        "Update Medicine Bill",
+        "Admin-only: correct a medicine bill's manual patient details and/or discount after "
+        "creation. Blocked if the bill has a paid or partially-paid balance. Not granted to "
+        "Receptionist.",
+    ),
+    (
+        PERMISSION_PHARMACY_DELETE_BILL,
+        "Delete Medicine Bill",
+        "Admin-only: soft-delete a mistakenly-created medicine bill. Blocked if the bill has "
+        "a paid or partially-paid balance. Not granted to Receptionist.",
+    ),
 ]
 
 # ---------------------------------------------------------------------
@@ -300,6 +315,13 @@ RECEPTIONIST_PERMISSION_CODES: list[str] = [
 #     correcting/removing a mistakenly-entered slip is an admin data-
 #     correction tool, never a receptionist capability, regardless of
 #     which UI screens exist. Do not add these here.
+#   - pharmacy:update_bill / pharmacy:delete_bill (2026-08-20 addition)
+#     — the exact same deliberately-admin-only reasoning as
+#     reception:update_visit/delete_visit immediately above, see
+#     app/modules/pharmacy/constants.py's own docstring: correcting/
+#     removing a mistakenly-created medicine bill is an admin data-
+#     correction tool, never a receptionist capability. Do not add
+#     these here.
 # Add any of these back via the Roles API later if a future reception screen
 # actually needs them — safer to grant on demonstrated need than up front.
 

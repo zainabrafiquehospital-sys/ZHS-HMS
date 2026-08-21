@@ -99,3 +99,37 @@ export const manualPatientSchema = z.object({
     }),
   manual_patient_phone: z.string().min(6, 'Contact number is required').max(20),
 });
+
+// Admin-only "Edit Bill" form (2026-08-20 addition) — see
+// pharmacyService.updateBill's docstring. Every field optional
+// (PATCH-style) and blank means "leave unchanged", not "clear this
+// field" — mirrors features/reception/schemas/adminUpdateVisitSchema.js
+// exactly. `discount_amount` is the one field where 0 is itself a
+// meaningful, explicit value ("no discount"), not "leave unchanged" —
+// AdminMedicineBillDialog only includes it in the submitted payload
+// when the admin actually edited it (see that component's own
+// docstring), the same distinction the backend's `exclude_unset`
+// PATCH semantics already draw.
+export const adminUpdateMedicineBillSchema = z.object({
+  manual_patient_name: z.string().min(1, 'Name cannot be blank').max(150).optional().or(z.literal('')),
+  manual_patient_age: z
+    .union([z.string(), z.number()])
+    .transform((value) => (value === '' || value === undefined ? undefined : Number(value)))
+    .refine(
+      (value) => value === undefined || (Number.isInteger(value) && value >= 0 && value <= 150),
+      { message: 'Enter a valid age in years (0-150)' },
+    ),
+  manual_patient_phone: z
+    .string()
+    .min(6, 'Enter a valid contact number')
+    .max(20)
+    .optional()
+    .or(z.literal('')),
+  discount_amount: z
+    .union([z.string(), z.number()])
+    .transform((value) => (value === '' || value === undefined ? undefined : Number(value)))
+    .refine((value) => value === undefined || (Number.isFinite(value) && value >= 0), {
+      message: 'Discount must be zero or greater',
+    }),
+  discount_reason: z.string().max(200).optional().or(z.literal('')),
+});

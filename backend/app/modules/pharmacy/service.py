@@ -41,6 +41,7 @@ before anything is written, so an invalid id surfaces as a clean
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,6 +50,7 @@ from app.core.exceptions import ValidationError
 from app.modules.auth.models import User
 from app.modules.pharmacy.exceptions import (
     MedicineBillDiscountExceedsSubtotalError,
+    MedicineBillHasSettledPaymentError,
     MedicineBillManualPatientConflictsWithVisitError,
     MedicineBillManualPatientFieldsIncompleteError,
     MedicineBillNotFoundError,
@@ -454,6 +456,130 @@ class PharmacyService:
         )
         await self._session.commit()
         return await self._get_bill(bill.id)
+
+    # ------------------------------------------------------------------
+    # Admin data correction (2026-08-20 addition) — the medicine-bill
+    # sibling of ReceptionService.admin_update_visit/admin_delete_visit,
+    # gated on pharmacy:update_bill/pharmacy:delete_bill at the router
+    # (never on pharmacy:bill), never granted to Receptionist (see
+    # constants.py). Both actions are blocked outright, before anything
+    # is touched, once the bill has any recorded payment — see
+    # MedicineBillHasSettledPaymentError's own docstring for why this
+    # applies to *edit* here too, unlike Visit's own admin-update (which
+    # has no equivalent block): a MedicineBill's `discount_amount`
+    # directly determines this same row's `total_amount`, unlike
+    # Visit's decoupled Invoice.
+    # ------------------------------------------------------------------
+
+    async def admin_update_bill(
+        self, *, actor: User, bill_id: UUID, updates: dict[str, Any]
+    ) -> MedicineBill:
+        """Corrects a mistakenly-entered medicine bill's manual patient
+        details and/or its discount, in one call (`updates` is already-
+        validated PATCH-style, `AdminUpdateMedicineBillRequest.
+        model_dump(exclude_unset=True)`).
+
+        `manual_patient_name`/`_age`/`_phone` are only accepted when the
+        bill has no linked `visit_id` — raises
+        `MedicineBillManualPatientConflictsWithVisitError`, the exact
+        same exception `create_bill` raises for the identical rule,
+        otherwise. A visit-linked bill's patient identity belongs to
+        that Visit's own Patient record, corrected through Reception's
+        existing "Edit Slip" action instead — never duplicated here.
+
+        `discount_amount` (when present) is revalidated against the
+        bill's current line-item subtotal exactly as `create_bill`
+        validates a fresh one, and `total_amount` is recomputed from
+        it. `amount_paid` is always 0 at this point — guaranteed by the
+        UNPAID-only block above — so no payment/status recomputation is
+        ever needed, unlike a hypothetical edit on a partially-paid
+        bill."""
+        bill = await self._get_bill(bill_id)
+        if not updates:
+            return bill
+        if bill.status != MedicineBillStatus.UNPAID:
+            raise MedicineBillHasSettledPaymentError
+
+        manual_fields = ("manual_patient_name", "manual_patient_age", "manual_patient_phone")
+        manual_updates = {k: v for k, v in updates.items() if k in manual_fields}
+        if manual_updates and bill.visit_id is not None:
+            raise MedicineBillManualPatientConflictsWithVisitError
+        for field in manual_fields:
+            if field in updates:
+                value = updates[field]
+                if field in ("manual_patient_name", "manual_patient_phone") and value is not None:
+                    value = value.strip()
+                setattr(bill, field, value)
+
+        if "discount_amount" in updates or "discount_reason" in updates:
+            items = await self._item_repo.list_for_bill(bill.id)
+            subtotal = sum((item.line_total for item in items), _ZERO)
+
+            requested_discount = updates.get("discount_amount")
+            new_discount_amount = (
+                quantize_money(requested_discount)
+                if requested_discount is not None
+                else bill.discount_amount
+            )
+            if new_discount_amount < _ZERO:
+                raise ValidationError("discount_amount cannot be negative.")
+            if new_discount_amount > subtotal:
+                raise MedicineBillDiscountExceedsSubtotalError(str(subtotal))
+
+            new_discount_reason = (
+                updates["discount_reason"]
+                if "discount_reason" in updates
+                else bill.discount_reason
+            )
+            new_discount_reason = new_discount_reason.strip() if new_discount_reason else None
+            if new_discount_amount == _ZERO:
+                new_discount_reason = None
+
+            bill.discount_amount = new_discount_amount
+            bill.discount_reason = new_discount_reason
+            bill.total_amount = subtotal - new_discount_amount
+
+        bill.updated_by = actor.id
+        await self._bill_repo.add(bill)
+        await self._audit_repo.record(
+            module="pharmacy",
+            action="pharmacy.bill_updated_by_admin",
+            entity_type="medicine_bill",
+            entity_id=bill.id,
+            actor_user_id=actor.id,
+            metadata={"fields": sorted(updates.keys())},
+        )
+        await self._session.commit()
+        return await self._get_bill(bill.id)
+
+    async def admin_delete_bill(self, *, actor: User, bill_id: UUID) -> None:
+        """Soft-deletes a MedicineBill an admin has decided was a
+        mistake — the medicine-bill sibling of VisitService.
+        delete_visit/ReceptionService.admin_delete_visit. Never a hard
+        `DELETE`: every existing bill query already filters `deleted_at
+        IS NULL` (`BaseRepository.soft_delete`), so this alone is
+        sufficient to make the bill disappear from every list/search/
+        detail view. The bill's `MedicineBillItem` rows (and any
+        `MedicineBillPayment` rows — none exist here by construction,
+        since the block above only lets an UNPAID bill reach this
+        point) are left untouched, the same "orphaned but never
+        corrupted" outcome `VisitService.delete_visit`'s own docstring
+        documents for Visit's own child rows."""
+        bill = await self._get_bill(bill_id)
+        if bill.status != MedicineBillStatus.UNPAID:
+            raise MedicineBillHasSettledPaymentError
+
+        now = datetime.now(UTC)
+        await self._bill_repo.soft_delete(bill, deleted_at=now, deleted_by=actor.id)
+        await self._audit_repo.record(
+            module="pharmacy",
+            action="pharmacy.bill_deleted_by_admin",
+            entity_type="medicine_bill",
+            entity_id=bill_id,
+            actor_user_id=actor.id,
+            metadata={"queue_token": bill.queue_token},
+        )
+        await self._session.commit()
 
     async def list_bill_summaries_for_day(
         self, day: datetime

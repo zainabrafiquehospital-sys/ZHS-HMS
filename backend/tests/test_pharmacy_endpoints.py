@@ -9,8 +9,10 @@ from app.modules.auth.password_service import PasswordService
 from app.modules.auth.repository import UserRepository
 from app.modules.pharmacy.constants import (
     PERMISSION_PHARMACY_BILL,
+    PERMISSION_PHARMACY_DELETE_BILL,
     PERMISSION_PHARMACY_MANAGE,
     PERMISSION_PHARMACY_READ,
+    PERMISSION_PHARMACY_UPDATE_BILL,
 )
 from app.modules.reception.constants import PERMISSION_RECEPTION_REGISTER_VISIT
 from tests.conftest import TEST_MEDICINE_NAME_PREFIX, TEST_PATIENT_NAME_PREFIX, make_test_email
@@ -1328,3 +1330,305 @@ async def test_print_bill_requires_permission(api_client, real_session, grant_pe
     )
 
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------
+# Admin Edit/Delete for Medicine Bills (2026-08-20 addition) — the
+# medicine-bill sibling of tests/test_reception_endpoints.py's
+# update_visit/delete_visit test block; see that file for the identical
+# permission-gating shape this mirrors.
+# ---------------------------------------------------------------------
+
+
+async def test_update_bill_requires_permission(api_client, real_session, grant_permission):
+    actor, access_token = await _create_and_login(api_client, real_session, "update-bill-no-perm")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}UpdateNoPerm"
+    )
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": None,
+            "items": [{"medicine_id": medicine_id, "quantity": 1}],
+            "manual_patient_name": "Walk In",
+            "manual_patient_age": 30,
+            "manual_patient_phone": "03001234567",
+        },
+        headers=_auth_header(access_token),
+    )
+    bill_id = bill_resp.json()["data"]["id"]
+
+    # Holding pharmacy:bill (what every receptionist already has) must
+    # not implicitly grant pharmacy:update_bill — the two are unrelated,
+    # separately-granted permissions, same requirement
+    # test_update_visit_cancel_permission_alone_is_not_sufficient guards
+    # for Visit.
+    resp = await api_client.patch(
+        f"/api/v1/pharmacy/bills/{bill_id}",
+        json={"discount_amount": "0"},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "PERMISSION_DENIED"
+
+
+async def test_update_bill_admin_can_correct_a_walkin_bills_manual_patient_details(
+    api_client, real_session, grant_permission
+):
+    """Ownership never matters for this permission — an admin corrects
+    any receptionist's bill, not only their own."""
+    receptionist, receptionist_token = await _create_and_login(
+        api_client, real_session, "update-bill-owner"
+    )
+    await grant_permission(receptionist, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(receptionist, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, receptionist_token, f"{TEST_MEDICINE_NAME_PREFIX}UpdateOwnership"
+    )
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": None,
+            "items": [{"medicine_id": medicine_id, "quantity": 1}],
+            "manual_patient_name": "Original Name",
+            "manual_patient_age": 25,
+            "manual_patient_phone": "03001111111",
+        },
+        headers=_auth_header(receptionist_token),
+    )
+    bill_id = bill_resp.json()["data"]["id"]
+
+    admin, admin_token = await _create_and_login(api_client, real_session, "update-bill-admin")
+    await grant_permission(admin, PERMISSION_PHARMACY_UPDATE_BILL)
+
+    resp = await api_client.patch(
+        f"/api/v1/pharmacy/bills/{bill_id}",
+        json={
+            "manual_patient_name": "Corrected By Admin",
+            "manual_patient_age": 26,
+            "manual_patient_phone": "03002222222",
+        },
+        headers=_auth_header(admin_token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()["data"]
+    assert body["manual_patient_name"] == "Corrected By Admin"
+    assert body["manual_patient_age"] == 26
+    assert body["manual_patient_phone"] == "03002222222"
+
+
+async def test_update_bill_rejects_manual_patient_fields_on_visit_linked_bill(
+    api_client, real_session, grant_permission
+):
+    """A visit-linked bill's patient identity belongs to that Visit's
+    own Patient record — corrected through Reception's existing "Edit
+    Slip" action, never duplicated here."""
+    actor, access_token = await _create_and_login(api_client, real_session, "update-bill-linked")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(actor, PERMISSION_PHARMACY_UPDATE_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}UpdateLinked"
+    )
+    visit_id = await _register_visit(api_client, access_token, "UpdateLinked")
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": visit_id, "items": [{"medicine_id": medicine_id, "quantity": 1}]},
+        headers=_auth_header(access_token),
+    )
+    bill_id = bill_resp.json()["data"]["id"]
+
+    resp = await api_client.patch(
+        f"/api/v1/pharmacy/bills/{bill_id}",
+        json={"manual_patient_name": "Should Be Rejected"},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "MEDICINE_BILL_MANUAL_PATIENT_CONFLICTS_WITH_VISIT"
+
+
+async def test_update_bill_recomputes_total_amount_from_new_discount(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "update-bill-discount")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor, PERMISSION_PHARMACY_UPDATE_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}UpdateDiscount", price="100.00"
+    )
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": None, "items": [{"medicine_id": medicine_id, "quantity": 3}]},
+        headers=_auth_header(access_token),
+    )
+    bill_id = bill_resp.json()["data"]["id"]
+    assert bill_resp.json()["data"]["total_amount"] == "300.00"  # no discount yet
+
+    resp = await api_client.patch(
+        f"/api/v1/pharmacy/bills/{bill_id}",
+        json={"discount_amount": "50.00", "discount_reason": "Corrected discount"},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()["data"]
+    assert body["discount_amount"] == "50.00"
+    assert body["discount_reason"] == "Corrected discount"
+    # 300.00 subtotal, minus the newly-applied 50.00 discount = 250.00
+    assert body["total_amount"] == "250.00"
+
+
+async def test_update_bill_discount_exceeding_subtotal_rejected(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "update-bill-exceeds")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor, PERMISSION_PHARMACY_UPDATE_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}UpdateExceeds", price="20.00"
+    )
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": None, "items": [{"medicine_id": medicine_id, "quantity": 1}]},
+        headers=_auth_header(access_token),
+    )
+    bill_id = bill_resp.json()["data"]["id"]
+
+    resp = await api_client.patch(
+        f"/api/v1/pharmacy/bills/{bill_id}",
+        json={"discount_amount": "20.01"},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "MEDICINE_BILL_DISCOUNT_EXCEEDS_SUBTOTAL"
+
+
+async def test_update_bill_blocked_once_bill_has_any_payment(
+    api_client, real_session, grant_permission
+):
+    """The financial-integrity block: editing the discount on a bill
+    that already has money collected against it would desynchronize
+    `amount_paid`/`total_amount` on that same row — unlike Visit, a
+    MedicineBill has no separate, decoupled Invoice entity, so this
+    applies to *edit* here, not only delete."""
+    actor, access_token = await _create_and_login(api_client, real_session, "update-bill-paid")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor, PERMISSION_PHARMACY_UPDATE_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}UpdateBlockedPaid", price="40.00"
+    )
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": None,
+            "items": [{"medicine_id": medicine_id, "quantity": 1}],
+            "initial_payment_amount": "20.00",  # partial — status becomes partially_paid
+            "initial_payment_method": "cash",
+        },
+        headers=_auth_header(access_token),
+    )
+    bill_id = bill_resp.json()["data"]["id"]
+    assert bill_resp.json()["data"]["status"] == "partially_paid"
+
+    resp = await api_client.patch(
+        f"/api/v1/pharmacy/bills/{bill_id}",
+        json={"discount_amount": "5.00"},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "MEDICINE_BILL_HAS_SETTLED_PAYMENT"
+
+
+async def test_delete_bill_requires_permission(api_client, real_session, grant_permission):
+    actor, access_token = await _create_and_login(api_client, real_session, "delete-bill-no-perm")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}DeleteNoPerm"
+    )
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": None, "items": [{"medicine_id": medicine_id, "quantity": 1}]},
+        headers=_auth_header(access_token),
+    )
+    bill_id = bill_resp.json()["data"]["id"]
+
+    resp = await api_client.delete(
+        f"/api/v1/pharmacy/bills/{bill_id}", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "PERMISSION_DENIED"
+
+
+async def test_delete_bill_success_removes_it_from_get(api_client, real_session, grant_permission):
+    receptionist, receptionist_token = await _create_and_login(
+        api_client, real_session, "delete-bill-owner"
+    )
+    await grant_permission(receptionist, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(receptionist, PERMISSION_PHARMACY_BILL)
+    medicine_id = await _create_medicine(
+        api_client, receptionist_token, f"{TEST_MEDICINE_NAME_PREFIX}DeleteSuccess"
+    )
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={"visit_id": None, "items": [{"medicine_id": medicine_id, "quantity": 1}]},
+        headers=_auth_header(receptionist_token),
+    )
+    bill_id = bill_resp.json()["data"]["id"]
+
+    admin, admin_token = await _create_and_login(api_client, real_session, "delete-bill-admin")
+    await grant_permission(admin, PERMISSION_PHARMACY_DELETE_BILL)
+    await grant_permission(admin, PERMISSION_PHARMACY_READ)
+
+    delete_resp = await api_client.delete(
+        f"/api/v1/pharmacy/bills/{bill_id}", headers=_auth_header(admin_token)
+    )
+    assert delete_resp.status_code == 200
+
+    get_resp = await api_client.get(
+        f"/api/v1/pharmacy/bills/{bill_id}", headers=_auth_header(admin_token)
+    )
+    assert get_resp.status_code == 404
+
+
+async def test_delete_bill_blocked_once_bill_has_any_payment(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "delete-bill-paid")
+    await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
+    await grant_permission(actor, PERMISSION_PHARMACY_BILL)
+    await grant_permission(actor, PERMISSION_PHARMACY_DELETE_BILL)
+    medicine_id = await _create_medicine(
+        api_client, access_token, f"{TEST_MEDICINE_NAME_PREFIX}DeleteBlockedPaid", price="60.00"
+    )
+    bill_resp = await api_client.post(
+        "/api/v1/pharmacy/bills",
+        json={
+            "visit_id": None,
+            "items": [{"medicine_id": medicine_id, "quantity": 1}],
+            "initial_payment_amount": "60.00",  # paid in full
+            "initial_payment_method": "cash",
+        },
+        headers=_auth_header(access_token),
+    )
+    bill_id = bill_resp.json()["data"]["id"]
+    assert bill_resp.json()["data"]["status"] == "paid"
+
+    resp = await api_client.delete(
+        f"/api/v1/pharmacy/bills/{bill_id}", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "MEDICINE_BILL_HAS_SETTLED_PAYMENT"

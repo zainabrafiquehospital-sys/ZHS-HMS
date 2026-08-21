@@ -104,6 +104,32 @@ class RecordMedicineBillPaymentRequest(BaseModel):
     payment_method: PaymentMethod = Field(strict=False)
 
 
+class AdminUpdateMedicineBillRequest(BaseModel):
+    """Admin-only "Edit Bill" (2026-08-20 addition) — corrects a
+    mistakenly-entered medicine bill's manual patient details and/or
+    its discount, in one call (see PharmacyService.admin_update_bill's
+    docstring). Every field optional/PATCH-style (`exclude_unset`),
+    same convention as reception/schemas.py's `AdminUpdateVisitRequest`.
+
+    `manual_patient_name`/`_age`/`_phone` are only meaningful — and
+    only accepted by the service — when the target bill has no linked
+    `visit_id`; a visit-linked bill's patient identity is corrected
+    through that Visit's own existing "Edit Slip" action instead, never
+    duplicated here (see PharmacyService.admin_update_bill's docstring
+    for the exact rejection). `discount_amount`/`discount_reason` are
+    always eligible regardless of `visit_id`, but the whole update is
+    blocked outright once the bill has any recorded payment (see
+    MedicineBillHasSettledPaymentError)."""
+
+    model_config = ConfigDict(strict=True)
+
+    manual_patient_name: str | None = Field(default=None, min_length=1, max_length=150)
+    manual_patient_age: int | None = Field(default=None, ge=0, le=150)
+    manual_patient_phone: str | None = Field(default=None, min_length=6, max_length=20)
+    discount_amount: LaxDecimal | None = Field(default=None, ge=0)
+    discount_reason: str | None = Field(default=None, max_length=200)
+
+
 # ---------------------------------------------------------------------
 # Responses
 # ---------------------------------------------------------------------

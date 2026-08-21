@@ -5,7 +5,12 @@ creating a bill requires `pharmacy:bill` — see constants.py's module
 docstring for the segregation-of-duties rationale, matching Billing's
 identical permission split. `GET /bills/mine` (2026-08-19 addition) is
 a receptionist's own itemized medicine-bill record — see
-list_my_bills's own docstring."""
+list_my_bills's own docstring. `PATCH`/`DELETE /bills/{bill_id}`
+(2026-08-20 addition) are admin-only data-correction actions —
+`pharmacy:update_bill`/`pharmacy:delete_bill`, never
+`pharmacy:bill` — mirroring app/modules/reception/router.py's
+identical update_visit/delete_visit pair; see update_bill's/
+delete_bill's own docstrings."""
 
 from datetime import date as date_type
 from uuid import UUID
@@ -20,11 +25,14 @@ from app.modules.patients.dependencies import get_patient_service
 from app.modules.patients.service import PatientService
 from app.modules.pharmacy.constants import (
     PERMISSION_PHARMACY_BILL,
+    PERMISSION_PHARMACY_DELETE_BILL,
     PERMISSION_PHARMACY_MANAGE,
     PERMISSION_PHARMACY_READ,
+    PERMISSION_PHARMACY_UPDATE_BILL,
 )
 from app.modules.pharmacy.dependencies import get_pharmacy_service
 from app.modules.pharmacy.schemas import (
+    AdminUpdateMedicineBillRequest,
     CreateMedicineBillRequest,
     CreateMedicineRequest,
     MedicineBillCreatorStatOut,
@@ -335,3 +343,52 @@ async def print_bill(
         payment_methods=list(dict.fromkeys(payment.payment_method.value for payment in payments)),
     )
     return HTMLResponse(content=html_document)
+
+
+# ------------------------------------------------------------------
+# Admin data correction (2026-08-20 addition) — gated on
+# pharmacy:update_bill / pharmacy:delete_bill, never on pharmacy:bill,
+# and never granted to Receptionist (see constants.py) — the medicine-
+# bill sibling of app/modules/reception/router.py's identical
+# update_visit/delete_visit pair. Ownership never matters here: an
+# admin may act on any receptionist's bill, not only their own — the
+# permission check alone is what authorizes that, same as every other
+# RBAC-gated action in this codebase.
+# ------------------------------------------------------------------
+
+
+@router.patch("/bills/{bill_id}")
+async def update_bill(
+    bill_id: UUID,
+    payload: AdminUpdateMedicineBillRequest,
+    pharmacy_service: PharmacyService = Depends(get_pharmacy_service),
+    actor: User = Depends(require_permission(PERMISSION_PHARMACY_UPDATE_BILL)),
+) -> dict:
+    """Corrects a mistakenly-entered bill's manual patient details
+    and/or discount (see PharmacyService.admin_update_bill's own
+    docstring for the full safety story, including why this — unlike
+    Visit's own admin-update — is blocked outright once the bill has
+    any recorded payment)."""
+    bill = await pharmacy_service.admin_update_bill(
+        actor=actor, bill_id=bill_id, updates=payload.model_dump(exclude_unset=True)
+    )
+    items = await pharmacy_service.get_bill_items(bill.id)
+    payments = await pharmacy_service.get_bill_payments(bill.id)
+    return success_envelope(
+        MedicineBillOut.from_bill(bill, items, payments).model_dump(mode="json")
+    )
+
+
+@router.delete("/bills/{bill_id}")
+async def delete_bill(
+    bill_id: UUID,
+    pharmacy_service: PharmacyService = Depends(get_pharmacy_service),
+    actor: User = Depends(require_permission(PERMISSION_PHARMACY_DELETE_BILL)),
+) -> dict:
+    """Soft-deletes a medicine bill created by mistake (see
+    PharmacyService.admin_delete_bill's own docstring for the full
+    safety story, including the paid/partially-paid block). The bill's
+    own line items and any linked Visit are never touched or deleted —
+    only the bill itself."""
+    await pharmacy_service.admin_delete_bill(actor=actor, bill_id=bill_id)
+    return success_envelope(None)
