@@ -8,6 +8,7 @@ import {
   useAdminVisitsForDay,
   useDeleteVisit,
   usePatientsForVisits,
+  usePendingRevenue,
   useReceptionistsForVisits,
   useUpdateVisit,
 } from '@/features/admin/hooks/useAdminOverview';
@@ -847,6 +848,10 @@ export function AdminOverview() {
   // rather than doubling any network request.
   const { data: medicineBills } = useMedicineBillsForDay(selectedDate);
   const medicineBillActorsById = useUsersForMedicineBills(medicineBills);
+  // All-time, never day-scoped (2026-08-22 addition) — see
+  // usePendingRevenue's own docstring for why this tile deliberately
+  // doesn't follow the other three's `selectedDate` scoping.
+  const pendingRevenue = usePendingRevenue();
 
   const totalRevenue = useMemo(
     () => visits.reduce((sum, visit) => sum + Number(visit.amount), 0),
@@ -920,8 +925,12 @@ export function AdminOverview() {
           Visit Revenue, Medicine Revenue, and their sum. Previously
           Admin Overview only ever showed Visit revenue (the Visits tab's
           own "Total Revenue" tile), with Medicine revenue nowhere in
-          view unless the Medicine Bills tab happened to be open. */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          view unless the Medicine Bills tab happened to be open.
+          "Pending Revenue" (2026-08-22 addition) is the one tile here
+          that is NOT scoped to `selectedDate` like the other three —
+          see usePendingRevenue's own docstring for why an all-time
+          outstanding balance is the only correct framing. */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <SummaryTile icon={Receipt} label="Visit Revenue" value={formatPkr(totalRevenue)} />
         <SummaryTile icon={Receipt} label="Medicine Revenue" value={formatPkr(medicineRevenue)} />
         <SummaryTile
@@ -929,6 +938,7 @@ export function AdminOverview() {
           label="Total Revenue"
           value={formatPkr(totalRevenue + medicineRevenue)}
         />
+        <SummaryTile icon={Wallet} label="Pending Revenue" value={formatPkr(pendingRevenue)} />
       </div>
 
       {/* Combined "Revenue by Receptionist" chart (2026-08-20 fix) — one

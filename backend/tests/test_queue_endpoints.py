@@ -11,6 +11,7 @@ from app.modules.auth.repository import UserRepository
 from app.modules.patients.models import PatientGender
 from app.modules.queue.constants import PERMISSION_QUEUE_MANAGE, PERMISSION_QUEUE_READ
 from app.modules.queue.models import QueueDestination
+from app.shared.payment_method import PaymentMethod
 from tests.conftest import TEST_PATIENT_NAME_PREFIX, make_test_email
 
 _PASSWORD = "Str0ng!Passw0rd#2026"
@@ -60,6 +61,8 @@ async def _make_visit(patient_service, visit_service, actor, suffix: str):
         doctor_user_id=actor.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
 

@@ -13,7 +13,7 @@ from app.modules.pharmacy.models import MedicineCategory
 from app.modules.queue.models import QueueDestination, QueueEntryStatus
 from app.modules.reception.exceptions import VisitHasSettledInvoiceError
 from app.modules.visits.exceptions import (
-    VisitAlreadyItemizedError,
+    VisitHasSettledPaymentError,
     VisitNotFoundError,
     VisitNotItemizedError,
 )
@@ -94,6 +94,8 @@ async def test_register_visit_with_new_patient_routes_to_vitals(real_session, re
         doctor_user_id=actor.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=True,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     assert patient.mr_number.startswith("MR-")
@@ -112,6 +114,8 @@ async def test_register_visit_with_new_patient_routes_to_doctor(real_session, re
         doctor_user_id=actor.id,
         procedures=[(None, "Follow-up", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     assert visit.status == VisitStatus.WAITING_DOCTOR
@@ -140,6 +144,8 @@ async def test_register_visit_with_existing_patient_reuses_same_patient(
         doctor_user_id=actor.id,
         procedures=[(None, "Follow-up", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     assert patient.id == existing.id
@@ -157,6 +163,8 @@ async def test_register_visit_with_unknown_patient_id_raises(real_session, recep
             doctor_user_id=actor.id,
             procedures=[(None, "Consultation", Decimal("1500.00"))],
             vitals_required=False,
+            initial_payment_amount=Decimal("0.01"),
+            initial_payment_method=PaymentMethod.CASH,
         )
 
 
@@ -179,6 +187,8 @@ async def test_register_visit_auto_assigns_least_busy_online_doctor(
         doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     assert visit.doctor_user_id == doctor.id
@@ -199,6 +209,8 @@ async def test_register_visit_proceeds_unassigned_when_no_doctor_online(
         doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     assert visit.doctor_user_id is None
@@ -217,6 +229,8 @@ async def test_cancel_visit_closes_active_queue_entry_and_cancels_visit(
         doctor_user_id=actor.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     cancelled = await reception_service.cancel_visit(
@@ -238,23 +252,26 @@ async def test_cancel_visit_closes_active_queue_entry_and_cancels_visit(
 # ---------------------------------------------------------------------
 
 
-async def _make_visit_waiting_billing(reception_service, consultation_service, doctor, suffix):
-    """Same shape as tests/test_billing_service.py's identical helper —
-    duplicated locally per this codebase's existing convention of small
-    per-file test helpers rather than a shared cross-file import."""
-    _patient, visit, _entry = await reception_service.register_visit(
-        actor=doctor,
-        patient_id=None,
-        new_patient=_new_patient_payload(suffix),
-        doctor_user_id=doctor.id,
-        procedures=[(None, "Consultation", Decimal("1500.00"))],
-        vitals_required=False,
-    )
-    consultation = await consultation_service.start_consultation(actor=doctor, visit_id=visit.id)
-    await consultation_service.complete_consultation(
-        actor=doctor, consultation_id=consultation.id, updates={}
-    )
-    return visit
+async def _make_visit_waiting_billing(
+    real_session, patient_service, visit_service, doctor, suffix
+):
+    """A visit reaching `WAITING_BILLING` via direct `VisitService`
+    status transitions, not `ReceptionService.register_visit`
+    (2026-08-22 revision — the three admin_delete_visit tests below
+    exist specifically to test Billing's *Invoice*-based deletion block
+    in isolation; `register_visit` now always collects a real
+    registration-charge payment too, which would confound that
+    isolation by *also* tripping the separate, new
+    `VisitHasSettledPaymentError` guard regardless of the Invoice's own
+    state — exactly the interaction `_make_legacy_visit` above already
+    sidesteps for the itemization tests). Uses `_make_legacy_visit`'s
+    same bypass shape, then drives the Visit's status forward directly
+    (no real Consultation record — nothing these tests check depends
+    on one existing)."""
+    visit = await _make_legacy_visit(real_session, patient_service, doctor, suffix)
+    await visit_service.mark_waiting_doctor(actor=doctor, visit_id=visit.id)
+    await visit_service.mark_in_consultation(actor=doctor, visit_id=visit.id)
+    return await visit_service.mark_waiting_billing(actor=doctor, visit_id=visit.id)
 
 
 async def test_admin_update_visit_updates_patient_and_visit_fields(
@@ -306,7 +323,16 @@ async def test_admin_update_visit_rejects_flat_fields_against_an_itemized_visit(
     from 2026-08-21 onward always has procedure items, so its flat
     (unused) procedure/amount fields are rejected outright rather than
     silently accepted (see VisitService.update_visit_details's own
-    docstring for the `VisitAlreadyItemizedError` this raises)."""
+    docstring). 2026-08-22 revision: `VisitService.register_visit` now
+    also always collects a real registration-charge payment, so a real
+    visit built this way is *also* always `VisitHasSettledPaymentError`-
+    blocked — checked first (see that method's own docstring on the
+    deliberate ordering) — which is the exception actually raised here,
+    not `VisitAlreadyItemizedError`. The itemization-rejection path in
+    isolation (a payment-untracked-but-itemized visit can never occur
+    through any real flow from now on) is no longer independently
+    testable this way; this test now documents the actual, current
+    behavior for a real post-2026-08-22 itemized visit instead."""
     admin = await _make_actor(real_session, "update-itemized-admin")
     _patient, visit, _entry = await reception_service.register_visit(
         actor=admin,
@@ -315,9 +341,11 @@ async def test_admin_update_visit_rejects_flat_fields_against_an_itemized_visit(
         doctor_user_id=admin.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
-    with pytest.raises(VisitAlreadyItemizedError):
+    with pytest.raises(VisitHasSettledPaymentError):
         await reception_service.admin_update_visit(
             actor=admin, visit_id=visit.id, updates={"procedure": "Ultrasound"}
         )
@@ -339,6 +367,8 @@ async def test_admin_replace_procedure_items_replaces_the_whole_set(
         doctor_user_id=admin.id,
         procedures=[(None, "Checkup", Decimal("800.00")), (None, "Scan", Decimal("700.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
         discount_amount=Decimal("200.00"),
     )
     assert visit.amount == Decimal("1300.00")  # 1500 subtotal - 200 discount
@@ -381,16 +411,18 @@ async def test_admin_replace_procedure_items_rejects_against_a_legacy_visit(
 
 
 async def test_admin_delete_visit_soft_deletes_and_closes_active_queue_entry(
-    real_session, reception_service, visit_service, queue_service
+    real_session, reception_service, patient_service, visit_service, queue_service
 ):
+    """A legacy-shaped visit (`_make_legacy_visit`, no registration-
+    charge payment tracking — see that helper's own docstring) with a
+    queue entry created directly, mirroring what `ReceptionService.
+    register_visit` itself does — this test is specifically about the
+    queue-entry-closing behavior, deliberately isolated from the (also
+    confirmed, tested separately) registration-payment block."""
     admin = await _make_actor(real_session, "delete-admin")
-    _patient, visit, _entry = await reception_service.register_visit(
-        actor=admin,
-        patient_id=None,
-        new_patient=_new_patient_payload("DeleteTarget"),
-        doctor_user_id=admin.id,
-        procedures=[(None, "Consultation", Decimal("1500.00"))],
-        vitals_required=False,
+    visit = await _make_legacy_visit(real_session, patient_service, admin, "DeleteTarget")
+    await queue_service.route_to(
+        actor=admin, visit_id=visit.id, destination=QueueDestination.DOCTOR, reason="test_setup"
     )
     assert await queue_service.get_active_for_visit(visit.id) is not None
 
@@ -402,11 +434,11 @@ async def test_admin_delete_visit_soft_deletes_and_closes_active_queue_entry(
 
 
 async def test_admin_delete_visit_blocked_when_invoice_paid(
-    real_session, reception_service, consultation_service, billing_service
+    real_session, reception_service, patient_service, visit_service, billing_service
 ):
     admin = await _make_actor(real_session, "delete-blocked-admin")
     visit = await _make_visit_waiting_billing(
-        reception_service, consultation_service, admin, "DeleteBlocked"
+        real_session, patient_service, visit_service, admin, "DeleteBlocked"
     )
     invoice = await billing_service.generate_invoice(
         actor=admin,
@@ -426,11 +458,11 @@ async def test_admin_delete_visit_blocked_when_invoice_paid(
 
 
 async def test_admin_delete_visit_blocked_when_invoice_partially_paid(
-    real_session, reception_service, consultation_service, billing_service
+    real_session, reception_service, patient_service, visit_service, billing_service
 ):
     admin = await _make_actor(real_session, "delete-partial-admin")
     visit = await _make_visit_waiting_billing(
-        reception_service, consultation_service, admin, "DeletePartial"
+        real_session, patient_service, visit_service, admin, "DeletePartial"
     )
     invoice = await billing_service.generate_invoice(
         actor=admin,
@@ -450,14 +482,19 @@ async def test_admin_delete_visit_blocked_when_invoice_partially_paid(
 
 
 async def test_admin_delete_visit_allowed_when_invoice_unpaid(
-    real_session, reception_service, consultation_service, billing_service, visit_service
+    real_session, reception_service, patient_service, visit_service, billing_service
 ):
     """An invoice with nothing yet collected against it (PENDING_PAYMENT)
     is real paperwork, but no money has changed hands — deliberately not
-    a block (see ReceptionService.admin_delete_visit's own docstring)."""
+    a block (see ReceptionService.admin_delete_visit's own docstring).
+    Uses a visit with no registration-charge payment tracking either
+    (see `_make_visit_waiting_billing`'s own docstring) — this test is
+    specifically about the Invoice-based block being independent of the
+    (different, also confirmed) registration-payment block, in
+    isolation."""
     admin = await _make_actor(real_session, "delete-unpaid-admin")
     visit = await _make_visit_waiting_billing(
-        reception_service, consultation_service, admin, "DeleteUnpaid"
+        real_session, patient_service, visit_service, admin, "DeleteUnpaid"
     )
     await billing_service.generate_invoice(
         actor=admin,
@@ -470,6 +507,108 @@ async def test_admin_delete_visit_allowed_when_invoice_unpaid(
 
     with pytest.raises(VisitNotFoundError):
         await visit_service.get_visit(visit.id)
+
+
+# ---------------------------------------------------------------------
+# Registration-charge payment tracking's admin edit guard (2026-08-22
+# addition, 2026-08-23 revision) — VisitHasSettledPaymentError now
+# applies only to `update_visit_details`'s legacy flat-field path, never
+# to `admin_delete_visit` — see that exception's own docstring for why
+# a soft-delete's much lower integrity risk (it never touches
+# `amount_paid`/`amount` at all) doesn't warrant the same block, which
+# would otherwise make every visit registered from now on permanently
+# undeletable through this tool (payment is always mandatory at
+# registration).
+# ---------------------------------------------------------------------
+
+
+async def test_admin_delete_visit_succeeds_despite_a_partially_paid_registration_charge(
+    real_session, reception_service, visit_service
+):
+    """2026-08-23 revision — a recorded registration payment (partial
+    or full) no longer blocks deletion at all; only a settled Billing
+    Invoice does (see the sibling tests above). The soft-delete leaves
+    the visit's `VisitPayment` rows orphaned-but-intact, the same
+    accepted outcome already applied to an unpaid Invoice/Consultation/
+    VitalsRecord."""
+    admin = await _make_actor(real_session, "delete-despite-partial-payment")
+    _patient, visit, _entry = await reception_service.register_visit(
+        actor=admin,
+        patient_id=None,
+        new_patient=_new_patient_payload("DeleteDespitePartialPayment"),
+        doctor_user_id=admin.id,
+        procedures=[(None, "C-Section", Decimal("50000.00"))],
+        vitals_required=False,
+        initial_payment_amount=Decimal("20000.00"),
+        initial_payment_method=PaymentMethod.CASH,
+    )
+
+    await reception_service.admin_delete_visit(actor=admin, visit_id=visit.id)
+
+    with pytest.raises(VisitNotFoundError):
+        await visit_service.get_visit(visit.id)
+
+
+async def test_admin_delete_visit_succeeds_despite_a_fully_paid_registration_charge(
+    real_session, reception_service, visit_service
+):
+    admin = await _make_actor(real_session, "delete-despite-full-payment")
+    _patient, visit, _entry = await reception_service.register_visit(
+        actor=admin,
+        patient_id=None,
+        new_patient=_new_patient_payload("DeleteDespiteFullPayment"),
+        doctor_user_id=admin.id,
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
+        vitals_required=False,
+        initial_payment_amount=Decimal("1500.00"),
+        initial_payment_method=PaymentMethod.CASH,
+    )
+
+    await reception_service.admin_delete_visit(actor=admin, visit_id=visit.id)
+
+    with pytest.raises(VisitNotFoundError):
+        await visit_service.get_visit(visit.id)
+
+
+async def test_admin_delete_visit_allowed_for_legacy_visit_with_no_payment_tracking(
+    real_session, reception_service, patient_service, visit_service
+):
+    """A visit that predates payment tracking (`payment_status IS
+    NULL`) deletes exactly as it always has, zero regression — kept
+    alongside the two tests above to cover all three `payment_status`
+    shapes (`None`/`partially_paid`/`paid`) now uniformly deletable."""
+    admin = await _make_actor(real_session, "delete-legacy-no-payment")
+    visit = await _make_legacy_visit(real_session, patient_service, admin, "DeleteLegacyNoPayment")
+
+    await reception_service.admin_delete_visit(actor=admin, visit_id=visit.id)
+
+    with pytest.raises(VisitNotFoundError):
+        await visit_service.get_visit(visit.id)
+
+
+async def test_update_visit_details_blocked_when_visit_has_settled_payment(
+    real_session, reception_service, visit_service
+):
+    """The legacy flat procedure/amount edit path rejects outright
+    against any visit with a real recorded payment — checked before the
+    (also-true, for any post-2026-08-21 visit) itemization rejection, so
+    this is the exception actually raised."""
+    admin = await _make_actor(real_session, "update-blocked-settled-payment")
+    _patient, visit, _entry = await reception_service.register_visit(
+        actor=admin,
+        patient_id=None,
+        new_patient=_new_patient_payload("UpdateBlockedSettledPayment"),
+        doctor_user_id=admin.id,
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
+        vitals_required=False,
+        initial_payment_amount=Decimal("1500.00"),
+        initial_payment_method=PaymentMethod.CASH,
+    )
+
+    with pytest.raises(VisitHasSettledPaymentError):
+        await visit_service.update_visit_details(
+            actor=admin, visit_id=visit.id, updates={"amount": Decimal("2000.00")}
+        )
 
 
 # ---------------------------------------------------------------------
@@ -504,6 +643,8 @@ async def test_get_own_revenue_is_scoped_to_the_caller_only(
         doctor_user_id=receptionist_a.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
     await reception_service.register_visit(
         actor=receptionist_b,
@@ -512,6 +653,8 @@ async def test_get_own_revenue_is_scoped_to_the_caller_only(
         doctor_user_id=receptionist_b.id,
         procedures=[(None, "Consultation", Decimal("9999.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     visits_count, visits_revenue, _med_count, _med_revenue, window_since = (
@@ -539,6 +682,8 @@ async def test_get_own_revenue_includes_medicine_bills_in_breakdown(
         doctor_user_id=receptionist.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
     await pharmacy_service.create_bill(
         actor=receptionist, visit_id=None, items=[(medicine.id, 2)]
@@ -565,6 +710,8 @@ async def test_clear_own_revenue_resets_display_but_leaves_data_intact(
         doctor_user_id=receptionist.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     before_count, before_revenue, _mc, _mr, _ca = await reception_service.get_own_revenue(
@@ -609,6 +756,8 @@ async def test_clear_own_revenue_does_not_affect_admins_alltime_view(
         doctor_user_id=receptionist.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     await reception_service.clear_own_revenue(actor=receptionist)
@@ -629,6 +778,8 @@ async def test_clear_own_revenue_only_affects_the_caller(real_session, reception
         doctor_user_id=receptionist_a.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     await reception_service.clear_own_revenue(actor=receptionist_b)
@@ -708,6 +859,8 @@ async def test_get_own_revenue_excludes_visits_older_than_24h_even_without_manua
         doctor_user_id=receptionist.id,
         procedures=[(None, "Consultation", Decimal("100.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
     old_visit = await _make_backdated_visit(
         real_session,
@@ -751,6 +904,8 @@ async def test_get_own_revenue_manual_clear_within_24h_still_narrows_the_window(
         doctor_user_id=receptionist.id,
         procedures=[(None, "Consultation", Decimal("1000.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     await reception_service.clear_own_revenue(actor=receptionist)
@@ -762,6 +917,8 @@ async def test_get_own_revenue_manual_clear_within_24h_still_narrows_the_window(
         doctor_user_id=receptionist.id,
         procedures=[(None, "Consultation", Decimal("500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     visits_count, visits_revenue, _mc, _mr, _ws = await reception_service.get_own_revenue(
@@ -791,6 +948,8 @@ async def test_get_own_revenue_manual_clear_older_than_24h_is_superseded_by_auto
         doctor_user_id=receptionist.id,
         procedures=[(None, "Consultation", Decimal("0.01"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
     visit = await _make_backdated_visit(
         real_session,
@@ -828,6 +987,8 @@ async def test_get_own_revenue_24h_window_does_not_affect_admins_alltime_view(
         doctor_user_id=receptionist.id,
         procedures=[(None, "Consultation", Decimal("0.01"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
     await _make_backdated_visit(
         real_session,

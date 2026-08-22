@@ -61,6 +61,7 @@ from app.modules.reception.repository import ReceptionRepository
 from app.modules.reception.service import ReceptionService
 from app.modules.visits.repository import (
     ProcedureRepository,
+    VisitPaymentRepository,
     VisitProcedureItemRepository,
     VisitRepository,
 )
@@ -405,6 +406,24 @@ async def real_session():
                 ),
                 cleanup_params,
             )
+            # visit_payment rows likewise (2026-08-22 addition) — same
+            # no-ON-DELETE-clause reasoning as visit_procedure_item
+            # immediately above.
+            await session.execute(
+                text(
+                    "DELETE FROM audit_log WHERE entity_id IN "
+                    "(SELECT id FROM visit_payment WHERE visit_id IN "
+                    f"({visit_owned_by_test_data}))"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM visit_payment WHERE visit_id IN "
+                    f"({visit_owned_by_test_data})"
+                ),
+                cleanup_params,
+            )
             await session.execute(
                 text(f"DELETE FROM audit_log WHERE entity_id IN ({visit_owned_by_test_data})"),
                 cleanup_params,
@@ -539,6 +558,7 @@ def visit_service(real_session) -> VisitService:
         audit_repository=AuditLogRepository(real_session),
         procedure_repository=ProcedureRepository(real_session),
         procedure_item_repository=VisitProcedureItemRepository(real_session),
+        visit_payment_repository=VisitPaymentRepository(real_session),
     )
 
 

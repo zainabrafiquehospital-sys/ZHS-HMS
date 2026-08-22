@@ -10,7 +10,14 @@ from sqlalchemy import Sequence, func, select, update
 from sqlalchemy.orm import InstrumentedAttribute
 
 from app.modules.visits.constants import QUEUE_TOKEN_SEQUENCE_NAME
-from app.modules.visits.models import Procedure, Visit, VisitProcedureItem, VisitStatus
+from app.modules.visits.models import (
+    Procedure,
+    Visit,
+    VisitPayment,
+    VisitPaymentStatus,
+    VisitProcedureItem,
+    VisitStatus,
+)
 from app.shared.repository.base_repository import BaseRepository
 
 VISIT_SORTABLE_COLUMNS: dict[str, InstrumentedAttribute] = {
@@ -44,6 +51,37 @@ class VisitRepository(BaseRepository[Visit]):
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def get_for_update(self, visit_id: UUID) -> Visit | None:
+        """Row-locking variant of `get_by_id`, for `VisitService.
+        record_payment`'s read-modify-write — identical rationale to
+        app/modules/billing/repository.py's `InvoiceRepository.
+        get_for_update`/app/modules/pharmacy/repository.py's
+        `MedicineBillRepository.get_for_update`: two concurrent
+        payments against the same visit must never both compute their
+        "amount paid so far" from the same stale snapshot."""
+        stmt = self._exclude_soft_deleted(
+            select(Visit).where(Visit.id == visit_id), include_deleted=False
+        ).with_for_update()
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def sum_pending_amount(self) -> Decimal:
+        """Backs the Admin Overview's "Pending Revenue" tile (2026-08-22
+        addition) — a single all-time aggregate across every currently
+        `PARTIALLY_PAID` visit, deliberately never day-scoped like the
+        other revenue tiles (`useAdminVisitsForDay`): an outstanding
+        balance from a visit registered weeks ago must still count today
+        (see the C-section example this feature was built for). A visit
+        with `payment_status IS NULL` (predates payment tracking) or
+        `PAID` never contributes — only a real, currently-open partial
+        balance does."""
+        stmt = select(func.sum(Visit.amount - Visit.amount_paid)).where(
+            Visit.deleted_at.is_(None), Visit.payment_status == VisitPaymentStatus.PARTIALLY_PAID
+        )
+        result = await self.session.execute(stmt)
+        total = result.scalar_one()
+        return total if total is not None else Decimal("0.00")
 
     async def search(
         self,
@@ -290,3 +328,20 @@ class VisitProcedureItemRepository(BaseRepository[VisitProcedureItem]):
         for item in result.scalars().all():
             items_by_visit.setdefault(item.visit_id, []).append(item)
         return items_by_visit
+
+
+class VisitPaymentRepository(BaseRepository[VisitPayment]):
+    """Mirrors app/modules/pharmacy/repository.py's
+    `MedicineBillPaymentRepository` (2026-08-22 addition)."""
+
+    model = VisitPayment
+
+    async def list_for_visit(self, visit_id: UUID) -> list[VisitPayment]:
+        stmt = self._exclude_soft_deleted(
+            select(VisitPayment)
+            .where(VisitPayment.visit_id == visit_id)
+            .order_by(VisitPayment.created_at.asc()),
+            include_deleted=False,
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())

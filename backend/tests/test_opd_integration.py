@@ -116,6 +116,8 @@ async def test_scenario_1_new_patient_full_flow_with_printed_invoice(
             "new_patient": _new_patient_body("Scenario1"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=headers,
     )
@@ -188,6 +190,8 @@ async def test_scenario_2_existing_patient_registration_through_billing(
             "patient_id": str(existing_patient.id),
             "procedures": [{"name": "Follow-up", "amount": "1500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=headers,
     )
@@ -232,6 +236,8 @@ async def test_scenario_3a_workflow_a_vitals_required_intake(
             "new_patient": _new_patient_body("Scenario3a"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": True,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=headers,
     )
@@ -276,6 +282,8 @@ async def test_scenario_3b_doctor_requested_mid_consultation_vitals_detour(
             "new_patient": _new_patient_body("Scenario3b"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=headers,
     )
@@ -332,6 +340,8 @@ async def test_scenario_4_multiple_patients_in_queue_fifo_order(
                 "new_patient": _new_patient_body(f"Scenario4{suffix}"),
                 "procedures": [{"name": "Consultation", "amount": "1500.00"}],
                 "vitals_required": False,
+                "initial_payment_amount": "0.01",
+                "initial_payment_method": "cash",
             },
             headers=headers,
         )
@@ -366,6 +376,8 @@ async def test_scenario_5_visit_cancellation(api_client, real_session, grant_per
             "new_patient": _new_patient_body("Scenario5"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=headers,
     )
@@ -418,6 +430,8 @@ async def test_scenario_6_billing_authorization_reception_only(
             "new_patient": _new_patient_body("Scenario6"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=headers,
     )
@@ -511,6 +525,8 @@ async def test_scenario_8_concurrent_receptionist_registration(
                 "new_patient": _new_patient_body(f"Scenario8-{suffix}"),
                 "procedures": [{"name": "Consultation", "amount": "1500.00"}],
                 "vitals_required": False,
+                "initial_payment_amount": "0.01",
+                "initial_payment_method": "cash",
             },
             headers=headers,
         )
@@ -548,6 +564,8 @@ async def test_scenario_9_concurrent_doctors_independent_visits(
             "new_patient": _new_patient_body("Scenario9A"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(token_a),
     )
@@ -562,6 +580,8 @@ async def test_scenario_9_concurrent_doctors_independent_visits(
             "new_patient": _new_patient_body("Scenario9B"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(token_b),
     )
@@ -599,6 +619,8 @@ async def test_scenario_9b_concurrent_start_on_same_visit_only_one_wins(
             "new_patient": _new_patient_body("Scenario9B2"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=headers,
     )
@@ -638,6 +660,8 @@ async def test_scenario_10_concurrent_payment_attempts_only_one_succeeds(
             "new_patient": _new_patient_body("Scenario10"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=headers,
     )

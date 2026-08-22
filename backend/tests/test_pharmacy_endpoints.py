@@ -62,6 +62,8 @@ async def _register_visit(api_client, access_token, suffix: str) -> str:
             },
             "procedures": [{"name": "Consultation", "amount": "1000.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -345,6 +347,8 @@ async def test_visit_and_medicine_bill_tokens_interleave_chronologically(
                 },
                 "procedures": [{"name": "Consultation", "amount": "1000.00"}],
                 "vitals_required": False,
+                "initial_payment_amount": "0.01",
+                "initial_payment_method": "cash",
             },
             headers=_auth_header(access_token),
         )

@@ -64,6 +64,8 @@ async def _make_visit_waiting_billing(api_client, access_token, suffix: str) -> 
             },
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -499,3 +501,51 @@ async def test_doctor_cannot_approve_or_pay_only_submit(api_client, real_session
 
     assert approve_resp.status_code == 403
     assert generate_resp.status_code == 403
+
+
+# ---------------------------------------------------------------------
+# Visit registration-charge payment top-up (2026-08-22 addition) — a
+# ledger entirely independent of the Invoice endpoints above, gated on
+# `billing:manage` like everything else on this screen (not a Reception
+# permission — see BillingService.record_visit_payment's own
+# docstring).
+# ---------------------------------------------------------------------
+
+
+async def test_record_visit_payment_requires_permission(api_client, real_session):
+    _actor, access_token = await _create_and_login(api_client, real_session, "no-perm-visit-pay")
+
+    resp = await api_client.post(
+        "/api/v1/billing/visits/019fd77d-8445-74c6-be04-b855f517f6fe/payments",
+        json={"amount": "100", "payment_method": "cash"},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_record_visit_payment_tops_up_a_partially_paid_visit_via_http(
+    api_client, real_session, grant_permission
+):
+    """`_make_visit_waiting_billing` registers its visit with a
+    deliberately tiny 0.01 initial payment (see that helper's JSON
+    body) against a 1500.00 total — leaving it `partially_paid`, the
+    exact case this top-up action exists for."""
+    doctor, access_token = await _create_and_login(api_client, real_session, "visit-pay-topup")
+    await grant_permission(doctor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_START)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_MANAGE)
+    await grant_permission(doctor, PERMISSION_BILLING_MANAGE)
+    visit_id = await _make_visit_waiting_billing(api_client, access_token, "VisitPayTopup")
+
+    resp = await api_client.post(
+        f"/api/v1/billing/visits/{visit_id}/payments",
+        json={"amount": "1499.99", "payment_method": "bank_transfer"},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 200
+    visit = resp.json()["data"]
+    assert visit["amount_paid"] == "1500.00"
+    assert visit["payment_status"] == "paid"
+    assert {p["payment_method"] for p in visit["payments"]} == {"cash", "bank_transfer"}

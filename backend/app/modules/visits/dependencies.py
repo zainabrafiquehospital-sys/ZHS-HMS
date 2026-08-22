@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import get_db
 from app.modules.visits.repository import (
     ProcedureRepository,
+    VisitPaymentRepository,
     VisitProcedureItemRepository,
     VisitRepository,
 )
@@ -29,6 +30,12 @@ def get_visit_procedure_item_repository(
     return VisitProcedureItemRepository(db)
 
 
+def get_visit_payment_repository(
+    db: AsyncSession = Depends(get_db),
+) -> VisitPaymentRepository:
+    return VisitPaymentRepository(db)
+
+
 def get_visit_service(
     db: AsyncSession = Depends(get_db),
     visit_repository: VisitRepository = Depends(get_visit_repository),
@@ -37,6 +44,7 @@ def get_visit_service(
     procedure_item_repository: VisitProcedureItemRepository = Depends(
         get_visit_procedure_item_repository
     ),
+    visit_payment_repository: VisitPaymentRepository = Depends(get_visit_payment_repository),
 ) -> VisitService:
     return VisitService(
         session=db,
@@ -44,4 +52,5 @@ def get_visit_service(
         audit_repository=audit_repository,
         procedure_repository=procedure_repository,
         procedure_item_repository=procedure_item_repository,
+        visit_payment_repository=visit_payment_repository,
     )

@@ -218,6 +218,8 @@ def render_registration_slip(
     visit_discount_amount: Decimal = Decimal("0.00"),
     visit_discount_reason: str | None = None,
     visit_procedure_items: list[tuple[str, Decimal]] | None = None,
+    visit_amount_paid: Decimal | None = None,
+    visit_payment_status: str | None = None,
 ) -> str:
     """Renders Reception's fast-registration slip (Phase 6
     fast-registration §6/§7) — printed immediately after a visit is
@@ -272,11 +274,56 @@ def render_registration_slip(
     visit_discount_amount`. When `visit_discount_amount == 0` (the
     common case), only a single Amount/Net-Amount figure renders either
     way — the Discount row appears only when a discount was actually
-    applied."""
+    applied.
+
+    `visit_amount_paid`/`visit_payment_status` (2026-08-22 addition)
+    are `None` for every visit that predates registration-charge
+    payment tracking (see app/modules/visits/models.py's `Visit.
+    payment_status` docstring) — in that case, and whenever the visit
+    is fully `paid`, this slip renders byte-for-byte as it always has,
+    with no payment strip at all (a deliberately conservative choice,
+    unlike `render_medicine_bill_receipt`'s own unconditional Received/
+    Pending rows — this slip only ever gains the extra strip when there
+    is a real, non-zero balance still owed, to protect the half-A4
+    budget for the overwhelmingly common full-payment case). Only when
+    `payment_status` is `partially_paid` (a genuine outstanding balance)
+    does a compact 3-column "Total | Received | Pending" strip appear
+    below the Patient/Visit Details section (and below the itemized
+    table, when present) — a single row, not three stacked full-width
+    ones, specifically to stay within the half-A4 budget alongside the
+    itemized table's own extra rows."""
     registered_on = _to_local_time(visit_created_at, display_timezone).strftime(
         "%d %b %Y, %I:%M %p"
     )
     is_itemized = bool(visit_procedure_items)
+
+    # A genuine outstanding balance — never shown for a visit that
+    # predates payment tracking (`visit_payment_status is None`) or is
+    # already fully `paid` (whether settled in one payment or several;
+    # printing always reflects the visit's *current* state, never its
+    # payment history) — see this function's own docstring above.
+    pending_amount = None
+    if visit_amount_paid is not None and visit_payment_status == "partially_paid":
+        pending_amount = visit_amount - visit_amount_paid
+
+    payment_strip = ""
+    if pending_amount is not None and pending_amount > 0:
+        payment_strip = f"""
+    <div class="payment-strip">
+      <div class="payment-cell">
+        <span class="payment-label">Total</span>
+        <span class="payment-value">{_money(visit_amount)}</span>
+      </div>
+      <div class="payment-cell">
+        <span class="payment-label">Received</span>
+        <span class="payment-value">{_money(visit_amount_paid)}</span>
+      </div>
+      <div class="payment-cell pending">
+        <span class="payment-label">Pending</span>
+        <span class="payment-value">{_money(pending_amount)}</span>
+      </div>
+    </div>
+"""
 
     logo_data_uri = _logo_data_uri()
     logo_html = (
@@ -550,6 +597,39 @@ def render_registration_slip(
   }}
   tfoot td.amount {{ text-align: right; }}
 
+  /* ---------- Payment strip (2026-08-22 addition) ----------
+     Only rendered when a genuine outstanding balance exists (see
+     render_registration_slip's own docstring) — a single compact row,
+     not three stacked full-width ones, so a partially-paid slip's
+     itemized table plus this strip still fits the same half-A4 budget
+     the plain full-payment case already comfortably clears. */
+  .payment-strip {{
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-top: 5px;
+    padding-top: 4px;
+    border-top: 1.5px solid var(--rule-strong);
+  }}
+  .payment-cell {{
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+  }}
+  .payment-label {{
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }}
+  .payment-value {{
+    font-size: 12.5px;
+    font-weight: 800;
+  }}
+  .payment-cell.pending .payment-value {{ color: var(--ink); }}
+
   /* ---------- Note ---------- */
   .note-box {{
     display: flex;
@@ -574,7 +654,7 @@ def render_registration_slip(
   /* ---------- Print ---------- */
   @page {{ size: A4; margin: 14mm; }}
   @media print {{
-    * {{ 
+    * {{
       print-color-adjust: exact !important; 
       -webkit-print-color-adjust: exact !important; 
       color: #000000 !important;
@@ -638,7 +718,7 @@ def render_registration_slip(
         {visit_rows}
       </div>
     </div>
-    {items_section}
+    {items_section}{payment_strip}
     <div class="note-box">
       <span class="note-label">Note</span>
       <span class="note-text">

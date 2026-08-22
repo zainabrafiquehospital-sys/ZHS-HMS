@@ -45,6 +45,19 @@ export const billingService = {
     });
   },
 
+  // Tops up a Visit's own registration-charge payment (2026-08-22
+  // addition) — an entirely separate ledger from the Invoice endpoints
+  // above (see backend/app/modules/visits/models.py's `VisitPayment`
+  // docstring). Lives under /billing (not /reception) because that's
+  // where this action's UI lives and every other mutating action on
+  // this screen already requires `billing:manage`.
+  recordVisitPayment(visitId, amount, paymentMethod) {
+    return httpClient.post(`/billing/visits/${visitId}/payments`, {
+      amount,
+      payment_method: paymentMethod,
+    });
+  },
+
   // The print endpoint returns a raw HTML document (Content-Type:
   // text/html), not the JSON envelope — it's meant to be rendered/printed
   // directly, not consumed as API data. Fetched here (rather than a plain

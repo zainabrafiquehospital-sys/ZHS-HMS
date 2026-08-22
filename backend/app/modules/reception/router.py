@@ -63,6 +63,8 @@ async def register_visit(
             (item.procedure_id, item.name, item.amount) for item in payload.procedures
         ],
         vitals_required=payload.vitals_required,
+        initial_payment_amount=payload.initial_payment_amount,
+        initial_payment_method=payload.initial_payment_method,
         discount_amount=payload.discount_amount,
         discount_reason=payload.discount_reason,
     )
@@ -112,6 +114,8 @@ async def print_registration_slip(
         visit_created_at=visit.created_at,
         assigned_doctor_full_name=doctor_full_name,
         visit_procedure_items=[(item.name, item.amount) for item in procedure_items],
+        visit_amount_paid=visit.amount_paid,
+        visit_payment_status=visit.payment_status.value if visit.payment_status else None,
     )
     return HTMLResponse(content=html_document)
 

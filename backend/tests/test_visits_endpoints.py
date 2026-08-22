@@ -14,6 +14,7 @@ from app.modules.visits.constants import (
     PERMISSION_PROCEDURES_READ,
     PERMISSION_VISITS_READ,
 )
+from app.shared.payment_method import PaymentMethod
 from tests.conftest import TEST_PATIENT_NAME_PREFIX, TEST_PROCEDURE_NAME_PREFIX, make_test_email
 
 _PASSWORD = "Str0ng!Passw0rd#2026"
@@ -82,6 +83,8 @@ async def test_get_visit_returns_registered_visit(
         doctor_user_id=actor.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     resp = await api_client.get(f"/api/v1/visits/{visit.id}", headers=_auth_header(access_token))
@@ -124,6 +127,8 @@ async def test_get_visit_stats_by_creator_returns_accurate_counts(
             doctor_user_id=actor.id,
             procedures=[(None, "Consultation", Decimal("1500.00"))],
             vitals_required=False,
+            initial_payment_amount=Decimal("0.01"),
+            initial_payment_method=PaymentMethod.CASH,
         )
 
     resp = await api_client.get(
@@ -166,6 +171,8 @@ async def test_list_visits_filters_by_patient_id_and_returns_pagination_meta(
         doctor_user_id=actor.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
     await visit_service.register_visit(
         actor=actor,
@@ -173,6 +180,8 @@ async def test_list_visits_filters_by_patient_id_and_returns_pagination_meta(
         doctor_user_id=actor.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     resp = await api_client.get(
@@ -225,6 +234,8 @@ async def test_get_visit_includes_its_procedure_items(
             (None, "Scan", Decimal("700.00")),
         ],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     resp = await api_client.get(f"/api/v1/visits/{visit.id}", headers=_auth_header(access_token))
@@ -271,6 +282,8 @@ async def test_list_visits_includes_procedure_items_for_every_row(
         doctor_user_id=actor.id,
         procedures=[(None, "Checkup", Decimal("800.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
     visit_b = await visit_service.register_visit(
         actor=actor,
@@ -278,6 +291,8 @@ async def test_list_visits_includes_procedure_items_for_every_row(
         doctor_user_id=actor.id,
         procedures=[(None, "Scan", Decimal("700.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
     resp = await api_client.get(

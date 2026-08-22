@@ -6,6 +6,7 @@ from app.modules.auth.models import User, UserStatus
 from app.modules.auth.repository import UserRepository
 from app.modules.patients.models import PatientGender
 from app.modules.search.service import SearchService
+from app.shared.payment_method import PaymentMethod
 from tests.conftest import TEST_PATIENT_NAME_PREFIX, make_test_email
 
 
@@ -80,6 +81,8 @@ async def test_search_by_queue_token_finds_visit(real_session, patient_service, 
         doctor_user_id=actor.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
     search_service = SearchService(patient_service=patient_service, visit_service=visit_service)
 
@@ -107,6 +110,8 @@ async def test_search_by_visit_id_finds_visit(real_session, patient_service, vis
         doctor_user_id=actor.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
     search_service = SearchService(patient_service=patient_service, visit_service=visit_service)
 

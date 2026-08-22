@@ -6,6 +6,7 @@ from app.modules.consultation.models import ConsultationStatus
 from app.modules.patients.models import PatientGender
 from app.modules.queue.models import QueueDestination
 from app.modules.visits.models import VisitStatus
+from app.shared.payment_method import PaymentMethod
 from tests.conftest import TEST_PATIENT_NAME_PREFIX, make_test_email
 
 
@@ -38,6 +39,8 @@ async def _register(reception_service, doctor, suffix, vitals_required):
         doctor_user_id=doctor.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=vitals_required,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
     return visit, entry
 

@@ -10,6 +10,7 @@ from app.modules.patients.models import PatientGender
 from app.modules.queue.exceptions import NoActiveQueueEntryError, QueueEntryNotFoundError
 from app.modules.queue.models import QueueDestination, QueueEntry, QueueEntryStatus
 from app.modules.queue.repository import QueueEntryRepository
+from app.shared.payment_method import PaymentMethod
 from tests.conftest import TEST_PATIENT_NAME_PREFIX, make_test_email
 
 
@@ -43,6 +44,8 @@ async def _make_visit(real_session, patient_service, visit_service, actor, suffi
         doctor_user_id=actor.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=True,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
 
 

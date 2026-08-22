@@ -93,4 +93,14 @@ export const visitsService = {
       },
     });
   },
+
+  // All-time aggregate — the sum of outstanding balances across every
+  // currently partially-paid visit, hospital-wide (2026-08-22
+  // addition). Deliberately not day-scoped, unlike listForDay above:
+  // an outstanding balance from a visit registered weeks ago must
+  // still count today. Powers the Admin Overview's "Pending Revenue"
+  // tile.
+  getPendingRevenue() {
+    return httpClient.get('/visits/pending-revenue-summary');
+  },
 };

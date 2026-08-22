@@ -50,6 +50,7 @@ from app.modules.billing.repository import (
     InvoiceRepository,
     PendingBillingItemRepository,
 )
+from app.modules.visits.models import Visit
 from app.modules.visits.service import VisitService
 from app.shared.audit.repository import AuditLogRepository
 from app.shared.db_errors import unique_violation_constraint_name
@@ -458,3 +459,21 @@ class BillingService:
     async def get_today_summary(self) -> tuple[Decimal, int, int]:
         """Read-only aggregate added for the Dashboard module (§22)."""
         return await self._invoice_repo.get_today_summary()
+
+    # ------------------------------------------------------------------
+    # Visit registration-charge payment top-up (2026-08-22 addition) —
+    # a one-line pass-through to VisitService.record_payment, exposed
+    # from Billing (not Reception) because that's where this action's UI
+    # lives (the Billing screen's own top-up panel) and every other
+    # mutating action there already requires `billing:manage` — see
+    # VisitService.record_payment's own docstring for the full mechanism
+    # and why this is a ledger independent of Invoice/InvoicePayment
+    # above (it never touches either).
+    # ------------------------------------------------------------------
+
+    async def record_visit_payment(
+        self, *, actor: User, visit_id: UUID, amount: Decimal, payment_method: PaymentMethod
+    ) -> Visit:
+        return await self._visit_service.record_payment(
+            actor=actor, visit_id=visit_id, amount=amount, payment_method=payment_method
+        )

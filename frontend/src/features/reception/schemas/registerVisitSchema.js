@@ -47,6 +47,18 @@ const nonNegativeAmount = z
 // field here), the same way `applyDiscount`/the discount fields'
 // visibility is already handled ad hoc rather than through this
 // schema. See ProcedureItemsEditor.jsx's own docstring.
+//
+// `paymentMethod`/`advanceAmount` (2026-08-22 addition) — a real
+// payment (full or partial) is always collected at registration; see
+// RegisterVisitForm.jsx's own "Partial Payment" checkbox docstring.
+// `paymentMethod` is always required (a payment method is meaningless
+// without an amount, and an amount is always being sent). `advanceAmount`
+// is only meaningful — and only validated here — while the "Partial
+// Payment" checkbox is ticked; when it isn't, the full net total is
+// sent instead (computed in the component, not this schema), so this
+// field is optional at the schema level and its "required, > 0" rule
+// is enforced by the component itself only while the checkbox is on
+// (see handlePartialPaymentToggle).
 export const registerVisitSchema = z
   .object({
     patientMode: z.enum(['new', 'existing']),
@@ -56,6 +68,8 @@ export const registerVisitSchema = z
     vitalsRequired: z.boolean().default(false),
     discountAmount: nonNegativeAmount,
     discountReason: z.string().max(200).optional(),
+    paymentMethod: z.string().min(1, 'Select a payment method'),
+    advanceAmount: z.union([z.string(), z.number()]).optional(),
   })
   .refine((data) => data.patientMode !== 'existing' || Boolean(data.existingPatientId), {
     message: 'Search and select an existing patient',

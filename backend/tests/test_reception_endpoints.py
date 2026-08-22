@@ -1,6 +1,8 @@
 """Full end-to-end HTTP tests for the Reception module — see
 tests/test_patients_endpoints.py's identical module docstring."""
 
+from decimal import Decimal
+
 from app.modules.auth.models import User, UserStatus
 from app.modules.auth.password_service import PasswordService
 from app.modules.auth.repository import UserRepository
@@ -16,6 +18,8 @@ from app.modules.visits.constants import (
     PERMISSION_PROCEDURES_MANAGE,
     PERMISSION_VISITS_READ,
 )
+from app.modules.visits.models import Visit, VisitStatus
+from app.modules.visits.repository import VisitRepository
 from tests.conftest import TEST_PATIENT_NAME_PREFIX, TEST_PROCEDURE_NAME_PREFIX, make_test_email
 
 _PASSWORD = "Str0ng!Passw0rd#2026"
@@ -74,6 +78,8 @@ async def test_register_visit_without_permission_is_forbidden(api_client, real_s
             "new_patient": _new_patient_body("NoPerm"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": True,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -94,6 +100,8 @@ async def test_register_visit_both_patient_id_and_new_patient_returns_422(
             "new_patient": _new_patient_body("Both"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": True,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -111,6 +119,8 @@ async def test_register_visit_success_with_new_patient(api_client, real_session,
             "new_patient": _new_patient_body("Success"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": True,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -142,6 +152,8 @@ async def test_register_visit_auto_assigns_online_doctor(
             "new_patient": _new_patient_body("AutoAssign"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(receptionist_token),
     )
@@ -167,6 +179,8 @@ async def test_register_visit_leaves_unassigned_without_online_doctor(
             "new_patient": _new_patient_body("NoDoctorOnline"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -184,6 +198,8 @@ async def test_print_registration_slip_success(api_client, real_session, grant_p
             "new_patient": _new_patient_body("PrintSlip"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -236,6 +252,8 @@ async def test_register_visit_with_discount_computes_post_discount_amount(
             "new_patient": _new_patient_body("DiscountBasic"),
             "procedures": [{"name": "Consultation", "amount": "2000.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
             "discount_amount": "500.00",
             "discount_reason": "Referral",
         },
@@ -259,6 +277,8 @@ async def test_register_visit_discount_reason_is_optional(api_client, real_sessi
             "new_patient": _new_patient_body("DiscountNoReason"),
             "procedures": [{"name": "Consultation", "amount": "1000.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
             "discount_amount": "100.00",
         },
         headers=_auth_header(access_token),
@@ -282,6 +302,8 @@ async def test_register_visit_discount_exceeding_amount_rejected(
             "new_patient": _new_patient_body("DiscountExceeds"),
             "procedures": [{"name": "Consultation", "amount": "500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
             "discount_amount": "500.01",
         },
         headers=_auth_header(access_token),
@@ -305,6 +327,8 @@ async def test_print_registration_slip_with_discount_shows_lines_in_correct_orde
             "new_patient": _new_patient_body("DiscountPrintOrder"),
             "procedures": [{"name": "Consultation", "amount": "2000.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
             "discount_amount": "300.00",
             "discount_reason": "Staff discount",
         },
@@ -340,6 +364,8 @@ async def test_print_registration_slip_without_discount_omits_discount_line(
             "new_patient": _new_patient_body("PlainPrintSlip"),
             "procedures": [{"name": "Consultation", "amount": "800.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -379,6 +405,8 @@ async def test_register_visit_discount_flows_through_to_my_revenue(
             "new_patient": _new_patient_body("DiscountRevenueFlow"),
             "procedures": [{"name": "Consultation", "amount": "3000.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
             "discount_amount": "1000.00",
             "discount_reason": "Loyalty",
         },
@@ -406,6 +434,8 @@ async def test_cancel_visit_requires_permission(api_client, real_session, grant_
             "new_patient": _new_patient_body("CancelNoPerm"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -430,6 +460,8 @@ async def test_cancel_visit_success(api_client, real_session, grant_permission):
             "new_patient": _new_patient_body("CancelSuccess"),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -459,6 +491,8 @@ async def _register_visit_http(api_client, access_token, suffix: str) -> str:
             "new_patient": _new_patient_body(suffix),
             "procedures": [{"name": "Consultation", "amount": "1500.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -568,7 +602,16 @@ async def test_delete_visit_cancel_permission_alone_is_not_sufficient(
     assert resp.status_code == 403
 
 
-async def test_delete_visit_success_removes_it_from_get(api_client, real_session, grant_permission):
+async def test_delete_visit_succeeds_despite_a_settled_registration_payment_via_http(
+    api_client, real_session, grant_permission
+):
+    """2026-08-23 revision — a visit registered via the real HTTP
+    endpoint always collects a real registration-charge payment now
+    (see VisitService.register_visit's own docstring), but that no
+    longer blocks `DELETE /reception/visits/{id}` at all (see
+    VisitHasSettledPaymentError's own docstring for why a soft-delete's
+    much lower integrity risk doesn't warrant the same block editing
+    gets) — only a settled Billing Invoice still does."""
     receptionist, receptionist_token = await _create_and_login(
         api_client, real_session, "delete-owner-receptionist"
     )
@@ -586,6 +629,55 @@ async def test_delete_visit_success_removes_it_from_get(api_client, real_session
 
     get_resp = await api_client.get(
         f"/api/v1/visits/{visit_id}", headers=_auth_header(admin_token)
+    )
+    assert get_resp.status_code == 404
+
+
+async def test_delete_visit_success_removes_it_from_get_for_a_legacy_visit(
+    api_client, real_session, patient_service, grant_permission
+):
+    """The HTTP-level sibling of `test_admin_delete_visit_allowed_for_
+    legacy_visit_with_no_payment_tracking` (test_reception_service.py)
+    — a visit predating payment tracking (`payment_status IS NULL`,
+    constructed directly here since it's the one shape a real HTTP
+    registration can never produce) is, alongside the test immediately
+    above, one of the two `payment_status` shapes now uniformly
+    deletable."""
+    admin, admin_token = await _create_and_login(api_client, real_session, "delete-legacy-admin")
+    await grant_permission(admin, PERMISSION_RECEPTION_DELETE_VISIT)
+    await grant_permission(admin, PERMISSION_VISITS_READ)
+
+    patient = await patient_service.register_patient(
+        actor=admin,
+        full_name=f"{TEST_PATIENT_NAME_PREFIX}DeleteLegacyHttp",
+        guardian_name=None,
+        gender=None,
+        age_years=30,
+        phone_number="03001234567",
+        cnic=None,
+        address=None,
+    )
+    visit = Visit(
+        patient_id=patient.id,
+        doctor_user_id=admin.id,
+        queue_token=f"GYN-{admin.id.hex[-8:]}",
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=False,
+        status=VisitStatus.REGISTERED,
+        created_by=admin.id,
+        updated_by=admin.id,
+    )
+    visit = await VisitRepository(real_session).add(visit)
+    await real_session.commit()
+
+    delete_resp = await api_client.delete(
+        f"/api/v1/reception/visits/{visit.id}", headers=_auth_header(admin_token)
+    )
+    assert delete_resp.status_code == 200
+
+    get_resp = await api_client.get(
+        f"/api/v1/visits/{visit.id}", headers=_auth_header(admin_token)
     )
     assert get_resp.status_code == 404
 
@@ -726,6 +818,8 @@ async def test_register_visit_with_catalog_and_manual_procedures_together(
                 {"name": "Custom Follow-up", "amount": "250.00"},
             ],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -767,6 +861,8 @@ async def test_register_visit_catalog_procedure_price_is_locked_not_client_suppl
             "new_patient": _new_patient_body("PriceLock"),
             "procedures": [{"procedure_id": procedure_id, "name": "Sneaky", "amount": "1.00"}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -798,6 +894,8 @@ async def test_register_visit_rejects_inactive_catalog_procedure(
             "new_patient": _new_patient_body("CatalogInactive"),
             "procedures": [{"procedure_id": procedure_id}],
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
@@ -818,8 +916,171 @@ async def test_register_visit_manual_entry_requires_name_and_amount(
             "new_patient": _new_patient_body("ManualIncomplete"),
             "procedures": [{"name": "Consultation"}],  # no amount
             "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
         },
         headers=_auth_header(access_token),
     )
 
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------
+# Registration-charge payment tracking (2026-08-22 addition) — a real
+# payment (full or partial, never zero) is always required at
+# registration; see VisitService.register_visit's own docstring.
+# ---------------------------------------------------------------------
+
+
+async def test_register_visit_full_payment_marks_visit_paid_via_http(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "http-full-payment")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+
+    resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("HttpFullPayment"),
+            "procedures": [{"name": "Consultation", "amount": "1500.00"}],
+            "vitals_required": False,
+            "initial_payment_amount": "1500.00",
+            "initial_payment_method": "cash",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 201
+    visit = resp.json()["data"]["visit"]
+    assert visit["amount_paid"] == "1500.00"
+    assert visit["payment_status"] == "paid"
+
+
+async def test_register_visit_partial_payment_marks_visit_partially_paid_via_http(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "http-partial-payment")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+
+    resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("HttpPartialPayment"),
+            "procedures": [{"name": "C-Section", "amount": "50000.00"}],
+            "vitals_required": False,
+            "initial_payment_amount": "20000.00",
+            "initial_payment_method": "jazzcash",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 201
+    visit = resp.json()["data"]["visit"]
+    assert visit["amount_paid"] == "20000.00"
+    assert visit["payment_status"] == "partially_paid"
+
+
+async def test_register_visit_rejects_zero_payment_via_http(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "http-zero-payment")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+
+    resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("HttpZeroPayment"),
+            "procedures": [{"name": "Consultation", "amount": "1500.00"}],
+            "vitals_required": False,
+            "initial_payment_amount": "0",
+            "initial_payment_method": "cash",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 422
+
+
+async def test_register_visit_rejects_payment_exceeding_amount_via_http(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "http-over-payment")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+
+    resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("HttpOverPayment"),
+            "procedures": [{"name": "Consultation", "amount": "1500.00"}],
+            "vitals_required": False,
+            "initial_payment_amount": "1500.01",
+            "initial_payment_method": "cash",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "VISIT_PAYMENT_EXCEEDS_BALANCE"
+
+
+async def test_register_visit_requires_payment_method_via_http(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "http-no-method")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+
+    resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("HttpNoMethod"),
+            "procedures": [{"name": "Consultation", "amount": "1500.00"}],
+            "vitals_required": False,
+            "initial_payment_amount": "1500.00",
+            "initial_payment_method": "",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 422
+
+
+async def test_get_pending_revenue_summary_requires_permission(api_client, real_session):
+    _actor, access_token = await _create_and_login(api_client, real_session, "pending-rev-no-perm")
+
+    resp = await api_client.get(
+        "/api/v1/visits/pending-revenue-summary", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_get_pending_revenue_summary_reflects_a_partially_paid_visit(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "pending-rev-http")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(actor, PERMISSION_VISITS_READ)
+
+    before = await api_client.get(
+        "/api/v1/visits/pending-revenue-summary", headers=_auth_header(access_token)
+    )
+    before_amount = Decimal(before.json()["data"]["pending_revenue"])
+
+    await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("PendingRevHttp"),
+            "procedures": [{"name": "C-Section", "amount": "50000.00"}],
+            "vitals_required": False,
+            "initial_payment_amount": "20000.00",
+            "initial_payment_method": "cash",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    after = await api_client.get(
+        "/api/v1/visits/pending-revenue-summary", headers=_auth_header(access_token)
+    )
+    after_amount = Decimal(after.json()["data"]["pending_revenue"])
+
+    assert after_amount - before_amount == Decimal("30000.00")

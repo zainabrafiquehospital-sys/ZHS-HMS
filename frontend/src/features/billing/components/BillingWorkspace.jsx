@@ -13,6 +13,7 @@ import {
   useRejectPendingItem,
   useGenerateInvoice,
   useRecordPayment,
+  useRecordVisitPayment,
   usePrintInvoice,
 } from '@/features/billing/hooks/useBilling';
 import { generateInvoiceSchema, recordPaymentSchema } from '@/features/billing/schemas/billingSchemas';
@@ -466,6 +467,118 @@ function InvoicesPanel({ visitId }) {
   );
 }
 
+/** The Visit's own registration-charge payment ledger (2026-08-22
+ * addition) — entirely separate from the Generate Invoice/Invoices
+ * panels below (which track a different, later financial event: a
+ * post-consultation Invoice for additional doctor-requested charges).
+ * Renders nothing at all for a visit that predates payment tracking
+ * (`payment_status` is `None` — see backend/app/modules/visits/models.
+ * py's `Visit.payment_status` docstring), the same "legacy visit,
+ * behave exactly as before" branching this whole feature area uses
+ * everywhere else (print, the admin edit/delete guard). */
+function RegistrationPaymentPanel({ visitId, visit }) {
+  const recordPayment = useRecordVisitPayment(visitId);
+  const [error, setError] = useState(null);
+  const pending = Number(visit.amount) - Number(visit.amount_paid);
+  const balanceDueValue = pending > 0 ? pending.toFixed(2) : '';
+  const paidViaMethods = [...new Set((visit.payments ?? []).map((p) => p.payment_method))];
+  const {
+    register,
+    handleSubmit,
+    reset,
+    setValue,
+    formState: { errors, isSubmitting, isDirty },
+  } = useForm({
+    resolver: zodResolver(recordPaymentSchema),
+    defaultValues: { amount: balanceDueValue, payment_method: '' },
+  });
+
+  // Same "pin the amount field to the current remaining balance until
+  // the receptionist starts typing something else" behavior
+  // RecordPaymentRow (below) already has, for the identical reason.
+  useEffect(() => {
+    if (!isDirty) {
+      setValue('amount', balanceDueValue);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [balanceDueValue]);
+
+  const isPartiallyPaid = visit.payment_status === 'partially_paid';
+
+  async function onSubmit(values) {
+    setError(null);
+    try {
+      await recordPayment.mutateAsync({
+        amount: values.amount,
+        paymentMethod: values.payment_method,
+      });
+      reset({ amount: '', payment_method: '' });
+    } catch (submitError) {
+      setError(submitError.message || 'Unable to record payment.');
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Registration Payment</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-sm font-medium text-foreground">
+              Total {money(visit.amount)} · Received {money(visit.amount_paid)} · Pending{' '}
+              {money(pending)}
+            </p>
+            {paidViaMethods.length > 0 ? (
+              <p className="text-xs text-muted-foreground">
+                Paid via: {paidViaMethods.map((m) => PAYMENT_METHOD_LABELS[m] ?? m).join(', ')}
+              </p>
+            ) : null}
+          </div>
+          <Badge
+            variant={visit.payment_status === 'paid' ? 'success' : 'warning'}
+            className="capitalize"
+          >
+            {visit.payment_status.replaceAll('_', ' ')}
+          </Badge>
+        </div>
+
+        {isPartiallyPaid ? (
+          <div className="flex flex-col gap-2">
+            <p className="text-xs text-muted-foreground">
+              Record an additional payment toward the remaining registration balance (e.g. the
+              rest of a C-section advance, collected on a later visit).
+            </p>
+            <form onSubmit={handleSubmit(onSubmit)} className="flex items-end gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="visit-payment-amount">Additional Payment (Rs.)</Label>
+                <Input id="visit-payment-amount" type="number" step="0.01" {...register('amount')} />
+                {errors.amount ? (
+                  <p className="text-xs text-destructive">{errors.amount.message}</p>
+                ) : null}
+              </div>
+              <div className="w-40">
+                <PaymentMethodSelect
+                  id="visit-payment-method"
+                  registration={register('payment_method')}
+                  error={errors.payment_method}
+                />
+              </div>
+              <Button type="submit" size="sm" disabled={isSubmitting}>
+                <Wallet className="h-4 w-4" />
+                {isSubmitting ? 'Recording…' : 'Record Additional Payment'}
+              </Button>
+            </form>
+          </div>
+        ) : null}
+
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function BillingWorkspace({ visitId }) {
   const { data: visit, isLoading: isLoadingVisit } = useVisit(visitId);
   const patientsById = usePatientsForVisits(visit ? [visit] : []);
@@ -500,6 +613,9 @@ export function BillingWorkspace({ visitId }) {
         </CardContent>
       </Card>
 
+      {visit?.payment_status ? (
+        <RegistrationPaymentPanel visitId={visitId} visit={visit} />
+      ) : null}
       <PendingItemsPanel visitId={visitId} />
       <GenerateInvoiceForm visitId={visitId} visit={visit} />
       <InvoicesPanel visitId={visitId} />

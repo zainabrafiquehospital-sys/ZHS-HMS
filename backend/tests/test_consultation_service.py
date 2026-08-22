@@ -16,6 +16,7 @@ from app.modules.consultation.models import ConsultationStatus
 from app.modules.patients.models import PatientGender
 from app.modules.queue.models import QueueDestination
 from app.modules.visits.models import VisitStatus
+from app.shared.payment_method import PaymentMethod
 from tests.conftest import TEST_PATIENT_NAME_PREFIX, make_test_email
 
 
@@ -56,6 +57,8 @@ async def _make_visit_waiting_doctor(reception_service, doctor, suffix):
         doctor_user_id=doctor.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
     return visit
 
@@ -79,6 +82,8 @@ async def _make_unassigned_visit_waiting_doctor(reception_service, receptionist,
         doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
     return visit
 

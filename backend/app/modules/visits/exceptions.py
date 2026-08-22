@@ -92,3 +92,67 @@ class VisitDiscountExceedsAmountError(ValidationError):
         super().__init__(
             f"Discount exceeds the entered amount of {amount}.", {"amount": amount}
         )
+
+
+# ---------------------------------------------------------------------
+# Registration-charge payment tracking (2026-08-22 addition) — mirrors
+# app/modules/pharmacy/exceptions.py's identical
+# MedicineBillNotPayableError/MedicineBillPaymentExceedsBalanceError/
+# MedicineBillPaymentMethodRequiredError/MedicineBillHasSettledPaymentError
+# quartet exactly; see this module's own models.py docstring for why
+# Visit gets its own independent payment ledger rather than reusing
+# Billing's Invoice or Pharmacy's MedicineBill exceptions.
+# ---------------------------------------------------------------------
+
+
+class VisitNotPayableError(ValidationError):
+    code = "VISIT_NOT_PAYABLE"
+
+    def __init__(self, status: str) -> None:
+        super().__init__(
+            f"A visit with payment status '{status}' cannot receive a payment.",
+            {"status": status},
+        )
+
+
+class VisitPaymentExceedsBalanceError(ValidationError):
+    code = "VISIT_PAYMENT_EXCEEDS_BALANCE"
+
+    def __init__(self, remaining_balance: str) -> None:
+        super().__init__(
+            f"Payment exceeds the remaining balance of {remaining_balance}.",
+            {"remaining_balance": remaining_balance},
+        )
+
+
+class VisitHasSettledPaymentError(ConflictError):
+    """Raised only by `VisitService.update_visit_details` (the legacy
+    flat-field edit path, 2026-08-22 addition) — the Visit-payment
+    sibling of `MedicineBillHasSettledPaymentError`: once a *new-style*
+    visit (`payment_status` not `NULL`) has any recorded payment
+    (`PARTIALLY_PAID`/`PAID`), its `amount`/`procedure` can no longer be
+    corrected through this flat-field tool — doing so would
+    desynchronize `amount_paid` from a since-changed `amount`.
+
+    Deliberately scoped to `payment_status not in (None, UNPAID)`, never
+    just `!= UNPAID` — a visit that predates payment tracking entirely
+    (`payment_status IS NULL`, see `Visit.payment_status`'s own column
+    docstring) is structurally exempt from this guard, so every visit
+    registered before this feature keeps behaving exactly as it always
+    has, with zero regression to admin correction.
+
+    2026-08-23 revision: deliberately NOT also raised by
+    `ReceptionService.admin_delete_visit` — see that method's own
+    docstring for why a soft-delete (which never touches `amount_paid`/
+    `amount` at all) doesn't carry the same integrity risk editing does,
+    and why scoping this guard to delete too would make every visit
+    registered from now on permanently undeletable through that tool."""
+
+    code = "VISIT_HAS_SETTLED_PAYMENT"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "This visit has a paid or partially-paid registration charge and cannot have its "
+            "procedure/amount corrected through this tool — doing so would risk desynchronizing "
+            "the record of money already collected."
+        )

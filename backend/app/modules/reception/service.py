@@ -41,6 +41,7 @@ from app.modules.reception.repository import ReceptionRepository
 from app.modules.visits.models import Visit
 from app.modules.visits.service import VisitService
 from app.shared.audit.repository import AuditLogRepository
+from app.shared.payment_method import PaymentMethod
 
 # Invoice statuses that represent money genuinely collected — see
 # ReceptionService.admin_delete_visit and VisitHasSettledInvoiceError's
@@ -114,6 +115,8 @@ class ReceptionService:
         doctor_user_id: UUID | None,
         procedures: list[tuple[UUID | None, str | None, Decimal | None]],
         vitals_required: bool,
+        initial_payment_amount: Decimal,
+        initial_payment_method: PaymentMethod,
         discount_amount: Decimal = Decimal("0.00"),
         discount_reason: str | None = None,
     ) -> tuple[Patient, Visit, QueueEntry]:
@@ -145,7 +148,13 @@ class ReceptionService:
         validation and the amount/discount arithmetic — see that
         method's own docstring for the full mechanism and why it makes a
         registration-time discount actually flow through to Billing and
-        every revenue read."""
+        every revenue read.
+
+        `initial_payment_amount`/`initial_payment_method` (both
+        required, 2026-08-22 addition) pass straight through as well —
+        VisitService.register_visit owns the actual payment application;
+        see that method's own docstring for why this is never optional
+        the way Pharmacy's/Billing's equivalent parameters are."""
         if patient_id is not None:
             patient = await self._patient_service.get_patient(patient_id)
         else:
@@ -161,6 +170,8 @@ class ReceptionService:
             doctor_user_id=doctor_user_id,
             procedures=procedures,
             vitals_required=vitals_required,
+            initial_payment_amount=initial_payment_amount,
+            initial_payment_method=initial_payment_method,
             discount_amount=discount_amount,
             discount_reason=discount_reason,
         )
@@ -284,18 +295,36 @@ class ReceptionService:
         method's job rather than VisitService's).
 
         Blocked outright — before anything is touched — if the Visit has
-        ever had a real payment collected against it (see
+        a settled Billing Invoice against it (see
         VisitHasSettledInvoiceError and _SETTLED_INVOICE_STATUSES's own
-        docstrings for the exact boundary and reasoning). Deliberately
-        does NOT block on an unpaid (`PENDING_PAYMENT`) invoice, a
+        docstrings for that boundary/reasoning). Deliberately does NOT
+        block on an unpaid (`PENDING_PAYMENT`) invoice, a
         PendingBillingItem, a Consultation, or a VitalsRecord — none of
         those are destroyed by this (they simply become unreachable
         through the deleted Visit's own now-404ing endpoints, the same
         "orphaned but never corrupted, never actually deleted" outcome
         `cancel_visit` already leaves them in today), so leaving them
-        untouched keeps this new action's blast radius identical to the
+        untouched keeps this action's blast radius identical to the
         already-trusted cancel flow, widened only by the one hard
-        financial-integrity line explicitly required."""
+        financial-integrity line explicitly required.
+
+        2026-08-23 revision: deliberately does NOT also block on this
+        Visit's own registration-charge payment tracking
+        (`VisitHasSettledPaymentError`, still enforced on
+        `VisitService.update_visit_details`'s legacy flat-field edit
+        path — see that guard's own docstring). A real payment is now
+        mandatory at every registration, so scoping this same guard to
+        delete too would make every visit registered from now on
+        permanently, unconditionally undeletable through this tool from
+        the moment it's created — far more sweeping than "block once
+        real money is at stake" once payment can never be zero. Unlike
+        editing (where changing `amount`/`procedure` after a payment was
+        recorded against it desynchronizes that payment from a since-
+        changed total), a soft-delete never touches the payment rows or
+        the visit's own `amount`/`discount_amount` fields — orphaning
+        `VisitPayment` rows under a soft-deleted Visit is the same
+        accepted "orphaned but never corrupted" outcome already applied
+        to an unpaid Invoice, a Consultation, or a VitalsRecord above."""
         invoices = await self._invoice_repo.list_for_visit(visit_id)
         if any(invoice.status in _SETTLED_INVOICE_STATUSES for invoice in invoices):
             raise VisitHasSettledInvoiceError

@@ -109,6 +109,26 @@ export function useRecordPayment(visitId) {
   });
 }
 
+/** Tops up a Visit's own registration-charge payment (2026-08-22
+ * addition) — a ledger entirely independent of the Invoice endpoints
+ * above; invalidating `['visits', visitId]` is what refreshes the
+ * Registration Payment panel's own Total/Received/Pending figures
+ * (from the same `useVisit(visitId)` query `VisitProcedureDisplay`
+ * etc. already share), not `invalidateVisitBilling`'s Invoice-scoped
+ * keys (which this action never touches). */
+export function useRecordVisitPayment(visitId) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ amount, paymentMethod }) =>
+      billingService.recordVisitPayment(visitId, amount, paymentMethod),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['visits', visitId] });
+      queryClient.invalidateQueries({ queryKey: ['visits', 'pending-revenue'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+  });
+}
+
 /** Fetches the invoice receipt as an HTML document and opens it in a new
  * tab for printing — see billingService.fetchInvoiceReceiptHtml's
  * docstring for why this can't be a plain <a href>. */

@@ -8,6 +8,7 @@ from app.modules.auth.password_service import PasswordService
 from app.modules.auth.repository import UserRepository
 from app.modules.patients.models import PatientGender
 from app.modules.vitals.constants import PERMISSION_VITALS_READ, PERMISSION_VITALS_RECORD
+from app.shared.payment_method import PaymentMethod
 from tests.conftest import TEST_PATIENT_NAME_PREFIX, make_test_email
 
 _PASSWORD = "Str0ng!Passw0rd#2026"
@@ -56,6 +57,8 @@ async def _make_visit(reception_service, doctor, suffix: str, vitals_required: b
         doctor_user_id=doctor.id,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=vitals_required,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
     )
     return visit
 

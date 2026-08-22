@@ -29,6 +29,7 @@ from app.modules.visits.dependencies import get_visit_service
 from app.modules.visits.models import VisitStatus
 from app.modules.visits.schemas import (
     CreateProcedureRequest,
+    PendingRevenueOut,
     ProcedureOut,
     ProcedureSortField,
     UpdateProcedureRequest,
@@ -213,6 +214,21 @@ async def get_visit_stats_by_creator(
     return success_envelope(body)
 
 
+@router.get("/pending-revenue-summary")
+async def get_pending_revenue_summary(
+    visit_service: VisitService = Depends(get_visit_service),
+    _actor: User = Depends(require_permission(PERMISSION_VISITS_READ)),
+) -> dict:
+    """Backs the Admin Overview's "Pending Revenue" tile (2026-08-22
+    addition) — a single all-time aggregate, deliberately never day-
+    scoped (see VisitRepository.sum_pending_amount's own docstring).
+    Declared before `/{visit_id}` below — same routing-order precaution
+    `/stats/by-creator` above already needs."""
+    pending_revenue = await visit_service.get_pending_revenue()
+    body = PendingRevenueOut(pending_revenue=pending_revenue)
+    return success_envelope(body.model_dump(mode="json"))
+
+
 @router.get("/{visit_id}")
 async def get_visit(
     visit_id: UUID,
@@ -221,4 +237,12 @@ async def get_visit(
 ) -> dict:
     visit = await visit_service.get_visit(visit_id)
     procedure_items = await visit_service.list_procedure_items(visit.id)
-    return success_envelope(VisitOut.from_visit(visit, procedure_items).model_dump(mode="json"))
+    # Payment history (2026-08-22 addition) — populated only on this
+    # single-visit fetch, not the list endpoint above, mirroring
+    # VisitOut.payments's own "populated only where a caller actually
+    # needs the history" convention (the Billing screen's top-up panel
+    # calls this endpoint via useVisit(visitId)).
+    payments = await visit_service.list_payments(visit.id)
+    return success_envelope(
+        VisitOut.from_visit(visit, procedure_items, payments).model_dump(mode="json")
+    )

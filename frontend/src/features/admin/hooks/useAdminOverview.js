@@ -26,6 +26,22 @@ export function useAdminVisitsForDay(dayKey) {
   return { ...query, visits: query.data ?? [] };
 }
 
+/** All-time outstanding balance across every currently partially-paid
+ * visit, hospital-wide (2026-08-22 addition) — deliberately NOT scoped
+ * to `selectedDate` like the other revenue tiles/`useAdminVisitsForDay`
+ * above: a balance left over from a visit registered weeks ago must
+ * still show up today (see visitsService.getPendingRevenue's own
+ * docstring). Its own query key/short refetch interval, independent of
+ * the day-scoped visits query the other three revenue tiles read from. */
+export function usePendingRevenue() {
+  const query = useQuery({
+    queryKey: ['visits', 'pending-revenue'],
+    queryFn: () => visitsService.getPendingRevenue().then((res) => res.data),
+    refetchInterval: 20000,
+  });
+  return query.data?.pending_revenue ?? '0.00';
+}
+
 /** Joins each Visit's `created_by` (VisitOut, see visits/schemas.py) to
  * the registering user's name, for the "Booked By" column — same
  * cached-lookup-per-unique-id join pattern as `usePatientsForVisits`,

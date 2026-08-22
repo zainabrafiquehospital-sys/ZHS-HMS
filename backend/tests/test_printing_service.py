@@ -313,10 +313,82 @@ def test_medicine_bill_receipt_omits_paid_via_line_when_nothing_paid():
 
 
 def test_registration_slip_has_no_payment_method_concept():
-    """The Registration Slip is printed before any Invoice/payment
-    exists (Reception's fast-registration flow, before Billing) — it
-    has no `payment_methods` parameter at all, unlike the two receipt
-    types that print after money has actually been collected."""
+    """The Registration Slip has no `payment_methods` (plural, distinct-
+    methods-used) parameter and never renders a "Paid via" summary line,
+    unlike the two receipt types that print after money has actually
+    been collected via Billing/Pharmacy — still true after the
+    2026-08-22 addition of `visit_amount_paid`/`visit_payment_status`
+    (a Total/Received/Pending strip, never a per-method breakdown)."""
     html_document = _render_slip()
 
     assert "Paid via" not in html_document
+
+
+# ---------------------------------------------------------------------
+# Registration-charge payment tracking (2026-08-22 addition) —
+# visit_amount_paid/visit_payment_status. Both default to None on
+# _render_slip's own defaults dict above, so every existing test in
+# this file continues to exercise the byte-for-byte-unchanged legacy
+# path unless it explicitly overrides them here.
+# ---------------------------------------------------------------------
+
+
+def test_slip_full_payment_shows_no_payment_strip():
+    """`payment_status='paid'` (whether settled in one payment or
+    several — printing always reflects current state) renders exactly
+    like the plain no-payment-tracking case: no strip at all."""
+    html_document = _render_slip(
+        visit_amount_paid=Decimal("1500.00"), visit_payment_status="paid"
+    )
+
+    assert '<div class="payment-strip">' not in html_document
+
+
+def test_slip_legacy_visit_with_no_payment_tracking_shows_no_payment_strip():
+    html_document = _render_slip(visit_amount_paid=None, visit_payment_status=None)
+
+    assert '<div class="payment-strip">' not in html_document
+
+
+def test_slip_partial_payment_shows_total_received_pending_strip():
+    html_document = _render_slip(
+        visit_amount=Decimal("50000.00"),
+        visit_amount_paid=Decimal("20000.00"),
+        visit_payment_status="partially_paid",
+    )
+
+    assert '<div class="payment-strip">' in html_document
+    assert ">Total<" in html_document
+    assert ">Received<" in html_document
+    assert ">Pending<" in html_document
+    assert "50,000.00" in html_document
+    assert "20,000.00" in html_document
+    assert "30,000.00" in html_document  # the derived pending balance
+
+
+def test_slip_partial_payment_itemized_shows_payment_strip_below_items_table():
+    html_document = _render_slip(
+        visit_amount=Decimal("50000.00"),
+        visit_amount_paid=Decimal("20000.00"),
+        visit_payment_status="partially_paid",
+        visit_procedure_items=[("C-Section", Decimal("50000.00"))],
+    )
+
+    assert '<div class="payment-strip">' in html_document
+    items_index = html_document.index('<div class="items">')
+    strip_index = html_document.index('<div class="payment-strip">')
+    assert items_index < strip_index
+
+
+def test_slip_fully_settled_after_multiple_payments_shows_no_payment_strip():
+    """Printing always reflects the visit's *current* state, never its
+    payment history — a visit paid off via two separate payments looks
+    identical, once fully paid, to one paid in a single payment."""
+    html_document = _render_slip(
+        visit_amount=Decimal("50000.00"),
+        visit_amount_paid=Decimal("50000.00"),
+        visit_payment_status="paid",
+    )
+
+    assert '<div class="payment-strip">' not in html_document
+    assert "Pending" not in html_document

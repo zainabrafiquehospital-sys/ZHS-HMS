@@ -26,7 +26,15 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.modules.visits.models import Procedure, Visit, VisitProcedureItem, VisitStatus
+from app.modules.visits.models import (
+    Procedure,
+    Visit,
+    VisitPayment,
+    VisitPaymentStatus,
+    VisitProcedureItem,
+    VisitStatus,
+)
+from app.shared.payment_method import PaymentMethod
 from app.shared.schema_types import LaxDecimal, LaxUUID
 
 
@@ -141,6 +149,45 @@ class VisitProcedureItemOut(BaseModel):
         return cls(id=item.id, procedure_id=item.procedure_id, name=item.name, amount=item.amount)
 
 
+# ---------------------------------------------------------------------
+# Registration-charge payment tracking (2026-08-22 addition) — mirrors
+# app/modules/pharmacy/schemas.py's MedicineBillPaymentOut exactly. See
+# models.py's `VisitPayment` docstring for why this is a ledger
+# independent of Billing's own Invoice/InvoicePayment.
+# ---------------------------------------------------------------------
+
+
+class RecordVisitPaymentRequest(BaseModel):
+    """The top-up request body — same shape as billing/schemas.py's
+    `RecordPaymentRequest`/pharmacy/schemas.py's
+    `RecordMedicineBillPaymentRequest`."""
+
+    model_config = ConfigDict(strict=True)
+
+    amount: LaxDecimal = Field(gt=0)
+    payment_method: PaymentMethod = Field(strict=False)
+
+
+class VisitPaymentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    amount: Decimal
+    payment_method: PaymentMethod
+    created_by: UUID | None
+    created_at: datetime
+
+    @classmethod
+    def from_payment(cls, payment: VisitPayment) -> "VisitPaymentOut":
+        return cls(
+            id=payment.id,
+            amount=payment.amount,
+            payment_method=payment.payment_method,
+            created_by=payment.created_by,
+            created_at=payment.created_at,
+        )
+
+
 class VisitOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -182,10 +229,31 @@ class VisitOut(BaseModel):
     # dialog) the one and only signal for which of `procedure`/`amount`
     # above vs. this list is the real record of what this visit billed.
     procedure_items: list[VisitProcedureItemOut] = Field(default_factory=list)
+    # Registration-charge payment tracking (2026-08-22 addition) — all
+    # three `None` for every visit registered before this feature
+    # existed, permanently, by design (see `Visit.payment_status`'s own
+    # column docstring): every reader (print, the Pending Revenue
+    # aggregate, the Billing screen's top-up panel) branches on
+    # `payment_status is None` as the one signal for "this visit
+    # predates payment tracking, render/behave exactly as before".
+    # `amount_pending` is never stored, only ever derived by the caller
+    # as `amount - amount_paid` when `amount_paid is not None`.
+    amount_paid: Decimal | None
+    payment_status: VisitPaymentStatus | None
+    paid_at: datetime | None
+    # Populated only by the single-visit `GET /visits/{id}` fetch (the
+    # Billing screen's own top-up panel) — left `[]` everywhere else
+    # (the list endpoint, the register/cancel/admin-update responses),
+    # mirroring `MedicineBillOut.payments`'s identical "populated only
+    # where a caller actually needs the history" convention.
+    payments: list[VisitPaymentOut] = Field(default_factory=list)
 
     @classmethod
     def from_visit(
-        cls, visit: Visit, procedure_items: list[VisitProcedureItem] | None = None
+        cls,
+        visit: Visit,
+        procedure_items: list[VisitProcedureItem] | None = None,
+        payments: list[VisitPayment] | None = None,
     ) -> "VisitOut":
         return cls(
             id=visit.id,
@@ -204,6 +272,10 @@ class VisitOut(BaseModel):
             procedure_items=[
                 VisitProcedureItemOut.from_item(item) for item in (procedure_items or [])
             ],
+            amount_paid=visit.amount_paid,
+            payment_status=visit.payment_status,
+            paid_at=visit.paid_at,
+            payments=[VisitPaymentOut.from_payment(p) for p in (payments or [])],
         )
 
 
@@ -218,6 +290,18 @@ class VisitSummary(BaseModel):
     id: UUID
     queue_token: str
     status: VisitStatus
+
+
+class PendingRevenueOut(BaseModel):
+    """`GET /visits/pending-revenue-summary`'s response body (2026-08-22
+    addition) — backs the Admin Overview's "Pending Revenue" tile. See
+    VisitRepository.sum_pending_amount's own docstring for why this is
+    deliberately an all-time aggregate, not day-scoped like the other
+    revenue tiles."""
+
+    model_config = ConfigDict(strict=True)
+
+    pending_revenue: Decimal
 
 
 class VisitCreatorStatOut(BaseModel):

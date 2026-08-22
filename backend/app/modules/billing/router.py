@@ -29,6 +29,7 @@ from app.modules.billing.service import BillingService
 from app.modules.patients.dependencies import get_patient_service
 from app.modules.patients.service import PatientService
 from app.modules.visits.dependencies import get_visit_service
+from app.modules.visits.schemas import RecordVisitPaymentRequest, VisitOut
 from app.modules.visits.service import VisitService
 from app.shared.envelope import success_envelope
 from app.shared.printing.service import render_invoice_receipt
@@ -148,6 +149,34 @@ async def record_payment(
     payments = await billing_service.get_payments(invoice.id)
     return success_envelope(
         InvoiceOut.from_invoice(invoice, line_items, payments).model_dump(mode="json")
+    )
+
+
+@router.post("/visits/{visit_id}/payments")
+async def record_visit_payment(
+    visit_id: UUID,
+    payload: RecordVisitPaymentRequest,
+    billing_service: BillingService = Depends(get_billing_service),
+    visit_service: VisitService = Depends(get_visit_service),
+    actor: User = Depends(require_permission(PERMISSION_BILLING_MANAGE)),
+) -> dict:
+    """Tops up a Visit's own registration-charge payment (2026-08-22
+    addition) — a ledger entirely independent of the Invoice endpoints
+    above (see VisitService.record_payment's own docstring). Gated on
+    `billing:manage` like every other mutating action on this screen,
+    not on a Reception permission, even though the underlying write
+    happens through `VisitService` — the Billing screen's top-up panel
+    is where this action's UI lives."""
+    visit = await billing_service.record_visit_payment(
+        actor=actor,
+        visit_id=visit_id,
+        amount=payload.amount,
+        payment_method=payload.payment_method,
+    )
+    procedure_items = await visit_service.list_procedure_items(visit.id)
+    payments = await visit_service.list_payments(visit.id)
+    return success_envelope(
+        VisitOut.from_visit(visit, procedure_items, payments).model_dump(mode="json")
     )
 
 

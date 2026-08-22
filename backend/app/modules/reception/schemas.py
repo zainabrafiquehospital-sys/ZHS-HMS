@@ -23,6 +23,7 @@ from app.modules.patients.models import PatientGender
 from app.modules.patients.schemas import PatientIdentityFields, PatientOut
 from app.modules.queue.schemas import QueueEntryOut
 from app.modules.visits.schemas import VisitOut, VisitProcedureItemRequest
+from app.shared.payment_method import PaymentMethod
 from app.shared.schema_types import LaxDecimal, LaxUUID
 
 
@@ -43,6 +44,15 @@ class RegisterVisitRequest(BaseModel):
     # optional here too, even when `discount_amount > 0`.
     discount_amount: LaxDecimal = Field(default=Decimal("0"), ge=0)
     discount_reason: str | None = Field(default=None, max_length=200)
+    # Registration-charge payment (2026-08-22 addition) — both required,
+    # unlike Billing's/Pharmacy's optional equivalents: a real payment
+    # (full or partial, never zero) is always collected at registration,
+    # see VisitService.register_visit's own docstring for the full
+    # mechanism. `initial_payment_amount` is validated server-side
+    # against the post-discount net total (`VisitPaymentExceedsBalanceError`
+    # if it exceeds it), never against the pre-discount subtotal.
+    initial_payment_amount: LaxDecimal = Field(gt=0)
+    initial_payment_method: PaymentMethod = Field(strict=False)
 
     @model_validator(mode="after")
     def _exactly_one_patient_source(self) -> "RegisterVisitRequest":

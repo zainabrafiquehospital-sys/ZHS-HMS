@@ -17,6 +17,7 @@ import { Select } from '@/shared/components/ui/Select';
 import { Textarea } from '@/shared/components/ui/Textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { SearchSelect } from '@/shared/components/SearchSelect';
+import { PaymentMethodSelect } from '@/shared/components/PaymentMethodSelect';
 import { useToast } from '@/shared/components/toast/ToastProvider';
 
 const DEFAULT_VALUES = {
@@ -35,9 +36,20 @@ const DEFAULT_VALUES = {
   vitalsRequired: false,
   discountAmount: '',
   discountReason: '',
+  paymentMethod: '',
+  advanceAmount: '',
 };
 
-function buildPayload(values, applyDiscount, procedureItems) {
+// `netAmount`/`isPartialPayment` (2026-08-22 addition) come from the
+// component's own live computation, not registered form fields — same
+// "plain local state feeding the payload" shape `procedureItems`/
+// `applyDiscount` already use. Unticked (the common case): the full net
+// total is sent as `initial_payment_amount`, mirroring the Medicine
+// Bill "Advance Received" field's own auto-fill-to-full-total default
+// (see MedicineBillingWorkspace.jsx) — just without a freely-editable
+// input at all in this case, since there is nothing to edit. Ticked:
+// the receptionist's own typed `advanceAmount` is sent instead.
+function buildPayload(values, applyDiscount, procedureItems, netAmount, isPartialPayment) {
   const isNew = values.patientMode === 'new';
   return {
     patient_id: isNew ? null : values.existingPatientId,
@@ -59,6 +71,8 @@ function buildPayload(values, applyDiscount, procedureItems) {
     // unticked checkbox always sends no discount at all.
     discount_amount: applyDiscount ? values.discountAmount : 0,
     discount_reason: applyDiscount ? values.discountReason || null : null,
+    initial_payment_amount: isPartialPayment ? values.advanceAmount : netAmount,
+    initial_payment_method: values.paymentMethod,
   };
 }
 
@@ -108,19 +122,54 @@ export function RegisterVisitForm({ onRegistered }) {
     }
   }
 
+  // "Partial Payment" (2026-08-22 addition) — mirrors the "Apply
+  // Discount" checkbox's exact toggle shape immediately above: unticked
+  // (the common case), no Advance Amount field is shown at all and the
+  // full net total is sent as the registration's collected payment —
+  // there is nothing to type, unlike MedicineBillingWorkspace.jsx's
+  // continuously-editable "Advance Received" field, which this
+  // deliberately does not mirror literally (see this form's own
+  // Payment Method field below, always visible, since some payment —
+  // full or partial — is always collected at registration). Ticked, an
+  // Advance Amount input appears, validated against the live net total
+  // preview (see onSubmit below) rather than the zod schema, the same
+  // "cross-field validation happens against a live-computed total, not
+  // in the schema" convention discountAmount already follows here.
+  const [isPartialPayment, setIsPartialPayment] = useState(false);
+  const [advanceAmountError, setAdvanceAmountError] = useState(null);
+
+  function handlePartialPaymentToggle(checked) {
+    setIsPartialPayment(checked);
+    setAdvanceAmountError(null);
+    if (!checked) {
+      setValue('advanceAmount', '');
+    }
+  }
+
   async function onSubmit(values) {
     setProcedureItemsError(null);
+    setAdvanceAmountError(null);
     if (procedureItems.length === 0) {
       setProcedureItemsError('Add at least one procedure.');
       return;
     }
+    if (isPartialPayment) {
+      const advance = Number(values.advanceAmount);
+      if (!Number.isFinite(advance) || advance <= 0 || advance > netAmountPreview) {
+        setAdvanceAmountError(
+          `Enter an amount greater than 0 and up to ${netAmountPreview.toFixed(2)}.`,
+        );
+        return;
+      }
+    }
     try {
       const response = await registerVisit.mutateAsync(
-        buildPayload(values, applyDiscount, procedureItems),
+        buildPayload(values, applyDiscount, procedureItems, netAmountPreview, isPartialPayment),
       );
       reset(DEFAULT_VALUES);
       setProcedureItems([]);
       setApplyDiscount(false);
+      setIsPartialPayment(false);
       onRegistered?.(response.data);
       // RegistrationSummary (rendered by the parent via onRegistered)
       // stays as the persistent, referenceable receipt-like panel —
@@ -342,6 +391,46 @@ export function RegisterVisitForm({ onRegistered }) {
               </div>
             </>
           ) : null}
+
+          {/* Registration-charge payment (2026-08-22 addition) — a real
+              payment (full or partial) is always collected at
+              registration, so Payment Method is always visible, unlike
+              the discount fields above. Unticked "Partial Payment" (the
+              common case): no Advance Amount field at all, the full net
+              total above is what gets collected. Ticked: reveals the
+              Advance Amount input, validated against the live net total
+              (see onSubmit). */}
+          <label className="flex items-center gap-2 text-sm text-foreground">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-input"
+              checked={isPartialPayment}
+              onChange={(event) => handlePartialPaymentToggle(event.target.checked)}
+            />
+            Partial Payment
+          </label>
+          {isPartialPayment ? (
+            <div className="flex flex-col gap-1.5 sm:w-48">
+              <Label htmlFor="advanceAmount">Advance Amount (Rs.)</Label>
+              <Input
+                id="advanceAmount"
+                type="number"
+                step="0.01"
+                placeholder="0.00"
+                {...register('advanceAmount')}
+              />
+              {advanceAmountError ? (
+                <p className="text-xs text-destructive">{advanceAmountError}</p>
+              ) : null}
+            </div>
+          ) : null}
+          <div className="sm:w-56">
+            <PaymentMethodSelect
+              id="paymentMethod"
+              registration={register('paymentMethod')}
+              error={errors.paymentMethod}
+            />
+          </div>
 
           <Button type="submit" disabled={isSubmitting} className="w-full sm:w-auto">
             {isSubmitting ? 'Registering…' : 'Register Visit'}

@@ -47,6 +47,7 @@ Two more entities (2026-08-21 addition — itemized procedures):
   given Visit purely by checking whether it has any `VisitProcedureItem`
   rows at all — never by a date/version flag on the Visit itself."""
 
+from datetime import datetime
 from decimal import Decimal
 from enum import Enum as PyEnum
 from uuid import UUID
@@ -55,6 +56,7 @@ from sqlalchemy import Boolean, CheckConstraint, Enum, ForeignKey, Index, Numeri
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.shared.base_entity import BaseEntity
+from app.shared.payment_method import PaymentMethod
 
 _MONEY = Numeric(10, 2)
 
@@ -88,6 +90,23 @@ class VisitStatus(PyEnum):
     CANCELLED = "cancelled"
 
 
+class VisitPaymentStatus(PyEnum):
+    """The registration-charge payment ledger's own status (2026-08-22
+    addition) — same three-state shape as
+    `app/modules/pharmacy/models.py`'s `MedicineBillStatus`, deliberately
+    a distinct Python class rather than a shared/imported one (this
+    codebase's established convention: every billable entity gets its
+    own status enum, never a cross-module shared one — see that
+    module's docstring). `UNPAID` is defined for shape-parity but is not
+    reachable through the normal `VisitService.register_visit` flow,
+    which always requires a real payment (full or partial) at
+    registration — see `Visit.payment_status`'s own column docstring."""
+
+    UNPAID = "unpaid"
+    PARTIALLY_PAID = "partially_paid"
+    PAID = "paid"
+
+
 class Visit(BaseEntity):
     """One hospital encounter. `patient_id`/`doctor_user_id` are plain FK
     columns, never `relationship()` — this module never loads a Patient
@@ -115,6 +134,19 @@ class Visit(BaseEntity):
         Index("ix_visit_status", "status"),
         CheckConstraint("amount > 0", name="ck_visit_amount_positive"),
         CheckConstraint("discount_amount >= 0", name="ck_visit_discount_amount_non_negative"),
+        # Mirrors app/modules/pharmacy/models.py's identical
+        # `ck_medicine_bill_amount_paid_non_negative`/
+        # `ck_medicine_bill_amount_paid_not_exceeding_total` (2026-08-22
+        # addition) — both are NULL-safe without any extra "OR NULL"
+        # clause: a Postgres CHECK constraint only rejects a row when
+        # its condition evaluates to FALSE, never TRUE/UNKNOWN, and any
+        # comparison against a NULL `amount_paid` (every visit that
+        # predates payment tracking) evaluates to UNKNOWN, so those rows
+        # always pass untouched.
+        CheckConstraint("amount_paid >= 0", name="ck_visit_amount_paid_non_negative"),
+        CheckConstraint(
+            "amount_paid <= amount", name="ck_visit_amount_paid_not_exceeding_amount"
+        ),
     )
 
     patient_id: Mapped[UUID] = mapped_column(ForeignKey("patient.id"), nullable=False)
@@ -185,6 +217,50 @@ class Visit(BaseEntity):
         nullable=False,
         default=VisitStatus.REGISTERED,
     )
+    # Registration-time payment tracking (2026-08-22 addition) — a
+    # ledger independent of, and parallel to, Billing's own separate
+    # Invoice/InvoicePayment (which tracks *additional*, post-
+    # consultation charges, not this registration charge). Mirrors
+    # `MedicineBill.amount_paid`/`status`/`paid_at` exactly: a
+    # maintained running total/derived status, never computed live from
+    # `VisitPayment`, updated in the same transaction as each new
+    # `VisitPayment` row so it can never drift from `SUM(amount)` there.
+    #
+    # All three are nullable and, unlike `amount_paid` becoming NOT NULL
+    # when the `payment_method` column was retrofitted onto
+    # `invoice_payment`/`medicine_bill_payment` (see
+    # app/shared/payment_method.py's module docstring), deliberately
+    # NEVER backfilled onto any visit that predates this feature — a
+    # confirmed, explicit decision, mirroring `VisitProcedureItem`'s own
+    # "never retrofitted onto an older Visit" precedent instead of the
+    # payment_method precedent: backfilling every existing row to `paid`
+    # would make a genuinely legacy visit indistinguishable from a new,
+    # fully-paid one, which matters because `VisitHasSettledPaymentError`
+    # (see exceptions.py) blocks admin correction once a *new-style*
+    # visit is paid/partially paid — a real backfill would silently
+    # freeze every old visit's admin tooling too. `payment_status IS
+    # NULL` is therefore the permanent, structural signal "this visit
+    # predates payment tracking" — every reader (print, the admin
+    # edit/delete guard, the Pending Revenue aggregate) branches on it,
+    # the same nullable-discriminator idiom `VisitProcedureItem.
+    # procedure_id` already established for this feature area. A visit
+    # registered from now on always has these three populated —
+    # `register_visit` requires a real payment (full or partial, never
+    # zero) at registration time, so `UNPAID` is defined for shape-
+    # parity with `MedicineBillStatus` but is not reachable through the
+    # normal registration flow.
+    amount_paid: Mapped[Decimal | None] = mapped_column(_MONEY)
+    payment_status: Mapped[VisitPaymentStatus | None] = mapped_column(
+        Enum(
+            VisitPaymentStatus,
+            name="visit_payment_status",
+            native_enum=False,
+            length=20,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+            create_constraint=True,
+        ),
+    )
+    paid_at: Mapped[datetime | None] = mapped_column()
 
 
 class Procedure(BaseEntity):
@@ -242,3 +318,46 @@ class VisitProcedureItem(BaseEntity):
     # `procedure_id` is None — a manual entry has no catalog price to
     # lock to at all.
     amount: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)
+
+
+class VisitPayment(BaseEntity):
+    """One payment against a Visit's own registration charge (2026-08-22
+    addition) — the append-only audit trail behind `Visit.amount_paid`'s
+    maintained running total, the exact same role `MedicineBillPayment`/
+    `InvoicePayment` play for their own parent rows (see those models'
+    docstrings for the full rationale). Deliberately independent of, and
+    never referenced by, Billing's own `Invoice`/`InvoicePayment` — this
+    tracks the registration charge collected at (or after) Register
+    Visit, a different financial event from Billing's later, separate
+    Invoice for additional post-consultation charges; a Visit may have
+    both, tracked on entirely separate ledgers, the same way it may
+    independently have a `MedicineBill` too.
+
+    Only ever inserted for a visit registered from 2026-08-22 onward
+    (one whose `Visit.payment_status` is not `NULL`) — see that column's
+    own docstring for why an older visit never gains one of these rows
+    retroactively."""
+
+    __tablename__ = "visit_payment"
+    __table_args__ = (
+        Index("ix_visit_payment_visit_id", "visit_id"),
+        CheckConstraint("amount > 0", name="ck_visit_payment_amount_positive"),
+    )
+
+    visit_id: Mapped[UUID] = mapped_column(ForeignKey("visit.id"), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)
+    # Every individual payment carries its own method (never one method
+    # per Visit) — a partial cash payment at registration and a bank
+    # transfer top-up weeks later are two separate rows, each correctly
+    # attributed. See app/shared/payment_method.py's module docstring.
+    payment_method: Mapped[PaymentMethod] = mapped_column(
+        Enum(
+            PaymentMethod,
+            name="payment_method",
+            native_enum=False,
+            length=20,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+            create_constraint=True,
+        ),
+        nullable=False,
+    )

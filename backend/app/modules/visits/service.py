@@ -25,13 +25,18 @@ from app.modules.visits.exceptions import (
     ProcedureNotFoundError,
     VisitAlreadyItemizedError,
     VisitDiscountExceedsAmountError,
+    VisitHasSettledPaymentError,
     VisitNotFoundError,
     VisitNotItemizedError,
+    VisitNotPayableError,
+    VisitPaymentExceedsBalanceError,
 )
 from app.modules.visits.models import (
     ITEMIZED_PROCEDURE_PLACEHOLDER,
     Procedure,
     Visit,
+    VisitPayment,
+    VisitPaymentStatus,
     VisitProcedureItem,
     VisitStatus,
 )
@@ -39,11 +44,13 @@ from app.modules.visits.repository import (
     PROCEDURE_SORTABLE_COLUMNS,
     VISIT_SORTABLE_COLUMNS,
     ProcedureRepository,
+    VisitPaymentRepository,
     VisitProcedureItemRepository,
     VisitRepository,
 )
 from app.shared.audit.repository import AuditLogRepository
 from app.shared.money import quantize_money
+from app.shared.payment_method import PaymentMethod
 
 _ZERO = Decimal("0.00")
 
@@ -87,12 +94,14 @@ class VisitService:
         audit_repository: AuditLogRepository,
         procedure_repository: ProcedureRepository,
         procedure_item_repository: VisitProcedureItemRepository,
+        visit_payment_repository: VisitPaymentRepository,
     ) -> None:
         self._session = session
         self._visit_repo = visit_repository
         self._audit_repo = audit_repository
         self._procedure_repo = procedure_repository
         self._procedure_item_repo = procedure_item_repository
+        self._visit_payment_repo = visit_payment_repository
 
     async def _generate_queue_token(self) -> str:
         # No separator between prefix and digits: QUEUE_TOKEN_PREFIX
@@ -146,6 +155,8 @@ class VisitService:
         doctor_user_id: UUID | None,
         procedures: list[tuple[UUID | None, str | None, Decimal | None]],
         vitals_required: bool,
+        initial_payment_amount: Decimal,
+        initial_payment_method: PaymentMethod,
         discount_amount: Decimal = _ZERO,
         discount_reason: str | None = None,
     ) -> Visit:
@@ -192,7 +203,23 @@ class VisitService:
         not Invoice's own required-reason rule. Independent of Billing's
         own separate Invoice-level discount, applied later at Generate
         Invoice time against whatever `Visit.amount` is by then — the
-        two stack rather than conflict."""
+        two stack rather than conflict.
+
+        `initial_payment_amount`/`initial_payment_method` (2026-08-22
+        addition, both required — unlike `PharmacyService.create_bill`'s
+        optional equivalents) are this visit's registration-charge
+        payment, collected at the same counter in the same call: a real
+        payment is always collected at registration, full (the caller's
+        UI defaults the amount to the net total) or a genuine partial
+        advance — there is no "register unpaid" path here, so
+        `initial_payment_amount` must be `> 0`. Validated against
+        `net_amount` (the real, post-discount amount owed), never the
+        pre-discount subtotal. Applied via the shared `_apply_payment`
+        helper `record_payment` below also uses, producing exactly the
+        `VisitPayment` row and `amount_paid`/`payment_status`/`paid_at`
+        update a separate, immediately-following top-up call would —
+        just in the same transaction as the Visit itself, so a visit is
+        never left registered with no payment attempt recorded at all."""
         discount_amount = quantize_money(discount_amount) if discount_amount else _ZERO
         if discount_amount < _ZERO:
             raise ValidationError("discount_amount cannot be negative.")
@@ -206,6 +233,12 @@ class VisitService:
             raise VisitDiscountExceedsAmountError(str(subtotal))
         net_amount = subtotal - discount_amount
 
+        if initial_payment_amount <= _ZERO:
+            raise ValidationError("initial_payment_amount must be greater than zero.")
+        initial_payment_amount = quantize_money(initial_payment_amount)
+        if initial_payment_amount > net_amount:
+            raise VisitPaymentExceedsBalanceError(str(net_amount))
+
         visit = Visit(
             patient_id=patient_id,
             doctor_user_id=doctor_user_id,
@@ -216,6 +249,8 @@ class VisitService:
             discount_reason=discount_reason,
             vitals_required=vitals_required,
             status=VisitStatus.REGISTERED,
+            amount_paid=_ZERO,
+            payment_status=VisitPaymentStatus.UNPAID,
             created_by=actor.id,
             updated_by=actor.id,
         )
@@ -244,6 +279,12 @@ class VisitService:
                 "vitals_required": vitals_required,
                 "discount_amount": str(discount_amount),
             },
+        )
+        await self._apply_payment(
+            visit=visit,
+            actor=actor,
+            amount=initial_payment_amount,
+            payment_method=initial_payment_method,
         )
         target = VisitStatus.WAITING_VITALS if vitals_required else VisitStatus.WAITING_DOCTOR
         await self._transition(actor=actor, visit=visit, target=target)
@@ -279,6 +320,118 @@ class VisitService:
         /visits`'s list response (see VisitProcedureItemRepository.
         list_for_visits's own docstring for the N+1-avoidance shape)."""
         return await self._procedure_item_repo.list_for_visits(visit_ids)
+
+    # ------------------------------------------------------------------
+    # Registration-charge payment tracking (2026-08-22 addition) —
+    # mirrors PharmacyService's own "_apply_payment/record_payment"
+    # section almost exactly (see that module's own comments for the
+    # shared rationale); the one structural difference is that Visit's
+    # very first payment is never optional (see `register_visit`'s own
+    # docstring), so there is no "freshly created, always UNPAID by
+    # construction" caller the way `create_bill`'s optional initial
+    # payment has — `register_visit` always calls `_apply_payment` too.
+    # ------------------------------------------------------------------
+
+    async def _apply_payment(
+        self, *, visit: Visit, actor: User, amount: Decimal, payment_method: PaymentMethod
+    ) -> bool:
+        """Shared by `register_visit`'s always-present initial payment
+        and `record_payment`'s top-up payment below — validates `amount`
+        against the remaining balance, mutates `visit.amount_paid`/
+        `payment_status`/`paid_at` in memory, stages a new `VisitPayment`
+        audit row, and records the audit-log entry. Never commits.
+        Returns whether this payment brought the visit's registration
+        charge to fully `PAID`.
+
+        Assumes the visit is already known payable — `record_payment`
+        checks that itself before calling this; `register_visit`'s visit
+        is always freshly created and `UNPAID` by construction, so it
+        never needs the check."""
+        if amount <= _ZERO:
+            raise ValidationError("Payment amount must be greater than zero.")
+        amount = quantize_money(amount)
+
+        remaining = visit.amount - visit.amount_paid
+        if amount > remaining:
+            raise VisitPaymentExceedsBalanceError(str(remaining))
+
+        visit.amount_paid = visit.amount_paid + amount
+        visit.updated_by = actor.id
+        fully_paid = visit.amount_paid == visit.amount
+        if fully_paid:
+            visit.payment_status = VisitPaymentStatus.PAID
+            visit.paid_at = datetime.now(UTC)
+        else:
+            visit.payment_status = VisitPaymentStatus.PARTIALLY_PAID
+        await self._visit_repo.add(visit)
+        await self._visit_payment_repo.add(
+            VisitPayment(
+                visit_id=visit.id,
+                amount=amount,
+                payment_method=payment_method,
+                created_by=actor.id,
+                updated_by=actor.id,
+            )
+        )
+        await self._audit_repo.record(
+            module="visits",
+            action="visits.payment_recorded",
+            entity_type="visit",
+            entity_id=visit.id,
+            actor_user_id=actor.id,
+            metadata={
+                "amount": str(amount),
+                "payment_method": payment_method.value,
+                "fully_paid": fully_paid,
+            },
+        )
+        return fully_paid
+
+    async def record_payment(
+        self, *, actor: User, visit_id: UUID, amount: Decimal, payment_method: PaymentMethod
+    ) -> Visit:
+        """Records an *additional* payment against an already-registered
+        visit's registration charge — topping up toward the remaining
+        balance on a later visit/call (the C-section example this
+        feature was built for), not the primary way a visit gets its
+        first payment (see `register_visit`'s always-required initial
+        payment for that). Called from Billing's own `billing:manage`-
+        gated endpoint (see BillingService.record_visit_payment) rather
+        than a Reception one — see this feature's design notes for why:
+        the Billing screen is where this action's UI lives, and every
+        other mutating action there already requires `billing:manage`.
+
+        Rejects outright against a visit with no payment tracking at all
+        (`payment_status IS NULL` — predates this feature, see `Visit.
+        payment_status`'s own column docstring) or already fully `PAID`.
+        Reads the Visit with `SELECT ... FOR UPDATE`
+        (`VisitRepository.get_for_update`), not the plain `get_visit` —
+        the identical read-modify-write-on-money-field race-safety
+        `InvoiceRepository`/`MedicineBillRepository`'s own
+        `get_for_update` protect against."""
+        visit = await self._visit_repo.get_for_update(visit_id)
+        if visit is None:
+            raise VisitNotFoundError
+        if visit.payment_status is None or visit.payment_status == VisitPaymentStatus.PAID:
+            raise VisitNotPayableError(
+                visit.payment_status.value if visit.payment_status is not None else "untracked"
+            )
+
+        await self._apply_payment(
+            visit=visit, actor=actor, amount=amount, payment_method=payment_method
+        )
+        await self._session.commit()
+        return await self._visit_repo.get_by_id(visit.id)
+
+    async def list_payments(self, visit_id: UUID) -> list[VisitPayment]:
+        return await self._visit_payment_repo.list_for_visit(visit_id)
+
+    async def get_pending_revenue(self) -> Decimal:
+        """Read-only aggregate for the Admin Overview's "Pending
+        Revenue" tile — see VisitRepository.sum_pending_amount's own
+        docstring for why this is deliberately all-time, never
+        day-scoped."""
+        return await self._visit_repo.sum_pending_amount()
 
     async def count_by_status(self) -> dict[VisitStatus, int]:
         """Read-only aggregate added for the Dashboard module (§22)."""
@@ -466,14 +619,28 @@ class VisitService:
         `VisitProcedureItem` docstring for why a legacy visit is never
         itemized *by this method* either — that path is deliberately
         out of scope this pass (see `admin_replace_procedure_items`'s
-        own docstring)."""
+        own docstring).
+
+        2026-08-22 addition: also rejects outright
+        (`VisitHasSettledPaymentError`) once a *new-style* visit
+        (`payment_status` not `NULL`) has any recorded payment
+        (`PARTIALLY_PAID`/`PAID`) — editing `amount` on the same row a
+        payment is tracked against would desynchronize `amount_paid`
+        from the now-changed total, the same integrity risk
+        `MedicineBillHasSettledPaymentError` guards against. Deliberately
+        scoped to `not in (None, UNPAID)`, never just `!= UNPAID` — a
+        visit with `payment_status IS NULL` (predates payment tracking
+        entirely) is structurally exempt, so this is a real behavior
+        change only for a visit registered from now on, never for any
+        visit that already exists."""
         visit = await self.get_visit(visit_id)
         if not updates:
             return visit
-        if ("procedure" in updates or "amount" in updates) and await self._procedure_item_repo.list_for_visit(
-            visit_id
-        ):
-            raise VisitAlreadyItemizedError
+        if "procedure" in updates or "amount" in updates:
+            if visit.payment_status not in (None, VisitPaymentStatus.UNPAID):
+                raise VisitHasSettledPaymentError
+            if await self._procedure_item_repo.list_for_visit(visit_id):
+                raise VisitAlreadyItemizedError
 
         for field in ("procedure", "amount"):
             if field in updates:
