@@ -11,13 +11,16 @@ Field set for `SignupRequest` mirrors `CreateUserRequest`/
 already validates against, `password` policy-checked the same way
 `ChangePasswordRequest.new_password` is) rather than inventing new
 validation shapes — `shift` is the one genuinely new field, required
-here (unlike on `User` itself, where it's nullable — see Shift's model
-docstring) since a receptionist signup always states one."""
+for Receptionist/Vitals signups (unlike on `User` itself, where it's
+nullable — see Shift's model docstring) since those roles always state
+one; required for every self-service role *except* Doctor (2026-08-24
+addition — see `SignupRequest._shift_required_unless_doctor` and
+`SignupRole.DOCTOR`'s own docstring)."""
 
 import re
 from enum import Enum as PyEnum
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.modules.auth.constants import PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH
 from app.modules.auth.models import Shift
@@ -52,10 +55,18 @@ class SignupRole(str, PyEnum):
     value or any existing signup/OTP/approval code path, only which
     Role name `UserService.approve_signup` resolves this to (see
     models.SignupRole, the persisted-column twin of this schema enum,
-    for where the value actually gets read back)."""
+    for where the value actually gets read back).
+
+    `DOCTOR` (2026-08-24 addition) follows the identical additive
+    pattern — see models.SignupRole's own docstring for the
+    `demo-doctor-demo` -> `Doctor` role-naming investigation behind it.
+    The one genuine difference: a Doctor signup carries no `shift` (see
+    `SignupRequest.shift`'s own docstring) — every other field and the
+    entire signup/OTP/approval pipeline is shared, unchanged."""
 
     RECEPTIONIST = "receptionist"
     VITALS = "vitals"
+    DOCTOR = "doctor"
 
 
 # ---------------------------------------------------------------------
@@ -70,7 +81,16 @@ class SignupRequest(BaseModel):
     email: EmailStr
     phone_number: str = Field(min_length=7, max_length=20)
     password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
-    shift: Shift
+    # Required for every self-service role except Doctor (2026-08-24):
+    # see User.shift's own docstring — doctors have no shift concept
+    # anywhere else in this system (admin-provisioned accounts leave it
+    # unset the same way), so a Doctor signup must not be forced to
+    # invent one. Nullable here at the type level; `_shift_required_
+    # unless_doctor` below is what actually enforces "required for
+    # every other role" and normalizes a Doctor signup's shift to None
+    # regardless of what was submitted, rather than trusting the client
+    # to omit it.
+    shift: Shift | None = None
     role: SignupRole = SignupRole.RECEPTIONIST
 
     @field_validator("email")
@@ -88,6 +108,18 @@ class SignupRequest(BaseModel):
     def _validate_policy(cls, value: str) -> str:
         validate_password_policy(value)
         return value
+
+    @model_validator(mode="after")
+    def _shift_required_unless_doctor(self) -> "SignupRequest":
+        if self.role == SignupRole.DOCTOR:
+            # Doctor carries no shift — normalize away any value a
+            # client sent rather than reject it outright, the same
+            # forgiving treatment `SignupResponse`'s minimal shape and
+            # this module's other "generic, non-leaky" responses favor.
+            self.shift = None
+        elif self.shift is None:
+            raise ValueError("Shift is required for this role.")
+        return self
 
 
 class VerifySignupOtpRequest(BaseModel):

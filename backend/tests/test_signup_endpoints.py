@@ -5,7 +5,14 @@ file covered this endpoint at all; scoped here to exactly what it does
 (only genuinely `PENDING_EMAIL_VERIFICATION` accounts may resend, and the
 per-source-IP rate limit still applies), not the full signup/verify-email
 lifecycle, which remains untested elsewhere and out of scope for this
-change."""
+change.
+
+2026-08-24 addition: also covers `POST /auth/signup` itself, but only
+for the one behavior this change actually touches — whether `shift` is
+required, which now depends on `role` (see signup_schemas.SignupRequest.
+_shift_required_unless_doctor) — not the full signup/verify-email
+lifecycle either, which remains out of scope here for the same reason
+the module docstring above already states."""
 
 from app.core.config import get_settings
 from app.modules.auth.models import User, UserStatus
@@ -58,9 +65,7 @@ async def _create_active_user_directly(real_session, suffix: str) -> str:
     return email
 
 
-async def test_resend_otp_succeeds_for_pending_email_verification_account(
-    api_client, real_session
-):
+async def test_resend_otp_succeeds_for_pending_email_verification_account(api_client, real_session):
     email = await _create_pending_email_verification_user_directly(real_session, "resend-success")
 
     resp = await api_client.post("/api/v1/auth/resend-otp", json={"email": email})
@@ -112,3 +117,90 @@ async def test_resend_otp_exceeding_rate_limit_returns_429_with_retry_after(api_
     assert resp.status_code == 429
     assert resp.json()["error"]["code"] == "RATE_LIMIT_EXCEEDED"
     assert int(resp.headers["retry-after"]) > 0
+
+
+# ---------------------------------------------------------------------
+# POST /auth/signup — shift-required-unless-doctor (2026-08-24 addition)
+# ---------------------------------------------------------------------
+
+
+def _signup_payload(**overrides) -> dict:
+    payload = {
+        "full_name": "Signup Test User",
+        "email": make_test_email("signup-doctor"),
+        "phone_number": "0300-5551000",
+        "password": _PASSWORD,
+        "role": "receptionist",
+        "shift": "morning",
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def test_signup_doctor_role_succeeds_without_shift(api_client, real_session):
+    """A Doctor signup omitting `shift` entirely must succeed — doctors
+    have no shift concept in this system (see SignupRequest.
+    _shift_required_unless_doctor's own docstring), unlike Receptionist/
+    Vitals, which still require one (see the next two tests)."""
+    payload = _signup_payload(
+        email=make_test_email("signup-doctor-no-shift"),
+        phone_number="0300-5551001",
+        role="doctor",
+    )
+    del payload["shift"]
+
+    resp = await api_client.post("/api/v1/auth/signup", json=payload)
+
+    assert resp.status_code == 201
+    assert resp.json()["data"]["email"] == payload["email"]
+
+    user = await UserRepository(real_session).get_by_email(payload["email"])
+    assert user.signup_role.value == "doctor"
+    assert user.shift is None
+
+
+async def test_signup_doctor_role_normalizes_a_submitted_shift_to_none(api_client, real_session):
+    """A Doctor signup that sends a `shift` anyway (a stale client, a
+    direct API call) is not rejected — the value is silently normalized
+    away rather than trusted, since it doesn't apply to this role."""
+    payload = _signup_payload(
+        email=make_test_email("signup-doctor-with-shift"),
+        phone_number="0300-5551002",
+        role="doctor",
+        shift="night",
+    )
+
+    resp = await api_client.post("/api/v1/auth/signup", json=payload)
+
+    assert resp.status_code == 201
+
+    user = await UserRepository(real_session).get_by_email(payload["email"])
+    assert user.shift is None
+
+
+async def test_signup_receptionist_role_still_requires_shift(api_client):
+    """Regression check: Doctor being exempt from `shift` must not have
+    loosened the requirement for the roles that still need it."""
+    payload = _signup_payload(
+        email=make_test_email("signup-receptionist-no-shift"),
+        phone_number="0300-5551003",
+        role="receptionist",
+    )
+    del payload["shift"]
+
+    resp = await api_client.post("/api/v1/auth/signup", json=payload)
+
+    assert resp.status_code == 422
+
+
+async def test_signup_vitals_role_still_requires_shift(api_client):
+    payload = _signup_payload(
+        email=make_test_email("signup-vitals-no-shift"),
+        phone_number="0300-5551004",
+        role="vitals",
+    )
+    del payload["shift"]
+
+    resp = await api_client.post("/api/v1/auth/signup", json=payload)
+
+    assert resp.status_code == 422

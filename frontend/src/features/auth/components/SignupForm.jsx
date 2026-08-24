@@ -13,14 +13,18 @@ import { Select } from '@/shared/components/ui/Select';
 import { useToast } from '@/shared/components/toast/ToastProvider';
 
 /**
- * Self-service staff signup — Receptionist or Vitals staff (backend/
- * app/modules/auth/signup_schemas.py's SignupRole; both roles share
- * this exact same form/OTP/approval flow, only the `role` field
+ * Self-service staff signup — Receptionist, Vitals staff, or Doctor
+ * (backend/app/modules/auth/signup_schemas.py's SignupRole; every role
+ * shares this exact same form/OTP/approval flow, only the `role` field
  * changes which Role gets granted on approval). Field set mirrors
  * PatientIdentityFields/CreateUserRequest's established conventions;
- * `shift` is the one genuinely new field, required here specifically
- * because the hospital runs exactly two shifts for both front-desk and
- * nursing staff.
+ * `shift` is the one genuinely new field, required for Receptionist/
+ * Vitals specifically because the hospital runs exactly two shifts for
+ * front-desk and nursing staff — Doctor is the one role that skips it
+ * entirely (see signupSchema.js's own comment and backend
+ * SignupRequest._shift_required_unless_doctor: doctors have no shift
+ * concept anywhere else in this system), so the field is hidden rather
+ * than shown with a meaningless choice once Doctor is selected.
  */
 export function SignupForm() {
   const router = useRouter();
@@ -29,6 +33,7 @@ export function SignupForm() {
   const {
     register,
     handleSubmit,
+    watch,
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(signupSchema),
@@ -42,9 +47,19 @@ export function SignupForm() {
     },
   });
 
+  const role = watch('role');
+  const isDoctor = role === 'doctor';
+
   async function onSubmit(values) {
     try {
-      const response = await signup.mutateAsync(values);
+      // Belt-and-braces alongside the hidden field below: a doctor
+      // signup never carries a shift, regardless of whatever value
+      // react-hook-form's uncontrolled input state happens to still
+      // hold from before the role was switched to Doctor. `null`, not
+      // `''` — the backend's `shift` field is `Shift | None`, and an
+      // empty string is not a valid `Shift` value.
+      const payload = isDoctor ? { ...values, shift: null } : values;
+      const response = await signup.mutateAsync(payload);
       toast.success({
         title: 'Account created',
         description: "We've sent a verification code to your email.",
@@ -97,21 +112,26 @@ export function SignupForm() {
           </option>
           <option value="receptionist">Receptionist</option>
           <option value="vitals">Vitals Staff (Nurse)</option>
+          <option value="doctor">Doctor</option>
         </Select>
         {errors.role ? <p className="text-xs text-destructive">{errors.role.message}</p> : null}
       </div>
 
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="shift">Shift</Label>
-        <Select id="shift" defaultValue="" {...register('shift')}>
-          <option value="" disabled>
-            Select your shift
-          </option>
-          <option value="morning">Morning</option>
-          <option value="night">Night</option>
-        </Select>
-        {errors.shift ? <p className="text-xs text-destructive">{errors.shift.message}</p> : null}
-      </div>
+      {isDoctor ? null : (
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="shift">Shift</Label>
+          <Select id="shift" defaultValue="" {...register('shift')}>
+            <option value="" disabled>
+              Select your shift
+            </option>
+            <option value="morning">Morning</option>
+            <option value="night">Night</option>
+          </Select>
+          {errors.shift ? (
+            <p className="text-xs text-destructive">{errors.shift.message}</p>
+          ) : null}
+        </div>
+      )}
 
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="password">Password</Label>

@@ -16,7 +16,7 @@ from app.modules.auth.exceptions import (
     TokenInvalidError,
     UserNotFoundError,
 )
-from app.modules.auth.models import AuditEventType, AuditLog, Role, User, UserStatus
+from app.modules.auth.models import AuditEventType, AuditLog, Role, SignupRole, User, UserStatus
 from app.modules.auth.password_service import PasswordService
 from app.modules.auth.repository import RoleRepository, UserRepository
 from tests.conftest import TEST_ROLE_PREFIX, make_test_email
@@ -37,6 +37,27 @@ async def _make_role(real_session, suffix: str, *, is_active: bool = True) -> Ro
     del suffix
     return await RoleRepository(real_session).add(
         Role(name=f"{TEST_ROLE_PREFIX}{uuid7()}", is_active=is_active)
+    )
+
+
+async def _make_pending_approval_signup(
+    real_session, suffix: str, *, signup_role: SignupRole
+) -> User:
+    """Direct construction, mirroring tests/test_signup_endpoints.py's
+    identical pattern — a pending account is the *result* of the real
+    signup/OTP flow, which is untested elsewhere (see that file's own
+    module docstring); `approve_signup` itself only ever needs a User
+    already sitting in `PENDING_ADMIN_APPROVAL` with some `signup_role`
+    recorded, regardless of how it got there."""
+    password_hash = await PasswordService().hash(_PASSWORD)
+    return await UserRepository(real_session).add(
+        User(
+            email=make_test_email(suffix),
+            password_hash=password_hash,
+            full_name="Pending Approval User",
+            status=UserStatus.PENDING_ADMIN_APPROVAL,
+            signup_role=signup_role,
+        )
     )
 
 
@@ -548,3 +569,31 @@ async def test_replace_roles_with_empty_list_clears_all_roles(
     updated = await user_service.replace_roles(actor=actor, user_id=target.id, role_ids=[])
 
     assert all(ur.deleted_at is not None for ur in updated.user_roles)
+
+
+# ---------------------------------------------------------------------
+# approve_signup — self-service signup role resolution (2026-08-24
+# addition: Doctor alongside the pre-existing Receptionist/Vitals path)
+# ---------------------------------------------------------------------
+
+
+async def test_approve_signup_grants_the_doctor_role_for_a_doctor_signup(
+    user_service, auth_service, real_session
+):
+    """`_SIGNUP_ROLE_TO_ROLE_NAME` resolves SignupRole.DOCTOR to the
+    Role literally named "Doctor" — this is the one live-database fact
+    this whole feature depends on (see
+    8c263fc375ec_add_doctor_self_service_signup_role.py, which renamed
+    the pre-existing `demo-doctor-demo` role to this exact name); a
+    typo or a reverted rename would surface here as RoleNotFoundError,
+    not silently grant the wrong thing."""
+    actor = await _register(auth_service, "approve-doctor-actor")
+    target = await _make_pending_approval_signup(
+        real_session, "approve-doctor-target", signup_role=SignupRole.DOCTOR
+    )
+
+    approved = await user_service.approve_signup(actor=actor, user_id=target.id)
+
+    assert approved.status == UserStatus.ACTIVE
+    active_role_names = {ur.role.name for ur in approved.user_roles if ur.deleted_at is None}
+    assert "Doctor" in active_role_names

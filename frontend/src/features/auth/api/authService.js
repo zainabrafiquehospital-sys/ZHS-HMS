@@ -33,9 +33,10 @@ export const authService = {
     });
   },
 
-  // Self-service signup (Receptionist or Vitals staff — see backend/
-  // app/modules/auth/signup_schemas.py's SignupRole) — email/OTP/
-  // approval flow, same for both roles.
+  // Self-service signup (Receptionist, Vitals staff, or Doctor — see
+  // backend/app/modules/auth/signup_schemas.py's SignupRole) —
+  // email/OTP/approval flow, same for every role. `shift` is `null`
+  // for a Doctor signup (see SignupForm.jsx's own submit handler).
   signup({ fullName, email, phoneNumber, password, shift, role }) {
     return httpClient.post('/auth/signup', {
       full_name: fullName,

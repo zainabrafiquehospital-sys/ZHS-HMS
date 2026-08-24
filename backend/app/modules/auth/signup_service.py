@@ -1,6 +1,6 @@
 """Self-service signup / email-verification business logic — one
 shared self-registration flow serving every role that supports it
-(Receptionist and Vitals staff as of this build; see
+(Receptionist, Vitals staff, and Doctor as of this build; see
 models.SignupRole's own docstring for how a pending account's
 requested role is recorded and later resolved). Talks to
 `repository.py` for persistence and to
@@ -138,7 +138,7 @@ class SignupService:
         email: str,
         phone_number: str,
         password: str,
-        shift: Shift,
+        shift: Shift | None,
         signup_role: SignupRole,
     ) -> User:
         """Creates a new account in `PENDING_EMAIL_VERIFICATION` — cannot

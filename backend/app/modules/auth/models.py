@@ -124,10 +124,25 @@ class SignupRole(PyEnum):
     signup form said (see this codebase's own investigation history
     for the incident this field fixes). Nullable because admin-created
     accounts (User Management's Create User) never go through signup at
-    all and have no requested role to record."""
+    all and have no requested role to record.
+
+    `DOCTOR` (2026-08-24 addition): the "Doctor" Role itself already
+    existed and was already in real use (via admin-provisioned User
+    Management, not self-service signup) — investigated directly
+    against the live database before adding this member, which found
+    it sitting under the informal name `demo-doctor-demo`, the same
+    kind of ad hoc leftover `demo-vitals-demo` was before Vitals'
+    self-service formalization. See
+    `8c263fc375ec_add_doctor_self_service_signup_role.py` for the
+    rename to `Doctor` this member's `_SIGNUP_ROLE_TO_ROLE_NAME` entry
+    depends on. Unlike Receptionist/Vitals, a Doctor signup carries no
+    `shift` — see `User.shift`'s own docstring on doctors having no
+    shift concept in this system — enforced at the request-schema level
+    (`signup_schemas.SignupRequest`), not here."""
 
     RECEPTIONIST = "receptionist"
     VITALS = "vitals"
+    DOCTOR = "doctor"
 
 
 class User(BaseEntity):

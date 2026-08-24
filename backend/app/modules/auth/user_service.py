@@ -85,14 +85,20 @@ from app.shared.db_errors import unique_violation_constraint_name
 _USER_EMAIL_CONSTRAINT = "ix_user_email_active"
 _USER_PHONE_CONSTRAINT = "ix_user_phone_number_active"
 
-# The exact Role.name `scripts/seed_launch_bootstrap.py` creates for each
-# self-service signup role — see approve_signup's docstring. Keys are
-# models.SignupRole members (what a pending User.signup_role actually
-# holds), not the schema-side enum — this dict is the one place that
-# translates "what a signup requested" into "which Role gets granted".
+# The exact Role.name each self-service signup role resolves to — see
+# approve_signup's docstring. Keys are models.SignupRole members (what a
+# pending User.signup_role actually holds), not the schema-side enum —
+# this dict is the one place that translates "what a signup requested"
+# into "which Role gets granted". Receptionist/Vitals are the Role names
+# `scripts/seed_launch_bootstrap.py` creates directly; Doctor's Role
+# already existed (admin-provisioned accounts, never self-service) under
+# the ad hoc name `demo-doctor-demo` — see
+# 8c263fc375ec_add_doctor_self_service_signup_role.py for the rename to
+# `Doctor` this entry depends on.
 _SIGNUP_ROLE_TO_ROLE_NAME: dict[SignupRole, str] = {
     SignupRole.RECEPTIONIST: "Receptionist",
     SignupRole.VITALS: "Vitals",
+    SignupRole.DOCTOR: "Doctor",
 }
 
 

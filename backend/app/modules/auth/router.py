@@ -281,7 +281,7 @@ async def get_me(
 
 
 # ------------------------------------------------------------------
-# Self-service signup / email verification (Receptionist or Vitals staff)
+# Self-service signup / email verification (Receptionist, Vitals staff, or Doctor)
 # ------------------------------------------------------------------
 
 
