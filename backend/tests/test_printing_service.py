@@ -396,7 +396,7 @@ def test_slip_fully_settled_after_multiple_payments_shows_no_payment_strip():
 
 # ---------------------------------------------------------------------
 # 80mm thermal-receipt redesign (2026-08-24) — replaces the previous
-# A4/half-A4 layout entirely. `@page { size: 80mm auto; margin: 0; }`
+# A4/half-A4 layout entirely. `@page { size: 80mm auto; margin: 0 2mm; }`
 # is the actual fix for the reported bug (a fixed A4 page length left a
 # large blank trailing section on the roll below the real content); the
 # item-row/payment-row markup is the content-structure side of the same
@@ -463,7 +463,7 @@ def test_registration_slip_itemized_procedures_use_flex_item_rows_not_a_table():
 
 def test_medicine_bill_receipt_items_use_flex_item_rows_with_meta_line():
     """The old 5-column table (Medicine/Category/Qty/Unit Price/Line
-    Total) cannot fit at 72mm — every field still renders, just as a
+    Total) cannot fit at 68mm — every field still renders, just as a
     name line plus a small muted meta line underneath instead of four
     more table columns."""
     html_document = _render_bill(
@@ -483,7 +483,7 @@ def test_medicine_bill_receipt_items_use_flex_item_rows_with_meta_line():
 def test_registration_slip_reference_sections_are_stacked_not_a_column_grid():
     """The old .body-grid 2-column layout (Patient Information beside
     Visit Details) is gone — both are now stacked .section blocks, one
-    after another, which is what a narrow 72mm column requires."""
+    after another, which is what a narrow 68mm column requires."""
     html_document = _render_slip()
 
     assert 'class="body-grid"' not in html_document

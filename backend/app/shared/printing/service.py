@@ -29,12 +29,15 @@ previous A4/half-A4 design): this hospital exclusively prints on an
 templates below (`render_registration_slip`, `render_invoice_receipt`,
 `render_medicine_bill_receipt`) shares one 80mm portrait "receipt"
 layout, built around `_RECEIPT_STYLE` and the shared header/title-box/
-row helpers just below. `@page {{ size: 80mm auto; margin: 0; }}` is
-the specific fix for the previous bug (a fixed A4-length page left a
+row helpers just below. `@page {{ size: 80mm auto; margin: 0 2mm; }}`
+is the specific fix for the previous bug (a fixed A4-length page left a
 large blank trailing section on the roll below the actual content,
 since the browser reserved the *declared* page length regardless of
 how short the content was) — `auto` tells the print engine to size the
-page to the content's own height instead of a fixed length. Every
+page to the content's own height instead of a fixed length; the small
+`2mm` horizontal margin is a separate, later fix (see `_RECEIPT_STYLE`'s
+own module-level comment) for a real printer's left-edge hardware
+offset, not part of the original dead-space bug. Every
 field this module rendered before this redesign still renders — this
 is a restructuring of *how* fields are arranged (stacked rows instead
 of side-by-side columns, flex item-rows instead of a wide `<table>`),
@@ -115,22 +118,37 @@ def _to_local_time(moment: datetime, zone_name: str) -> datetime:
 # three independently-drifting copies (which is exactly how the pre-
 # redesign templates ended up inconsistent: render_invoice_receipt never
 # received the header/title-box treatment its two siblings did). The
-# sheet is deliberately narrower than the physical 80mm roll (72mm,
-# 2026-08-24 correction below) — @page itself claims the full 80mm, and
-# the gap that leaves on each side (via the centered flex body, not a
-# page margin) is the safety buffer against a thermal printer's own
-# unprintable hardware edge; see `_RECEIPT_STYLE`'s own `@page` rule.
+# sheet is deliberately narrower than the physical 80mm roll (68mm,
+# 2026-08-24 second correction below) — @page reserves a real 2mm
+# margin on each side (not just an internal-content safety buffer), and
+# `.sheet` itself is narrower still than what that leaves; see
+# `_RECEIPT_STYLE`'s own `@page` rule and the `.sheet` rule's math.
 #
 # 2026-08-24 correction: the original redesign used 76mm here, sized as
 # a rendering-only safety margin against the nominal 80mm roll width. A
 # live production printer clipped everything past its real printable
 # boundary (content anchored correctly on the left, lost on the right)
 # — 76mm was still too wide for that printer's actual printable area.
-# 72mm is the standard safe printable width widely used for 80mm
-# thermal roll printers (most hardware reserves a few mm of unprintable
-# margin on each edge beyond the nominal 80mm), so `.sheet` now targets
-# that real boundary directly rather than an arbitrary rendering
-# buffer. See the `.sheet` rule itself for the width/padding math.
+#
+# 2026-08-24 second correction (same day, real hardware round two): the
+# first correction's 72mm was *still* too wide, and a second printed
+# sample surfaced a distinct second problem — every line was also
+# missing its first character on the left, independent of content
+# width. That symptom matches a real print-head/hardware left offset
+# (the physical head's true starting position sits a couple mm inboard
+# of where the page's reported left edge is) — not something an
+# internal-content safety margin can fix, since that margin only
+# protects against *this document's own* content running wide; it does
+# nothing about the printer itself starting to draw a couple mm late.
+# `@page`'s own `margin` is the right tool for that specific problem —
+# it is a real page-geometry inset the print engine is bound to honor,
+# unlike `.sheet` merely sitting centered inside a wider flex body
+# (which is a layout choice, not a guarantee nothing renders further
+# left or right than intended). `.sheet` is *also* narrowed further on
+# top of that margin, deliberately erring toward extra buffer this
+# round rather than the tightest fit that still measured "0mm
+# overflow" last time but still clipped on real hardware — see the
+# `.sheet` rule itself for the full width/padding math.
 # ---------------------------------------------------------------------
 
 _RECEIPT_STYLE = """
@@ -153,19 +171,29 @@ _RECEIPT_STYLE = """
     display: flex;
     justify-content: center;
   }
-  /* .sheet width math (2026-08-24 correction): 72mm total outer width
-     (border-box, so this includes padding and the 1px border) matches
-     a real 80mm thermal printer's confirmed printable boundary — the
-     prior 76mm overshot that boundary by 4mm and a live printer
-     dropped everything past it on the right rather than wrapping or
-     scaling. Left/right padding narrows from 3mm to 2mm each (only the
-     horizontal figure changes; top/bottom are unaffected), so content
-     width shrinks from ~69.5mm to ~67.5mm (72 - 2*2mm padding - ~0.5mm
-     for the two 1px borders) — a ~2mm-narrower column, not the full
-     4mm the outer width dropped by, since less padding was given back
-     to content on purpose. */
+  /* .sheet width math (2026-08-24 second correction):
+     - @page below now reserves a real 2mm margin on each side, so the
+       page's own content area is 80 - 2*2mm = 76mm (down from the full
+       80mm the first correction still assumed).
+     - .sheet's own width drops further, from 72mm to 68mm, so it does
+       not fill that entire 76mm content area either: centered inside
+       it (still via the flex body below), that leaves (76 - 68) / 2 =
+       4mm of additional soft buffer on each side, on top of the 2mm
+       hard `@page` margin — roughly 6mm of combined protective margin
+       per side against the roll's nominal 80mm edge, using only 68mm
+       (85%) of it for content. Deliberately generous: the previous
+       72mm measured a clean "0mm overflow" in this module's own
+       Playwright check and still clipped on real hardware, so this
+       round trades a bit of visible whitespace for real headroom
+       instead of the tightest fit that technically fits.
+     - Padding is unchanged (2mm left/right) — width was the actual
+       problem both times, not padding — so content width narrows from
+       ~67.5mm to ~63.5mm (68 - 2*2mm padding - ~0.5mm for the two 1px
+       borders), still comfortable for a full phone number, an
+       MR-prefixed number, or a six-figure amount (verified directly,
+       see the accompanying test/verification script). */
   .sheet {
-    width: 72mm;
+    width: 68mm;
     background: #ffffff;
     border: 1px solid #dddddd;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
@@ -173,7 +201,7 @@ _RECEIPT_STYLE = """
   }
 
   /* ---------- Header — stacked/centered, not the old 3-column grid,
-     since there is no room at 72mm for a logo, a centered name, and a
+     since there is no room at 68mm for a logo, a centered name, and a
      right-aligned contact block to sit side by side. ---------- */
   .header {
     display: flex;
@@ -214,7 +242,7 @@ _RECEIPT_STYLE = """
 
   /* ---------- Title box — label above token (stacked), not
      side-by-side: a long label plus a token both fit comfortably at
-     72mm only when stacked, and stacking reads like a real ticket
+     68mm only when stacked, and stacking reads like a real ticket
      stub. Monospace on the token now applies uniformly across all
      three documents (previously only the medicine slip had it). ---------- */
   .title-box {
@@ -273,6 +301,17 @@ _RECEIPT_STYLE = """
     flex-shrink: 0;
   }
   .row .value {
+    /* min-width: 0 (2026-08-24 addition) is a defensive belt-and-
+       braces alongside word-break: break-word above — a flex item's
+       default min-width is "auto" (its content's own minimum size),
+       which on some engines can still keep a long unbroken value
+       (a phone number, an MR number) from shrinking/wrapping as far
+       as space actually allows; explicit min-width: 0 removes that
+       floor so .row's space-between layout can never push .value
+       past the sheet's right edge, matching this row's own reported
+       clipped-value symptom on real hardware (see this module's own
+       top-level and _RECEIPT_STYLE comments for the full incident). */
+    min-width: 0;
     font-size: 9.5px;
     font-weight: 700;
     text-align: right;
@@ -398,17 +437,23 @@ _RECEIPT_STYLE = """
     color: var(--ink-soft);
   }
 
-  /* ---------- Print — the actual fix for the reported bug: the
-     previous rule declared a fixed A-series page length regardless of
-     how short the content is, which is exactly what left a large blank
-     trailing section on the roll below the receipt. `auto` sizes the
-     printed page to the content's own height instead.
-     `margin: 0` gives the full 80mm to the page; .sheet's own 72mm
-     width (unchanged from the screen-preview rule above — one width,
-     not a print-specific override) is what keeps content inside the
-     printer's real printable boundary — see the `.sheet` rule's own
-     width/padding math. ---------- */
-  @page { size: 80mm auto; margin: 0; }
+  /* ---------- Print — `size: 80mm auto` is the fix for the original
+     reported bug: the previous rule declared a fixed A-series page
+     length regardless of how short the content is, which is exactly
+     what left a large blank trailing section on the roll below the
+     receipt. `auto` sizes the printed page to the content's own
+     height instead.
+     `margin: 0 2mm` (2026-08-24 second correction, was `margin: 0`) is
+     a separate, later fix for a distinct problem: a real printer's
+     print head starts drawing a couple mm inboard of where the page's
+     reported left edge is, clipping the first character of every
+     line regardless of content width. A real `@page` margin is a page-
+     geometry inset the print engine must honor, unlike `.sheet`
+     merely sitting centered in a wider flex body (a layout choice, not
+     a guarantee) — see `_RECEIPT_STYLE`'s own module-level comment
+     for the full incident, and the `.sheet` rule above for how its own
+     width was narrowed further on top of this margin. ---------- */
+  @page { size: 80mm auto; margin: 0 2mm; }
   @media print {
     * {
       print-color-adjust: exact !important;
@@ -854,7 +899,7 @@ def render_medicine_bill_receipt(
     `MedicineBillItem`'s docstring) — this function renders exactly what
     was billed, never re-reads the live price list. 2026-08-24 redesign:
     the old 5-column table (Medicine/Category/Qty/Unit Price/Line Total)
-    cannot fit legibly at 72mm — each item is now its own row, the
+    cannot fit legibly at 68mm — each item is now its own row, the
     medicine name on its own line (wrapping naturally if long) and a
     small muted second line underneath carrying category/quantity/unit
     price (`"Tablet · 2 × 50.00"`), with the line total right-aligned
