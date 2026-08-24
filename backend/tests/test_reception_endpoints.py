@@ -189,6 +189,118 @@ async def test_register_visit_leaves_unassigned_without_online_doctor(
     assert resp.json()["data"]["visit"]["doctor_user_id"] is None
 
 
+async def test_register_visit_with_explicit_doctor_user_id_bypasses_auto_assign(
+    api_client, real_session, grant_permission
+):
+    """Over real HTTP: an explicit `doctor_user_id` in the request body
+    (2026-08-24 addition, RegisterVisitForm.jsx's doctor dropdown) wins
+    even though a different, genuinely-online least-busy doctor also
+    exists — the selected doctor here is deliberately offline (never
+    logged in), confirming Reception can route to a specific doctor
+    regardless of their online status, not only auto-pick among whoever
+    is logged in."""
+    receptionist, receptionist_token = await _create_and_login(
+        api_client, real_session, "explicit-doctor-receptionist"
+    )
+    await grant_permission(receptionist, PERMISSION_RECEPTION_REGISTER_VISIT)
+    online_doctor, _online_token = await _create_and_login(
+        api_client, real_session, "explicit-doctor-online"
+    )
+    await grant_permission(online_doctor, PERMISSION_CONSULTATION_START)
+    offline_doctor = await UserRepository(real_session).add(
+        User(
+            email=make_test_email("explicit-doctor-offline"),
+            password_hash=await PasswordService().hash(_PASSWORD),
+            full_name="Explicit Offline Doctor",
+            status=UserStatus.ACTIVE,
+            must_change_password=False,
+        )
+    )
+    await real_session.commit()
+    await grant_permission(offline_doctor, PERMISSION_CONSULTATION_START)
+
+    resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("ExplicitDoctor"),
+            "procedures": [{"name": "Consultation", "amount": "1500.00"}],
+            "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
+            "doctor_user_id": str(offline_doctor.id),
+        },
+        headers=_auth_header(receptionist_token),
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["data"]["visit"]["doctor_user_id"] == str(offline_doctor.id)
+
+
+async def test_register_visit_with_invalid_explicit_doctor_user_id_is_rejected(
+    api_client, real_session, grant_permission
+):
+    """A `doctor_user_id` that doesn't resolve to a real, active,
+    consultation-capable user is rejected with a client error, not
+    silently substituted or 500ed."""
+    receptionist, access_token = await _create_and_login(
+        api_client, real_session, "invalid-doctor-receptionist"
+    )
+    await grant_permission(receptionist, PERMISSION_RECEPTION_REGISTER_VISIT)
+    # receptionist's own id: a real, active user, but not a doctor.
+    resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("InvalidDoctor"),
+            "procedures": [{"name": "Consultation", "amount": "1500.00"}],
+            "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
+            "doctor_user_id": str(receptionist.id),
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "DOCTOR_NOT_AVAILABLE_FOR_ASSIGNMENT"
+
+
+async def test_list_doctors_for_selection_requires_permission(api_client, real_session):
+    _actor, access_token = await _create_and_login(api_client, real_session, "doctors-no-perm")
+
+    resp = await api_client.get("/api/v1/reception/doctors", headers=_auth_header(access_token))
+
+    assert resp.status_code == 403
+
+
+async def test_list_doctors_for_selection_reports_online_status(
+    api_client, real_session, grant_permission
+):
+    receptionist, access_token = await _create_and_login(
+        api_client, real_session, "doctors-list-receptionist"
+    )
+    await grant_permission(receptionist, PERMISSION_RECEPTION_REGISTER_VISIT)
+    online_doctor, _token = await _create_and_login(api_client, real_session, "doctors-list-online")
+    await grant_permission(online_doctor, PERMISSION_CONSULTATION_START)
+    offline_doctor = await UserRepository(real_session).add(
+        User(
+            email=make_test_email("doctors-list-offline"),
+            password_hash=await PasswordService().hash(_PASSWORD),
+            full_name="Doctors List Offline Doctor",
+            status=UserStatus.ACTIVE,
+            must_change_password=False,
+        )
+    )
+    await real_session.commit()
+    await grant_permission(offline_doctor, PERMISSION_CONSULTATION_START)
+
+    resp = await api_client.get("/api/v1/reception/doctors", headers=_auth_header(access_token))
+
+    assert resp.status_code == 200
+    by_id = {row["id"]: row["is_online"] for row in resp.json()["data"]}
+    assert by_id.get(str(online_doctor.id)) is True
+    assert by_id.get(str(offline_doctor.id)) is False
+
+
 async def test_print_registration_slip_success(api_client, real_session, grant_permission):
     actor, access_token = await _create_and_login(api_client, real_session, "print-slip-success")
     await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
@@ -267,7 +379,9 @@ async def test_register_visit_with_discount_computes_post_discount_amount(
     assert visit["discount_reason"] == "Referral"
 
 
-async def test_register_visit_discount_reason_is_optional(api_client, real_session, grant_permission):
+async def test_register_visit_discount_reason_is_optional(
+    api_client, real_session, grant_permission
+):
     actor, access_token = await _create_and_login(api_client, real_session, "discount-no-reason")
     await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
 
@@ -635,9 +749,7 @@ async def test_delete_visit_succeeds_despite_a_settled_registration_payment_via_
     )
     assert delete_resp.status_code == 200
 
-    get_resp = await api_client.get(
-        f"/api/v1/visits/{visit_id}", headers=_auth_header(admin_token)
-    )
+    get_resp = await api_client.get(f"/api/v1/visits/{visit_id}", headers=_auth_header(admin_token))
     assert get_resp.status_code == 404
 
 
@@ -684,9 +796,7 @@ async def test_delete_visit_success_removes_it_from_get_for_a_legacy_visit(
     )
     assert delete_resp.status_code == 200
 
-    get_resp = await api_client.get(
-        f"/api/v1/visits/{visit.id}", headers=_auth_header(admin_token)
-    )
+    get_resp = await api_client.get(f"/api/v1/visits/{visit.id}", headers=_auth_header(admin_token))
     assert get_resp.status_code == 404
 
 
@@ -768,7 +878,9 @@ async def test_clear_own_revenue_success_via_http(api_client, real_session, gran
     assert clear_resp.status_code == 200
     assert clear_resp.json()["data"]["cleared_at"]
 
-    after_resp = await api_client.get("/api/v1/reception/revenue", headers=_auth_header(access_token))
+    after_resp = await api_client.get(
+        "/api/v1/reception/revenue", headers=_auth_header(access_token)
+    )
     body = after_resp.json()["data"]
     assert body["visits_count"] == 0
     assert body["total_revenue"] == "0.00"

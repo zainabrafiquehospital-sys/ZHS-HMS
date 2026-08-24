@@ -36,7 +36,10 @@ from app.modules.patients.service import PatientService
 from app.modules.pharmacy.repository import MedicineBillRepository
 from app.modules.queue.models import QueueDestination, QueueEntry
 from app.modules.queue.service import QueueService
-from app.modules.reception.exceptions import VisitHasSettledInvoiceError
+from app.modules.reception.exceptions import (
+    DoctorNotAvailableForAssignmentError,
+    VisitHasSettledInvoiceError,
+)
 from app.modules.reception.repository import ReceptionRepository
 from app.modules.visits.models import Visit
 from app.modules.visits.service import VisitService
@@ -126,16 +129,23 @@ class ReceptionService:
         this codebase's convention that request-shape validation belongs
         at the API boundary, not duplicated in the service layer.
 
-        `doctor_user_id=None` means the caller (Reception's fast-
-        registration UI) never asks staff to pick a doctor at all —
-        doctor selection is always automatic. This method auto-assigns
-        the least-busy currently-online doctor (see
+        `doctor_user_id=None` (the default, and still the common case)
+        means staff left the doctor field blank — this method
+        auto-assigns the least-busy currently-online doctor (see
         ReceptionRepository.find_least_busy_available_doctor's
         docstring for what "online" means) when one exists; if none is
         available, registration proceeds with the Visit unassigned
         rather than blocking (Phase 6 fast-registration §4) — any doctor
         claims it the moment they start its consultation (see
-        consultation/service.py's `start_consultation`).
+        consultation/service.py's `start_consultation`). An explicit
+        `doctor_user_id` (2026-08-24 addition — Reception's doctor-
+        selection dropdown, RegisterVisitForm.jsx) skips auto-assignment
+        entirely and is validated instead via
+        ReceptionRepository.get_doctor_by_id, raising
+        DoctorNotAvailableForAssignmentError if it doesn't resolve to a
+        real, active, consultation-capable user — deliberately not
+        required to be online, so Reception can still route to a
+        specific doctor who's temporarily offline.
 
         `procedures` (2026-08-21 addition, replacing the old single
         `procedure`/`amount` pair) passes straight through to
@@ -163,6 +173,18 @@ class ReceptionService:
         if doctor_user_id is None:
             available_doctor = await self._reception_repo.find_least_busy_available_doctor()
             doctor_user_id = available_doctor.id if available_doctor is not None else None
+        else:
+            # An explicit selection (2026-08-24 addition — Reception's
+            # doctor-selection dropdown, RegisterVisitForm.jsx)
+            # bypasses least-busy auto-assignment entirely, but is
+            # never trusted blindly: it must still resolve to a real,
+            # ACTIVE, consultation:start-granting user, online or not
+            # (see get_doctor_by_id's own docstring for why "online" is
+            # deliberately not required here, unlike the auto-assign
+            # path above).
+            selected_doctor = await self._reception_repo.get_doctor_by_id(doctor_user_id)
+            if selected_doctor is None:
+                raise DoctorNotAvailableForAssignmentError
 
         visit = await self._visit_service.register_visit(
             actor=actor,
@@ -195,6 +217,19 @@ class ReceptionService:
         )
         await self._session.commit()
         return patient, visit, queue_entry
+
+    async def list_doctors_for_selection(self) -> list[tuple[User, bool]]:
+        """Backs `GET /reception/doctors` (2026-08-24 addition) —
+        Reception's doctor-selection dropdown in RegisterVisitForm.jsx.
+        Thin pass-through to ReceptionRepository.list_doctors_for_
+        selection; see that method's own docstring for the eligibility/
+        online-status definition. No permission check of its own beyond
+        the router's `reception:register_visit` gate (the same
+        permission every receptionist already needs to reach this
+        screen at all — see reception/constants.py's own docstring on
+        why "My Revenue" reuses this same permission rather than a
+        dedicated read permission)."""
+        return await self._reception_repo.list_doctors_for_selection()
 
     async def cancel_visit(self, *, actor: User, visit_id: UUID, reason: str | None) -> Visit:
         """Reception may cancel a Visit at any non-terminal point (Phase

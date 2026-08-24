@@ -4,8 +4,15 @@ import pytest
 from uuid6 import uuid7
 
 from app.core.exceptions import ValidationError
-from app.modules.auth.models import User, UserStatus
-from app.modules.auth.repository import UserRepository
+from app.modules.auth.models import Permission, Role, RolePermission, User, UserRole, UserStatus
+from app.modules.auth.repository import (
+    PermissionRepository,
+    RolePermissionRepository,
+    RoleRepository,
+    UserRepository,
+    UserRoleRepository,
+)
+from app.modules.auth.validators import derive_permission_group
 from app.modules.billing.exceptions import (
     DiscountExceedsSubtotalError,
     DiscountReasonRequiredError,
@@ -18,13 +25,22 @@ from app.modules.billing.exceptions import (
     PendingBillingItemNotPendingError,
 )
 from app.modules.billing.models import InvoiceStatus, PendingBillingItemStatus
+from app.modules.consultation.constants import PERMISSION_CONSULTATION_START
 from app.modules.patients.models import PatientGender
 from app.modules.visits.models import VisitStatus
 from app.shared.payment_method import PaymentMethod
-from tests.conftest import TEST_PATIENT_NAME_PREFIX, make_test_email
+from tests.conftest import TEST_PATIENT_NAME_PREFIX, TEST_ROLE_PREFIX, make_test_email
 
 
 async def _make_doctor(real_session, suffix: str) -> User:
+    # 2026-08-24: grants `consultation:start` directly (not via the
+    # `grant_permission` fixture, to avoid threading it through every
+    # one of this file's own `_make_doctor` call sites) — an explicit
+    # `doctor_user_id` at registration is now validated server-side
+    # (ReceptionRepository.get_doctor_by_id) against exactly this
+    # permission, so a "doctor" created without it is no longer a valid
+    # one to register a Visit against or to drive through
+    # start_consultation's own ownership checks.
     doctor = await UserRepository(real_session).add(
         User(
             email=make_test_email(f"billing-doctor-{suffix}"),
@@ -33,6 +49,25 @@ async def _make_doctor(real_session, suffix: str) -> User:
             status=UserStatus.ACTIVE,
         )
     )
+    await real_session.commit()
+
+    permission_repo = PermissionRepository(real_session)
+    permission = await permission_repo.get_by_code(PERMISSION_CONSULTATION_START)
+    if permission is None:
+        permission = await permission_repo.add(
+            Permission(
+                code=PERMISSION_CONSULTATION_START,
+                group=derive_permission_group(PERMISSION_CONSULTATION_START),
+                display_name=PERMISSION_CONSULTATION_START,
+            )
+        )
+    role = await RoleRepository(real_session).add(
+        Role(name=f"{TEST_ROLE_PREFIX}{uuid7()}", is_active=True)
+    )
+    await RolePermissionRepository(real_session).add(
+        RolePermission(role_id=role.id, permission_id=permission.id)
+    )
+    await UserRoleRepository(real_session).add(UserRole(user_id=doctor.id, role_id=role.id))
     await real_session.commit()
     return doctor
 
@@ -249,7 +284,10 @@ async def test_generate_invoice_without_discount_leaves_discount_fields_at_zero_
     )
 
     invoice = await billing_service.generate_invoice(
-        actor=doctor, visit_id=visit.id, base_description="Consultation Fee", base_amount=Decimal("1000")
+        actor=doctor,
+        visit_id=visit.id,
+        base_description="Consultation Fee",
+        base_amount=Decimal("1000"),
     )
 
     assert invoice.discount_amount == Decimal("0.00")
@@ -532,7 +570,10 @@ async def test_generate_invoice_initial_payment_on_reopened_visit_fully_pays_and
     assert completed_visit.status == VisitStatus.COMPLETED
 
     late_item = await billing_service.submit_pending_item(
-        actor=doctor, visit_id=visit.id, description="Post-discharge dressing", amount=Decimal("200")
+        actor=doctor,
+        visit_id=visit.id,
+        description="Post-discharge dressing",
+        amount=Decimal("200"),
     )
     await billing_service.approve_pending_item(actor=doctor, item_id=late_item.id)
     second_invoice = await billing_service.generate_invoice(

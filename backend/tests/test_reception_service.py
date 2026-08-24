@@ -11,7 +11,10 @@ from app.modules.patients.exceptions import PatientNotFoundError
 from app.modules.patients.models import PatientGender
 from app.modules.pharmacy.models import MedicineCategory
 from app.modules.queue.models import QueueDestination, QueueEntryStatus
-from app.modules.reception.exceptions import VisitHasSettledInvoiceError
+from app.modules.reception.exceptions import (
+    DoctorNotAvailableForAssignmentError,
+    VisitHasSettledInvoiceError,
+)
 from app.modules.visits.exceptions import (
     VisitHasSettledPaymentError,
     VisitNotFoundError,
@@ -91,7 +94,7 @@ async def test_register_visit_with_new_patient_routes_to_vitals(real_session, re
         actor=actor,
         patient_id=None,
         new_patient=_new_patient_payload("A"),
-        doctor_user_id=actor.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=True,
         initial_payment_amount=Decimal("0.01"),
@@ -111,7 +114,7 @@ async def test_register_visit_with_new_patient_routes_to_doctor(real_session, re
         actor=actor,
         patient_id=None,
         new_patient=_new_patient_payload("B"),
-        doctor_user_id=actor.id,
+        doctor_user_id=None,
         procedures=[(None, "Follow-up", Decimal("1500.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
@@ -141,7 +144,7 @@ async def test_register_visit_with_existing_patient_reuses_same_patient(
         actor=actor,
         patient_id=existing.id,
         new_patient=None,
-        doctor_user_id=actor.id,
+        doctor_user_id=None,
         procedures=[(None, "Follow-up", Decimal("1500.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
@@ -160,7 +163,7 @@ async def test_register_visit_with_unknown_patient_id_raises(real_session, recep
             actor=actor,
             patient_id=uuid7(),
             new_patient=None,
-            doctor_user_id=actor.id,
+            doctor_user_id=None,
             procedures=[(None, "Consultation", Decimal("1500.00"))],
             vitals_required=False,
             initial_payment_amount=Decimal("0.01"),
@@ -218,6 +221,123 @@ async def test_register_visit_proceeds_unassigned_when_no_doctor_online(
     assert entry.destination == QueueDestination.DOCTOR
 
 
+# ---------------------------------------------------------------------
+# Explicit doctor selection (2026-08-24 addition) — RegisterVisitForm.jsx's
+# optional "Assign to Doctor" dropdown. See ReceptionRepository.
+# get_doctor_by_id's own docstring for why an explicit selection is
+# validated rather than trusted as-is.
+# ---------------------------------------------------------------------
+
+
+async def test_register_visit_with_explicit_doctor_selection_bypasses_auto_assign(
+    real_session, reception_service, grant_permission
+):
+    """An explicit `doctor_user_id` wins even when a *different*,
+    genuinely-online least-busy doctor also exists — proving this is a
+    real bypass of auto-assignment, not merely a value that happens to
+    coincide with what auto-assign would have picked anyway. The
+    explicitly-selected doctor is deliberately offline (no active
+    LoginSession) — Reception must be able to route to a doctor who
+    isn't currently online, not only among whoever is logged in."""
+    receptionist = await _make_actor(real_session, "explicit-select-receptionist")
+    online_doctor = await _make_actor(real_session, "explicit-select-online-doctor")
+    await grant_permission(online_doctor, PERMISSION_CONSULTATION_START)
+    await LoginSessionRepository(real_session).add(LoginSession(user_id=online_doctor.id))
+    offline_doctor = await _make_actor(real_session, "explicit-select-offline-doctor")
+    await grant_permission(offline_doctor, PERMISSION_CONSULTATION_START)
+    await real_session.commit()
+
+    _patient, visit, _entry = await reception_service.register_visit(
+        actor=receptionist,
+        patient_id=None,
+        new_patient=_new_patient_payload("ExplicitSelect"),
+        doctor_user_id=offline_doctor.id,
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
+        vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
+    )
+
+    assert visit.doctor_user_id == offline_doctor.id
+
+
+async def test_register_visit_rejects_an_unknown_explicit_doctor_id(
+    real_session, reception_service
+):
+    """A `doctor_user_id` that doesn't correspond to any real user at
+    all (a typo, a stale id) is rejected, never silently treated as
+    "fall back to auto-assign"."""
+    receptionist = await _make_actor(real_session, "unknown-doctor-receptionist")
+
+    with pytest.raises(DoctorNotAvailableForAssignmentError):
+        await reception_service.register_visit(
+            actor=receptionist,
+            patient_id=None,
+            new_patient=_new_patient_payload("UnknownDoctor"),
+            doctor_user_id=uuid7(),
+            procedures=[(None, "Consultation", Decimal("1500.00"))],
+            vitals_required=False,
+            initial_payment_amount=Decimal("0.01"),
+            initial_payment_method=PaymentMethod.CASH,
+        )
+
+
+async def test_register_visit_rejects_an_explicit_doctor_id_lacking_consultation_permission(
+    real_session, reception_service
+):
+    """A real, ACTIVE user who simply isn't a doctor (holds no role
+    granting `consultation:start`) — e.g. another receptionist's own id
+    — must be rejected, not assigned. Confirms the validation actually
+    checks doctor *eligibility*, not merely "does this id exist"."""
+    receptionist = await _make_actor(real_session, "non-doctor-receptionist")
+    not_a_doctor = await _make_actor(real_session, "non-doctor-target")
+
+    with pytest.raises(DoctorNotAvailableForAssignmentError):
+        await reception_service.register_visit(
+            actor=receptionist,
+            patient_id=None,
+            new_patient=_new_patient_payload("NonDoctor"),
+            doctor_user_id=not_a_doctor.id,
+            procedures=[(None, "Consultation", Decimal("1500.00"))],
+            vitals_required=False,
+            initial_payment_amount=Decimal("0.01"),
+            initial_payment_method=PaymentMethod.CASH,
+        )
+
+
+async def test_register_visit_rejects_an_inactive_explicit_doctor_id(
+    real_session, reception_service, grant_permission
+):
+    """A doctor who genuinely holds `consultation:start` but whose
+    account is no longer ACTIVE (deactivated, suspended, locked) must
+    still be rejected — permission on a role is not by itself
+    sufficient, matching find_least_busy_available_doctor's own
+    `User.status == UserStatus.ACTIVE` requirement for auto-assignment."""
+    receptionist = await _make_actor(real_session, "inactive-doctor-receptionist")
+    inactive_doctor = await UserRepository(real_session).add(
+        User(
+            email=make_test_email("reception-inactive-doctor"),
+            password_hash="hash",
+            full_name="Inactive Doctor",
+            status=UserStatus.INACTIVE,
+        )
+    )
+    await grant_permission(inactive_doctor, PERMISSION_CONSULTATION_START)
+    await real_session.commit()
+
+    with pytest.raises(DoctorNotAvailableForAssignmentError):
+        await reception_service.register_visit(
+            actor=receptionist,
+            patient_id=None,
+            new_patient=_new_patient_payload("InactiveDoctor"),
+            doctor_user_id=inactive_doctor.id,
+            procedures=[(None, "Consultation", Decimal("1500.00"))],
+            vitals_required=False,
+            initial_payment_amount=Decimal("0.01"),
+            initial_payment_method=PaymentMethod.CASH,
+        )
+
+
 async def test_cancel_visit_closes_active_queue_entry_and_cancels_visit(
     real_session, reception_service, queue_service
 ):
@@ -226,7 +346,7 @@ async def test_cancel_visit_closes_active_queue_entry_and_cancels_visit(
         actor=actor,
         patient_id=None,
         new_patient=_new_patient_payload("C"),
-        doctor_user_id=actor.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
@@ -252,9 +372,7 @@ async def test_cancel_visit_closes_active_queue_entry_and_cancels_visit(
 # ---------------------------------------------------------------------
 
 
-async def _make_visit_waiting_billing(
-    real_session, patient_service, visit_service, doctor, suffix
-):
+async def _make_visit_waiting_billing(real_session, patient_service, visit_service, doctor, suffix):
     """A visit reaching `WAITING_BILLING` via direct `VisitService`
     status transitions, not `ReceptionService.register_visit`
     (2026-08-22 revision — the three admin_delete_visit tests below
@@ -338,7 +456,7 @@ async def test_admin_update_visit_rejects_flat_fields_against_an_itemized_visit(
         actor=admin,
         patient_id=None,
         new_patient=_new_patient_payload("UpdateItemizedReject"),
-        doctor_user_id=admin.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
@@ -364,7 +482,7 @@ async def test_admin_replace_procedure_items_replaces_the_whole_set(
         actor=admin,
         patient_id=None,
         new_patient=_new_patient_payload("ReplaceItems"),
-        doctor_user_id=admin.id,
+        doctor_user_id=None,
         procedures=[(None, "Checkup", Decimal("800.00")), (None, "Scan", Decimal("700.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
@@ -536,7 +654,7 @@ async def test_admin_delete_visit_succeeds_despite_a_partially_paid_registration
         actor=admin,
         patient_id=None,
         new_patient=_new_patient_payload("DeleteDespitePartialPayment"),
-        doctor_user_id=admin.id,
+        doctor_user_id=None,
         procedures=[(None, "C-Section", Decimal("50000.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("20000.00"),
@@ -557,7 +675,7 @@ async def test_admin_delete_visit_succeeds_despite_a_fully_paid_registration_cha
         actor=admin,
         patient_id=None,
         new_patient=_new_patient_payload("DeleteDespiteFullPayment"),
-        doctor_user_id=admin.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("1500.00"),
@@ -598,7 +716,7 @@ async def test_update_visit_details_blocked_when_visit_has_settled_payment(
         actor=admin,
         patient_id=None,
         new_patient=_new_patient_payload("UpdateBlockedSettledPayment"),
-        doctor_user_id=admin.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("1500.00"),
@@ -640,7 +758,7 @@ async def test_get_own_revenue_is_scoped_to_the_caller_only(
         actor=receptionist_a,
         patient_id=None,
         new_patient=_new_patient_payload("RevenueOwnA"),
-        doctor_user_id=receptionist_a.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
@@ -650,16 +768,20 @@ async def test_get_own_revenue_is_scoped_to_the_caller_only(
         actor=receptionist_b,
         patient_id=None,
         new_patient=_new_patient_payload("RevenueOwnB"),
-        doctor_user_id=receptionist_b.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("9999.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
         initial_payment_method=PaymentMethod.CASH,
     )
 
-    visits_count, visits_revenue, _med_count, _med_revenue, window_since = (
-        await reception_service.get_own_revenue(actor=receptionist_a)
-    )
+    (
+        visits_count,
+        visits_revenue,
+        _med_count,
+        _med_revenue,
+        window_since,
+    ) = await reception_service.get_own_revenue(actor=receptionist_a)
 
     assert visits_count == 1
     assert visits_revenue == Decimal("1500.00")
@@ -679,19 +801,21 @@ async def test_get_own_revenue_includes_medicine_bills_in_breakdown(
         actor=receptionist,
         patient_id=None,
         new_patient=_new_patient_payload("RevenueMedVisit"),
-        doctor_user_id=receptionist.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
         initial_payment_method=PaymentMethod.CASH,
     )
-    await pharmacy_service.create_bill(
-        actor=receptionist, visit_id=None, items=[(medicine.id, 2)]
-    )
+    await pharmacy_service.create_bill(actor=receptionist, visit_id=None, items=[(medicine.id, 2)])
 
-    visits_count, visits_revenue, med_count, med_revenue, _cleared_at = (
-        await reception_service.get_own_revenue(actor=receptionist)
-    )
+    (
+        visits_count,
+        visits_revenue,
+        med_count,
+        med_revenue,
+        _cleared_at,
+    ) = await reception_service.get_own_revenue(actor=receptionist)
 
     assert visits_count == 1
     assert visits_revenue == Decimal("1500.00")
@@ -707,7 +831,7 @@ async def test_clear_own_revenue_resets_display_but_leaves_data_intact(
         actor=receptionist,
         patient_id=None,
         new_patient=_new_patient_payload("RevenueClear"),
-        doctor_user_id=receptionist.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
@@ -723,9 +847,13 @@ async def test_clear_own_revenue_resets_display_but_leaves_data_intact(
     cleared_at = await reception_service.clear_own_revenue(actor=receptionist)
     assert cleared_at is not None
 
-    after_count, after_revenue, _mc2, _mr2, reported_cleared_at = (
-        await reception_service.get_own_revenue(actor=receptionist)
-    )
+    (
+        after_count,
+        after_revenue,
+        _mc2,
+        _mr2,
+        reported_cleared_at,
+    ) = await reception_service.get_own_revenue(actor=receptionist)
     assert after_count == 0
     assert after_revenue == Decimal("0.00")
     assert reported_cleared_at is not None
@@ -753,7 +881,7 @@ async def test_clear_own_revenue_does_not_affect_admins_alltime_view(
         actor=receptionist,
         patient_id=None,
         new_patient=_new_patient_payload("RevenueAdminView"),
-        doctor_user_id=receptionist.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
@@ -775,7 +903,7 @@ async def test_clear_own_revenue_only_affects_the_caller(real_session, reception
         actor=receptionist_a,
         patient_id=None,
         new_patient=_new_patient_payload("RevenueIndepA"),
-        doctor_user_id=receptionist_a.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
@@ -833,7 +961,9 @@ async def _make_backdated_visit(
     return await VisitRepository(real_session).add(visit)
 
 
-async def _make_backdated_clear_marker(real_session, *, receptionist_id, hours_ago: float) -> AuditEntry:
+async def _make_backdated_clear_marker(
+    real_session, *, receptionist_id, hours_ago: float
+) -> AuditEntry:
     entry = AuditEntry(
         module="reception",
         action="reception.revenue_cleared",
@@ -856,7 +986,7 @@ async def test_get_own_revenue_excludes_visits_older_than_24h_even_without_manua
         actor=receptionist,
         patient_id=None,
         new_patient=_new_patient_payload("Revenue24hOld"),
-        doctor_user_id=receptionist.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("100.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
@@ -901,7 +1031,7 @@ async def test_get_own_revenue_manual_clear_within_24h_still_narrows_the_window(
         actor=receptionist,
         patient_id=None,
         new_patient=_new_patient_payload("Revenue24hBeforeClear"),
-        doctor_user_id=receptionist.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("1000.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
@@ -914,7 +1044,7 @@ async def test_get_own_revenue_manual_clear_within_24h_still_narrows_the_window(
         actor=receptionist,
         patient_id=None,
         new_patient=_new_patient_payload("Revenue24hAfterClear"),
-        doctor_user_id=receptionist.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("500.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
@@ -945,7 +1075,7 @@ async def test_get_own_revenue_manual_clear_older_than_24h_is_superseded_by_auto
         actor=receptionist,
         patient_id=None,
         new_patient=_new_patient_payload("Revenue24hStaleClearSeed"),
-        doctor_user_id=receptionist.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("0.01"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
@@ -984,7 +1114,7 @@ async def test_get_own_revenue_24h_window_does_not_affect_admins_alltime_view(
         actor=receptionist,
         patient_id=None,
         new_patient=_new_patient_payload("Revenue24hAdminViewSeed"),
-        doctor_user_id=receptionist.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("0.01"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
@@ -1006,3 +1136,26 @@ async def test_get_own_revenue_24h_window_does_not_affect_admins_alltime_view(
 
     all_time = await visit_service.count_and_revenue_by_creator()
     assert all_time[receptionist.id] == (2, Decimal("2500.01"))
+
+
+async def test_list_doctors_for_selection_reports_online_status_correctly(
+    real_session, reception_service, grant_permission
+):
+    """Backs GET /reception/doctors (RegisterVisitForm.jsx's dropdown).
+    Deliberately does not assert on the *exact* returned list/order —
+    this suite runs against a shared dev database that may already
+    hold other eligible doctor accounts (see tests/conftest.py's own
+    documented shared-DB caveats) — only that this test's own two
+    doctors both appear, each with the correct `is_online` flag."""
+    online_doctor = await _make_actor(real_session, "list-selection-online-doctor")
+    await grant_permission(online_doctor, PERMISSION_CONSULTATION_START)
+    await LoginSessionRepository(real_session).add(LoginSession(user_id=online_doctor.id))
+    offline_doctor = await _make_actor(real_session, "list-selection-offline-doctor")
+    await grant_permission(offline_doctor, PERMISSION_CONSULTATION_START)
+    await real_session.commit()
+
+    doctors = await reception_service.list_doctors_for_selection()
+    by_id = {user.id: is_online for user, is_online in doctors}
+
+    assert by_id.get(online_doctor.id) is True
+    assert by_id.get(offline_doctor.id) is False

@@ -3,9 +3,11 @@ composite "register a visit" action (Phase 6 architecture §6, revised
 for fast registration): exactly one of an existing `patient_id` or a
 full `new_patient` identity block, plus one or more procedure line
 items, and the Yes/No vitals-required decision that sets the Visit's
-initial queue destination. There is deliberately no doctor-selection
-field — doctor assignment is always automatic (see
-ReceptionService.register_visit's docstring).
+initial queue destination. Doctor assignment defaults to automatic
+(see ReceptionService.register_visit's docstring) but an optional
+explicit `doctor_user_id` (2026-08-24 addition) can override it — see
+`RegisterVisitRequest.doctor_user_id`'s own comment and
+`DoctorSelectionOut` below, which powers the selection dropdown.
 
 `procedures` (2026-08-21 addition, replacing the old flat `procedure`/
 `amount` fields) is one or more `VisitProcedureItemRequest`s — see that
@@ -16,9 +18,11 @@ this never touches any visit registered before today."""
 
 from datetime import datetime
 from decimal import Decimal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.modules.auth.models import User
 from app.modules.patients.models import PatientGender
 from app.modules.patients.schemas import PatientIdentityFields, PatientOut
 from app.modules.queue.schemas import QueueEntryOut
@@ -34,6 +38,14 @@ class RegisterVisitRequest(BaseModel):
     new_patient: PatientIdentityFields | None = None
     procedures: list[VisitProcedureItemRequest] = Field(min_length=1)
     vitals_required: bool
+    # Explicit doctor selection (2026-08-24 addition — RegisterVisitForm.jsx's
+    # doctor-selection dropdown). `None` (the default, and still the
+    # common case) preserves today's behavior exactly: auto-assign the
+    # least-busy online doctor, or leave unassigned if none is online
+    # (see ReceptionService.register_visit's own docstring). A provided
+    # value bypasses auto-assignment and is validated server-side
+    # against ReceptionRepository.get_doctor_by_id, not trusted as-is.
+    doctor_user_id: LaxUUID | None = None
     # Optional flat discount off the procedures' combined subtotal,
     # applied at registration time only (2026-08-19 addition, unaffected
     # by the 2026-08-21 itemization — see VisitService.register_visit's
@@ -180,3 +192,25 @@ class ClearRevenueResponse(BaseModel):
     model_config = ConfigDict(strict=True)
 
     cleared_at: datetime
+
+
+# ---------------------------------------------------------------------
+# Doctor selection (2026-08-24 addition) — GET /reception/doctors, the
+# minimal list backing RegisterVisitForm.jsx's optional doctor dropdown.
+# Deliberately narrow: only what a selection UI needs (id, name, online
+# status), never the full admin User shape GET /users returns — see
+# ReceptionRepository.list_doctors_for_selection's own docstring for why
+# this reuses `reception:register_visit` rather than `users:read`.
+# ---------------------------------------------------------------------
+
+
+class DoctorSelectionOut(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    id: UUID
+    full_name: str
+    is_online: bool
+
+    @classmethod
+    def from_user(cls, user: User, is_online: bool) -> "DoctorSelectionOut":
+        return cls(id=user.id, full_name=user.full_name, is_online=is_online)

@@ -5,7 +5,28 @@ of its kind for this module — register_visit/cancel_visit have never
 needed one of their own, since every failure they can produce already
 bubbles up from PatientService/VisitService/QueueService."""
 
-from app.core.exceptions import ConflictError
+from app.core.exceptions import ConflictError, NotFoundError
+
+
+class DoctorNotAvailableForAssignmentError(NotFoundError):
+    """Raised by ReceptionService.register_visit when an explicit
+    `doctor_user_id` (2026-08-24 addition — Reception's doctor-selection
+    dropdown, RegisterVisitForm.jsx) doesn't resolve via
+    ReceptionRepository.get_doctor_by_id: not a real user, not ACTIVE,
+    or not currently holding a role that grants `consultation:start`.
+    Deliberately raised rather than silently falling back to
+    auto-assignment — see that repository method's own docstring for
+    why substituting a different doctor than the one Reception
+    explicitly picked would be the wrong failure mode here."""
+
+    code = "DOCTOR_NOT_AVAILABLE_FOR_ASSIGNMENT"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The selected doctor is not available for assignment — they may no longer "
+            "hold doctor permissions or their account may be inactive. Leave the doctor "
+            "field blank to auto-assign, or choose a different doctor."
+        )
 
 
 class VisitHasSettledInvoiceError(ConflictError):

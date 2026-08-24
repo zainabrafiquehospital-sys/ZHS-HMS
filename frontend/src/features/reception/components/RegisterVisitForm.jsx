@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { registerVisitSchema } from '@/features/reception/schemas/registerVisitSchema';
-import { useRegisterVisit } from '@/features/reception/hooks/useReception';
+import { useRegisterVisit, useDoctorsForSelection } from '@/features/reception/hooks/useReception';
 import { patientsService } from '@/features/patients/api/patientsService';
 import {
   ProcedureItemsEditor,
@@ -34,6 +34,7 @@ const DEFAULT_VALUES = {
     address: '',
   },
   vitalsRequired: false,
+  doctorUserId: '',
   discountAmount: '',
   discountReason: '',
   paymentMethod: '',
@@ -66,6 +67,11 @@ function buildPayload(values, applyDiscount, procedureItems, netAmount, isPartia
       : null,
     procedures: procedureItems.map(procedureItemToRequestPayload),
     vitals_required: values.vitalsRequired,
+    // Blank (the default) leaves the field out of the payload as
+    // `null` — auto-assignment, exactly today's behavior. A selection
+    // sends that doctor's id and bypasses it server-side (see
+    // ReceptionService.register_visit's own docstring).
+    doctor_user_id: values.doctorUserId || null,
     // Belt-and-suspenders with handleApplyDiscountToggle's own
     // clearing (below): even if a stale value somehow survived, an
     // unticked checkbox always sends no discount at all.
@@ -79,6 +85,9 @@ function buildPayload(values, applyDiscount, procedureItems, netAmount, isPartia
 export function RegisterVisitForm({ onRegistered }) {
   const { toast } = useToast();
   const registerVisit = useRegisterVisit();
+  const { doctors } = useDoctorsForSelection();
+  const onlineDoctors = doctors.filter((doctor) => doctor.is_online);
+  const offlineDoctors = doctors.filter((doctor) => !doctor.is_online);
   const {
     register,
     handleSubmit,
@@ -337,6 +346,45 @@ export function RegisterVisitForm({ onRegistered }) {
               </label>
             )}
           />
+
+          {/* Optional doctor selection (2026-08-24 addition) — blank
+              (the default, first/highlighted option) preserves exactly
+              today's behavior: auto-assign the least-busy online
+              doctor, or leave unassigned if none is online (see
+              ReceptionService.register_visit's own docstring).
+              Online doctors group first, so the common case (picking
+              among whoever is on duty right now) never requires
+              scrolling — but every consultation-capable doctor is
+              still reachable via the "Offline" group below it, so
+              Reception is never blocked from routing to a specific
+              doctor just because they're temporarily logged out. */}
+          <div className="flex flex-col gap-1.5 sm:w-72">
+            <Label htmlFor="doctorUserId">Assign to Doctor (optional)</Label>
+            <Select id="doctorUserId" defaultValue="" {...register('doctorUserId')}>
+              <option value="">Auto-assign (recommended)</option>
+              {onlineDoctors.length > 0 ? (
+                <optgroup label="Online">
+                  {onlineDoctors.map((doctor) => (
+                    <option key={doctor.id} value={doctor.id}>
+                      {doctor.full_name}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              {offlineDoctors.length > 0 ? (
+                <optgroup label="Offline">
+                  {offlineDoctors.map((doctor) => (
+                    <option key={doctor.id} value={doctor.id}>
+                      {doctor.full_name} (Offline)
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+            </Select>
+            {errors.doctorUserId ? (
+              <p className="text-xs text-destructive">{errors.doctorUserId.message}</p>
+            ) : null}
+          </div>
 
           {/* Optional flat discount off the procedures' combined total
               (2026-08-19 addition) — same toggle shape as the "Vitals

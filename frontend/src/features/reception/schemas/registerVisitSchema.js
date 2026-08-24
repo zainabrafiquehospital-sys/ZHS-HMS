@@ -30,8 +30,14 @@ const nonNegativeAmount = z
     message: 'Amount must be zero or greater',
   });
 
-// No doctor-selection field at all — doctor assignment is always
-// automatic (Phase 6 fast-registration §4), never a receptionist choice.
+// doctorUserId (2026-08-24 addition) — optional; blank (the default and
+// still the common case) preserves auto-assignment exactly as before
+// (Phase 6 fast-registration §4). An explicit selection, from
+// RegisterVisitForm.jsx's doctor dropdown, bypasses it. No format/
+// presence validation here beyond "a string" — an invalid or stale id
+// is rejected server-side (DoctorNotAvailableForAssignmentError), the
+// same "let the backend be the source of truth" convention
+// existingPatientId's own id already follows.
 // discountAmount/discountReason (2026-08-19 addition) — an optional
 // flat discount off the procedures' combined total, applied at
 // registration time; reason is always optional here, same product
@@ -66,6 +72,7 @@ export const registerVisitSchema = z
     existingPatientLabel: z.string().optional(),
     newPatient: newPatientSchema.optional(),
     vitalsRequired: z.boolean().default(false),
+    doctorUserId: z.string().optional(),
     discountAmount: nonNegativeAmount,
     discountReason: z.string().max(200).optional(),
     paymentMethod: z.string().min(1, 'Select a payment method'),

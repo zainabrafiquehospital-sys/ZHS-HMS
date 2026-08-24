@@ -139,6 +139,25 @@ export function useClearMyRevenue() {
   });
 }
 
+/** Doctors eligible for RegisterVisitForm.jsx's optional "Assign to
+ * Doctor" dropdown, each tagged `is_online` (backend: ReceptionRepository.
+ * list_doctors_for_selection — the identical online definition
+ * find_least_busy_available_doctor's own auto-assignment already uses,
+ * see that method's docstring). Short refetch interval, matching the
+ * Doctor queue's own 15s polling (DoctorQueueList.jsx) — online status
+ * is a live, session-based signal that can flip at any moment as
+ * doctors log in/out, so a stale list would misrepresent who Reception
+ * can actually reach right now more than most other cached reads
+ * would. */
+export function useDoctorsForSelection() {
+  const query = useQuery({
+    queryKey: ['reception', 'doctors'],
+    queryFn: () => receptionService.listDoctorsForSelection().then((res) => res.data),
+    refetchInterval: 15000,
+  });
+  return { ...query, doctors: query.data ?? [] };
+}
+
 /** Fetches the registration slip as an HTML document and opens it in a
  * new tab for printing, mirroring the Billing receipt print flow — see
  * receptionService.fetchRegistrationSlipHtml's docstring. Printing

@@ -42,4 +42,12 @@ export const receptionService = {
   fetchRegistrationSlipHtml(visitId) {
     return httpClient.get(`/reception/visits/${visitId}/slip/print`, { responseType: 'text' });
   },
+
+  // Doctor-selection dropdown (2026-08-24 addition) — RegisterVisitForm.jsx's
+  // optional "Assign to Doctor" field. Minimal shape only (id/full_name/
+  // is_online) — see backend DoctorSelectionOut's own docstring for why
+  // this is a purpose-built endpoint, not the admin GET /users list.
+  listDoctorsForSelection() {
+    return httpClient.get('/reception/doctors');
+  },
 };

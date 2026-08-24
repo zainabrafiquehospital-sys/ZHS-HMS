@@ -42,6 +42,13 @@ def _auth_header(access_token: str) -> dict:
 
 
 async def _make_visit(reception_service, doctor, suffix: str, vitals_required: bool):
+    """`doctor` is only ever the registering *actor* here, not a real
+    doctor account (nothing in this file grants it `consultation:start`)
+    — so the Visit is left unassigned (`doctor_user_id=None`) rather
+    than explicitly assigned to it: an explicit assignment is now
+    validated server-side (ReceptionRepository.get_doctor_by_id) and
+    would correctly reject a non-doctor id. No test in this file
+    depends on the Visit's own `doctor_user_id`."""
     _patient, visit, _entry = await reception_service.register_visit(
         actor=doctor,
         patient_id=None,
@@ -54,7 +61,7 @@ async def _make_visit(reception_service, doctor, suffix: str, vitals_required: b
             "cnic": None,
             "address": None,
         },
-        doctor_user_id=doctor.id,
+        doctor_user_id=None,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=vitals_required,
         initial_payment_amount=Decimal("0.01"),

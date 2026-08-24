@@ -45,11 +45,21 @@ def _auth_header(access_token: str) -> dict:
     return {"Authorization": f"Bearer {access_token}"}
 
 
-async def _make_visit(reception_service, doctor, suffix: str):
+async def _make_visit(reception_service, doctor, suffix: str, *, assign_to_doctor: bool = True):
     """Goes through ReceptionService — see
     tests/test_consultation_service.py's identical helper docstring for
     why VisitService.register_visit alone is not enough (no QueueEntry
-    would ever be created)."""
+    would ever be created).
+
+    `assign_to_doctor=False` (2026-08-24 addition) leaves the Visit
+    unassigned instead of pre-assigning it to `doctor` — for tests that
+    deliberately exercise a doctor who does *not* hold
+    `consultation:start` (e.g. test_start_consultation_without_permission_
+    is_forbidden): explicit assignment is now validated server-side
+    (ReceptionRepository.get_doctor_by_id) and rejects exactly such a
+    doctor, which is correct for real registration but wrong for this
+    kind of test, whose actual assertion is about the HTTP-layer
+    permission check on `POST /consultations`, not about registration."""
     _patient, visit, _entry = await reception_service.register_visit(
         actor=doctor,
         patient_id=None,
@@ -62,7 +72,7 @@ async def _make_visit(reception_service, doctor, suffix: str):
             "cnic": None,
             "address": None,
         },
-        doctor_user_id=doctor.id,
+        doctor_user_id=doctor.id if assign_to_doctor else None,
         procedures=[(None, "Consultation", Decimal("1500.00"))],
         vitals_required=False,
         initial_payment_amount=Decimal("0.01"),
@@ -80,7 +90,7 @@ async def test_start_consultation_without_permission_is_forbidden(
     api_client, real_session, reception_service
 ):
     doctor, access_token = await _create_and_login(api_client, real_session, "no-perm-start")
-    visit = await _make_visit(reception_service, doctor, "A")
+    visit = await _make_visit(reception_service, doctor, "A", assign_to_doctor=False)
 
     resp = await api_client.post(
         "/api/v1/consultations",

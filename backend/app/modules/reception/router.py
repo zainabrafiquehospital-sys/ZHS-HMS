@@ -3,9 +3,11 @@ visit" and "cancel a visit" actions (Phase 6 architecture §6), the
 fast-registration slip print endpoint (§6/§7), admin-only "update"/
 "delete" data-correction actions for a mistakenly-entered visit (see
 AdminUpdateVisitRequest's and ReceptionService.admin_delete_visit's own
-docstrings), and (2026-08-19 addition) a receptionist's own "My Revenue"
+docstrings), (2026-08-19 addition) a receptionist's own "My Revenue"
 read/clear actions — see ReceptionRevenueOut's and ReceptionService.
-get_own_revenue's own docstrings."""
+get_own_revenue's own docstrings — and (2026-08-24 addition) a
+doctor-selection read endpoint for RegisterVisitForm.jsx's optional
+doctor dropdown — see DoctorSelectionOut's own docstring."""
 
 from uuid import UUID
 
@@ -33,6 +35,7 @@ from app.modules.reception.schemas import (
     AdminUpdateVisitResponse,
     CancelVisitRequest,
     ClearRevenueResponse,
+    DoctorSelectionOut,
     ReceptionRevenueOut,
     RegisterVisitRequest,
     RegisterVisitResponse,
@@ -58,10 +61,8 @@ async def register_visit(
         actor=actor,
         patient_id=payload.patient_id,
         new_patient=payload.new_patient.model_dump() if payload.new_patient else None,
-        doctor_user_id=None,
-        procedures=[
-            (item.procedure_id, item.name, item.amount) for item in payload.procedures
-        ],
+        doctor_user_id=payload.doctor_user_id,
+        procedures=[(item.procedure_id, item.name, item.amount) for item in payload.procedures],
         vitals_required=payload.vitals_required,
         initial_payment_amount=payload.initial_payment_amount,
         initial_payment_method=payload.initial_payment_method,
@@ -75,6 +76,29 @@ async def register_visit(
         queue_entry=QueueEntryOut.from_entry(queue_entry),
     )
     return success_envelope(response.model_dump(mode="json"))
+
+
+@router.get("/doctors")
+async def list_doctors_for_selection(
+    reception_service: ReceptionService = Depends(get_reception_service),
+    _actor: User = Depends(require_permission(PERMISSION_RECEPTION_REGISTER_VISIT)),
+) -> dict:
+    """Backs RegisterVisitForm.jsx's optional doctor-selection dropdown
+    (2026-08-24 addition) — reuses `reception:register_visit` rather
+    than a dedicated permission, the same "every receptionist already
+    holds the base front-desk permission" reasoning `GET /reception/
+    revenue` already established (see reception/constants.py's own
+    docstring). Deliberately not `GET /users`: that endpoint is gated
+    on the admin-only `users:read` permission and returns the full
+    admin user-management shape — this returns only id/name/online
+    status, exactly what a selection dropdown needs and nothing else
+    (see DoctorSelectionOut's own docstring)."""
+    doctors = await reception_service.list_doctors_for_selection()
+    body = [
+        DoctorSelectionOut.from_user(user, is_online).model_dump(mode="json")
+        for user, is_online in doctors
+    ]
+    return success_envelope(body)
 
 
 @router.get("/visits/{visit_id}/slip/print", response_class=HTMLResponse)
@@ -215,9 +239,13 @@ async def get_own_revenue(
     reception_service: ReceptionService = Depends(get_reception_service),
     actor: User = Depends(require_permission(PERMISSION_RECEPTION_REGISTER_VISIT)),
 ) -> dict:
-    visits_count, visits_revenue, medicine_count, medicine_revenue, cleared_at = (
-        await reception_service.get_own_revenue(actor=actor)
-    )
+    (
+        visits_count,
+        visits_revenue,
+        medicine_count,
+        medicine_revenue,
+        cleared_at,
+    ) = await reception_service.get_own_revenue(actor=actor)
     body = ReceptionRevenueOut(
         visits_count=visits_count,
         visits_revenue=visits_revenue,
