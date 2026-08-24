@@ -115,11 +115,22 @@ def _to_local_time(moment: datetime, zone_name: str) -> datetime:
 # three independently-drifting copies (which is exactly how the pre-
 # redesign templates ended up inconsistent: render_invoice_receipt never
 # received the header/title-box treatment its two siblings did). The
-# sheet is deliberately narrower than the physical 80mm roll (76mm) —
-# @page itself claims the full 80mm, and the 2mm gap that leaves on each
-# side (via the centered flex body, not a page margin) is the safety
-# buffer against a thermal printer's own unprintable hardware edge; see
-# `_RECEIPT_STYLE`'s own `@page` rule.
+# sheet is deliberately narrower than the physical 80mm roll (72mm,
+# 2026-08-24 correction below) — @page itself claims the full 80mm, and
+# the gap that leaves on each side (via the centered flex body, not a
+# page margin) is the safety buffer against a thermal printer's own
+# unprintable hardware edge; see `_RECEIPT_STYLE`'s own `@page` rule.
+#
+# 2026-08-24 correction: the original redesign used 76mm here, sized as
+# a rendering-only safety margin against the nominal 80mm roll width. A
+# live production printer clipped everything past its real printable
+# boundary (content anchored correctly on the left, lost on the right)
+# — 76mm was still too wide for that printer's actual printable area.
+# 72mm is the standard safe printable width widely used for 80mm
+# thermal roll printers (most hardware reserves a few mm of unprintable
+# margin on each edge beyond the nominal 80mm), so `.sheet` now targets
+# that real boundary directly rather than an arbitrary rendering
+# buffer. See the `.sheet` rule itself for the width/padding math.
 # ---------------------------------------------------------------------
 
 _RECEIPT_STYLE = """
@@ -142,16 +153,27 @@ _RECEIPT_STYLE = """
     display: flex;
     justify-content: center;
   }
+  /* .sheet width math (2026-08-24 correction): 72mm total outer width
+     (border-box, so this includes padding and the 1px border) matches
+     a real 80mm thermal printer's confirmed printable boundary — the
+     prior 76mm overshot that boundary by 4mm and a live printer
+     dropped everything past it on the right rather than wrapping or
+     scaling. Left/right padding narrows from 3mm to 2mm each (only the
+     horizontal figure changes; top/bottom are unaffected), so content
+     width shrinks from ~69.5mm to ~67.5mm (72 - 2*2mm padding - ~0.5mm
+     for the two 1px borders) — a ~2mm-narrower column, not the full
+     4mm the outer width dropped by, since less padding was given back
+     to content on purpose. */
   .sheet {
-    width: 76mm;
+    width: 72mm;
     background: #ffffff;
     border: 1px solid #dddddd;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-    padding: 3mm 3mm 4mm;
+    padding: 3mm 2mm 4mm;
   }
 
   /* ---------- Header — stacked/centered, not the old 3-column grid,
-     since there is no room at 76mm for a logo, a centered name, and a
+     since there is no room at 72mm for a logo, a centered name, and a
      right-aligned contact block to sit side by side. ---------- */
   .header {
     display: flex;
@@ -192,7 +214,7 @@ _RECEIPT_STYLE = """
 
   /* ---------- Title box — label above token (stacked), not
      side-by-side: a long label plus a token both fit comfortably at
-     76mm only when stacked, and stacking reads like a real ticket
+     72mm only when stacked, and stacking reads like a real ticket
      stub. Monospace on the token now applies uniformly across all
      three documents (previously only the medicine slip had it). ---------- */
   .title-box {
@@ -381,10 +403,11 @@ _RECEIPT_STYLE = """
      how short the content is, which is exactly what left a large blank
      trailing section on the roll below the receipt. `auto` sizes the
      printed page to the content's own height instead.
-     `margin: 0` gives the full 80mm to the page; .sheet's own 76mm
+     `margin: 0` gives the full 80mm to the page; .sheet's own 72mm
      width (unchanged from the screen-preview rule above — one width,
-     not a print-specific override) is what leaves the ~2mm-per-side
-     safety gap against the printer's own unprintable edge. ---------- */
+     not a print-specific override) is what keeps content inside the
+     printer's real printable boundary — see the `.sheet` rule's own
+     width/padding math. ---------- */
   @page { size: 80mm auto; margin: 0; }
   @media print {
     * {
@@ -831,7 +854,7 @@ def render_medicine_bill_receipt(
     `MedicineBillItem`'s docstring) — this function renders exactly what
     was billed, never re-reads the live price list. 2026-08-24 redesign:
     the old 5-column table (Medicine/Category/Qty/Unit Price/Line Total)
-    cannot fit legibly at 76mm — each item is now its own row, the
+    cannot fit legibly at 72mm — each item is now its own row, the
     medicine name on its own line (wrapping naturally if long) and a
     small muted second line underneath carrying category/quantity/unit
     price (`"Tablet · 2 × 50.00"`), with the line total right-aligned

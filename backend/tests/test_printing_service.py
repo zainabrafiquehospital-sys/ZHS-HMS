@@ -463,7 +463,7 @@ def test_registration_slip_itemized_procedures_use_flex_item_rows_not_a_table():
 
 def test_medicine_bill_receipt_items_use_flex_item_rows_with_meta_line():
     """The old 5-column table (Medicine/Category/Qty/Unit Price/Line
-    Total) cannot fit at 76mm — every field still renders, just as a
+    Total) cannot fit at 72mm — every field still renders, just as a
     name line plus a small muted meta line underneath instead of four
     more table columns."""
     html_document = _render_bill(
@@ -483,7 +483,7 @@ def test_medicine_bill_receipt_items_use_flex_item_rows_with_meta_line():
 def test_registration_slip_reference_sections_are_stacked_not_a_column_grid():
     """The old .body-grid 2-column layout (Patient Information beside
     Visit Details) is gone — both are now stacked .section blocks, one
-    after another, which is what a narrow 76mm column requires."""
+    after another, which is what a narrow 72mm column requires."""
     html_document = _render_slip()
 
     assert 'class="body-grid"' not in html_document
