@@ -392,3 +392,119 @@ def test_slip_fully_settled_after_multiple_payments_shows_no_payment_strip():
 
     assert '<div class="payment-strip">' not in html_document
     assert "Pending" not in html_document
+
+
+# ---------------------------------------------------------------------
+# 80mm thermal-receipt redesign (2026-08-24) — replaces the previous
+# A4/half-A4 layout entirely. `@page { size: 80mm auto; margin: 0; }`
+# is the actual fix for the reported bug (a fixed A4 page length left a
+# large blank trailing section on the roll below the real content); the
+# item-row/payment-row markup is the content-structure side of the same
+# redesign — narrow flex rows instead of a wide <table>/grid, so a long
+# item name wraps in place instead of forcing a squeezed table column.
+# Applies identically to all three documents.
+# ---------------------------------------------------------------------
+
+
+def test_invoice_receipt_uses_80mm_auto_height_page_size():
+    html_document = _render()
+
+    assert "size: 80mm auto" in html_document
+    assert "size: A4" not in html_document
+
+
+def test_registration_slip_uses_80mm_auto_height_page_size():
+    html_document = _render_slip()
+
+    assert "size: 80mm auto" in html_document
+    assert "size: A4" not in html_document
+
+
+def test_medicine_bill_receipt_uses_80mm_auto_height_page_size():
+    html_document = _render_bill()
+
+    assert "size: 80mm auto" in html_document
+    assert "size: A4" not in html_document
+
+
+def test_invoice_receipt_now_shares_the_header_and_title_box():
+    """render_invoice_receipt previously had no logo/header/title-box at
+    all (a plain Arial h1 + <table>, the one document left behind when
+    its two siblings got the grayscale-receipt treatment) — this
+    redesign brings it up to the same shared layout."""
+    html_document = _render()
+
+    assert 'class="header"' in html_document
+    assert 'class="title-box"' in html_document
+    # visit_queue_token is the prominent title-box token now, not the
+    # full invoice_id (a raw UUID far too long for that slot).
+    assert "GYN-000001" in html_document
+    assert "Invoice Ref" in html_document
+    assert "11111111" in html_document  # the shortened invoice_id reference row
+
+
+def test_invoice_receipt_line_items_use_flex_item_rows_not_a_table():
+    html_document = _render()
+
+    assert 'class="item-row"' in html_document
+    assert "<table>" not in html_document
+    assert "<thead>" not in html_document
+
+
+def test_registration_slip_itemized_procedures_use_flex_item_rows_not_a_table():
+    html_document = _render_slip(
+        visit_amount=Decimal("800.00"),
+        visit_procedure_items=[("Checkup", Decimal("800.00"))],
+    )
+
+    assert 'class="item-row"' in html_document
+    assert "<table>" not in html_document
+
+
+def test_medicine_bill_receipt_items_use_flex_item_rows_with_meta_line():
+    """The old 5-column table (Medicine/Category/Qty/Unit Price/Line
+    Total) cannot fit at 76mm — every field still renders, just as a
+    name line plus a small muted meta line underneath instead of four
+    more table columns."""
+    html_document = _render_bill(
+        line_items=[("Panadol Extra", "tablet", 2, Decimal("50.00"), Decimal("100.00"))],
+    )
+
+    assert 'class="item-row"' in html_document
+    assert 'class="item-meta"' in html_document
+    assert "Panadol Extra" in html_document
+    assert "Tablet" in html_document  # category, title-cased as before
+    assert "2" in html_document  # quantity
+    assert "50.00" in html_document  # unit price
+    assert "100.00" in html_document  # line total
+    assert "<table>" not in html_document
+
+
+def test_registration_slip_reference_sections_are_stacked_not_a_column_grid():
+    """The old .body-grid 2-column layout (Patient Information beside
+    Visit Details) is gone — both are now stacked .section blocks, one
+    after another, which is what a narrow 76mm column requires."""
+    html_document = _render_slip()
+
+    assert 'class="body-grid"' not in html_document
+    assert html_document.count('class="section"') >= 1
+
+
+def test_medicine_bill_receipt_reference_rows_are_stacked_not_a_column_grid():
+    html_document = _render_bill(
+        patient_full_name="Jane Doe", patient_age_years=30, patient_phone_number="03001234567"
+    )
+
+    assert 'class="body-grid"' not in html_document
+
+
+def test_registration_slip_partial_payment_strip_rows_are_stacked():
+    """The Total/Received/Pending strip is stacked rows now, not the
+    old 3-column grid — each figure is its own .payment-row."""
+    html_document = _render_slip(
+        visit_amount=Decimal("50000.00"),
+        visit_amount_paid=Decimal("20000.00"),
+        visit_payment_status="partially_paid",
+    )
+
+    assert html_document.count('class="payment-row') == 3

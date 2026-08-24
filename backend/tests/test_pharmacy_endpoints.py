@@ -446,11 +446,12 @@ async def test_print_bill_omits_mr_number_and_queue_token_rows(
     assert print_resp.status_code == 200
     assert "MR Number" not in print_resp.text
     assert "Queue Token" not in print_resp.text
-    # The reference section's rows are still there, just fewer and
-    # 2-column now.
+    # The reference section's rows are still there, just fewer — and,
+    # since the 2026-08-24 80mm-receipt redesign, stacked in a single
+    # column (class="section") rather than the old 2-column body-grid.
     assert "Patient Name" in print_resp.text
     assert "Contact Number" in print_resp.text
-    assert "body-grid" in print_resp.text
+    assert 'class="section"' in print_resp.text
 
 
 async def test_create_bill_with_manual_patient_details_prints_correctly(

@@ -316,8 +316,16 @@ async def test_register_visit_discount_exceeding_amount_rejected(
 async def test_print_registration_slip_with_discount_shows_lines_in_correct_order(
     api_client, real_session, grant_permission
 ):
-    """The printed slip must show, in order: the original (pre-discount)
-    amount, then the Discount line, then the final Net Amount."""
+    """The printed slip must show, in order: the pre-discount Total
+    Amount, then the Discount line, then the final Net Amount. Every
+    visit registered through this HTTP endpoint is itemized (2026-08-21
+    addition — `procedures` always produces at least one
+    `VisitProcedureItem`), so this exercises the itemized totals block,
+    not the legacy single-"Amount"-row layout (that layout is only ever
+    reachable for a visit that predates itemized procedures entirely,
+    which this HTTP flow can never produce — see
+    test_printing_service.py for direct, unit-level coverage of the
+    legacy layout's own line ordering)."""
     actor, access_token = await _create_and_login(api_client, real_session, "discount-print-order")
     await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
 
@@ -346,10 +354,10 @@ async def test_print_registration_slip_with_discount_shows_lines_in_correct_orde
     assert "Discount (Staff discount)" in html
     assert "1,700.00" in html
 
-    amount_idx = html.index(">Amount<")
+    total_idx = html.index("Total Amount")
     discount_idx = html.index("Discount (Staff discount)")
     net_idx = html.index("Net Amount")
-    assert amount_idx < discount_idx < net_idx
+    assert total_idx < discount_idx < net_idx
 
 
 async def test_print_registration_slip_without_discount_omits_discount_line(

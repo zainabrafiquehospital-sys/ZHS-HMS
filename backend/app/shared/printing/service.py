@@ -21,7 +21,27 @@ printer, to a system "Save as PDF" driver, or to a thermal-printer
 driver) via the browser's native print pipeline — the same mechanism
 most real hospital front-desk software actually relies on for receipt
 printing. Adding a server-side PDF renderer later is additive (a new
-method here), not a redesign of this service's boundary."""
+method here), not a redesign of this service's boundary.
+
+Layout (2026-08-24 redesign — narrow thermal receipt, replacing the
+previous A4/half-A4 design): this hospital exclusively prints on an
+80mm continuous-roll thermal printer, not A4 — every one of the three
+templates below (`render_registration_slip`, `render_invoice_receipt`,
+`render_medicine_bill_receipt`) shares one 80mm portrait "receipt"
+layout, built around `_RECEIPT_STYLE` and the shared header/title-box/
+row helpers just below. `@page {{ size: 80mm auto; margin: 0; }}` is
+the specific fix for the previous bug (a fixed A4-length page left a
+large blank trailing section on the roll below the actual content,
+since the browser reserved the *declared* page length regardless of
+how short the content was) — `auto` tells the print engine to size the
+page to the content's own height instead of a fixed length. Every
+field this module rendered before this redesign still renders — this
+is a restructuring of *how* fields are arranged (stacked rows instead
+of side-by-side columns, flex item-rows instead of a wide `<table>`),
+never a change to *which* fields exist or their underlying values.
+Still grayscale-only (borders/dividers/typography carry the document,
+no filled color blocks) — that principle predates and is unaffected by
+this redesign."""
 
 import base64
 import html
@@ -40,120 +60,6 @@ def _escape(value: str) -> str:
 
 def _money(amount: Decimal) -> str:
     return f"{amount:,.2f}"
-
-
-def render_invoice_receipt(
-    *,
-    hospital_name: str,
-    patient_full_name: str,
-    patient_mr_number: str,
-    visit_queue_token: str,
-    visit_procedure: str,
-    invoice_id: str,
-    invoice_status: str,
-    invoice_created_at: datetime,
-    line_items: list[tuple[str, Decimal]],
-    total_amount: Decimal,
-    amount_paid: Decimal,
-    discount_amount: Decimal = Decimal("0.00"),
-    discount_reason: str | None = None,
-    payment_methods: list[str] | None = None,
-) -> str:
-    """Renders a single-page, print-ready HTML receipt for one Invoice.
-    Every dynamic value is HTML-escaped — this document assembles
-    patient- and doctor-supplied free text (names, procedure,
-    descriptions) directly into markup, so unescaped interpolation would
-    be a stored-XSS vector the moment this HTML is ever opened in a
-    browser (which is its entire purpose).
-
-    Leads with the four-line mental model every workspace screen now
-    shares (2026-08-19 revision, adding the third line below — the
-    original three-line version left the actual post-discount total
-    only implied by Received+Pending, never shown as its own line):
-    **Total Amount** (the pre-discount subtotal — `total_amount` is
-    already post-discount on the stored Invoice, see
-    BillingService.generate_invoice's docstring, so this recovers it as
-    `total_amount + discount_amount` rather than storing it twice),
-    **Discount** (only shown when actually applied — `discount_amount
-    == 0` means the row is fully absent, never a zero line), **Net
-    Amount** (the actual bottom-line total after discount — exactly the
-    stored `total_amount`, always shown, the visually emphasized row
-    now that it is the true bottom line rather than the pre-discount
-    subtotal above it), then **Received**/**Pending** (`amount_paid` /
-    `total_amount - amount_paid`).
-
-    `payment_methods` (2026-08-19 addition) is the caller-computed list
-    of *distinct* methods across every `InvoicePayment` on this Invoice,
-    in first-payment order (see billing/router.py's `print_invoice`,
-    which builds it with `dict.fromkeys` rather than a plain `set` to
-    preserve that order) — rendered as one "Paid via: Cash, JazzCash"
-    summary line next to Received, not a full itemized per-payment
-    breakdown (this receipt has always summarized Received as one
-    number; a partial cash payment now and a bank transfer later still
-    show as a single combined Received total, just with both methods
-    named). Omitted entirely when empty (nothing paid yet)."""
-    pending = total_amount - amount_paid
-    subtotal = total_amount + discount_amount
-    rows = "".join(
-        f"<tr><td>{_escape(description)}</td>" f"<td class='amount'>{_money(amount)}</td></tr>"
-        for description, amount in line_items
-    )
-    discount_row = ""
-    if discount_amount > 0:
-        discount_label = "Discount"
-        if discount_reason:
-            discount_label = f"Discount ({_escape(discount_reason)})"
-        discount_row = (
-            f"<tr><td>{discount_label}</td><td class='amount'>-{_money(discount_amount)}</td></tr>"
-        )
-    paid_via_row = ""
-    if payment_methods:
-        labels = ", ".join(PAYMENT_METHOD_LABELS.get(method, method) for method in payment_methods)
-        paid_via_row = f'<tr class="paid-via"><td colspan="2">Paid via: {_escape(labels)}</td></tr>'
-    return f"""<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Invoice Receipt — {_escape(visit_queue_token)}</title>
-<style>
-  body {{ font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 16px; }}
-  h1 {{ font-size: 18px; text-align: center; margin-bottom: 0; }}
-  .subtitle {{ text-align: center; color: #555; margin-top: 4px; }}
-  table {{ width: 100%; border-collapse: collapse; margin-top: 16px; }}
-  th, td {{ text-align: left; padding: 4px 0; }}
-  td.amount, th.amount {{ text-align: right; }}
-  .net-amount td {{ font-weight: bold; border-top: 1px solid #000; padding-top: 6px; }}
-  .paid-via td {{ font-size: 12px; color: #555; padding-top: 0; }}
-  .meta {{ margin-top: 12px; font-size: 13px; color: #333; }}
-  @media print {{ body {{ padding: 0; }} }}
-</style>
-</head>
-<body>
-  <h1>{_escape(hospital_name)}</h1>
-  <div class="subtitle">Invoice Receipt</div>
-  <div class="meta">
-    <div>Patient: {_escape(patient_full_name)} (MR: {_escape(patient_mr_number)})</div>
-    <div>Queue Token: {_escape(visit_queue_token)}</div>
-    <div>Procedure: {_escape(visit_procedure)}</div>
-    <div>Invoice ID: {_escape(invoice_id)}</div>
-    <div>Status: {_escape(invoice_status)}</div>
-    <div>Date: {invoice_created_at.strftime("%Y-%m-%d %H:%M")}</div>
-  </div>
-  <table>
-    <thead><tr><th>Description</th><th class="amount">Amount</th></tr></thead>
-    <tbody>
-      {rows}
-      <tr><td>Total Amount</td><td class="amount">{_money(subtotal)}</td></tr>
-      {discount_row}
-      <tr class="net-amount"><td>Net Amount</td><td class="amount">{_money(total_amount)}</td></tr>
-      <tr><td>Received</td><td class="amount">{_money(amount_paid)}</td></tr>
-      {paid_via_row}
-      <tr><td>Pending</td><td class="amount">{_money(pending)}</td></tr>
-    </tbody>
-  </table>
-</body>
-</html>
-"""
 
 
 # frontend/public/images/logo.png, resolved relative to this file rather
@@ -202,6 +108,480 @@ def _to_local_time(moment: datetime, zone_name: str) -> datetime:
     return moment.astimezone(ZoneInfo(zone_name))
 
 
+# ---------------------------------------------------------------------
+# Shared 80mm receipt building blocks (2026-08-24 addition) — every one
+# of the three render functions below is built from these, so the three
+# documents stay genuinely identical in structure/spirit rather than
+# three independently-drifting copies (which is exactly how the pre-
+# redesign templates ended up inconsistent: render_invoice_receipt never
+# received the header/title-box treatment its two siblings did). The
+# sheet is deliberately narrower than the physical 80mm roll (76mm) —
+# @page itself claims the full 80mm, and the 2mm gap that leaves on each
+# side (via the centered flex body, not a page margin) is the safety
+# buffer against a thermal printer's own unprintable hardware edge; see
+# `_RECEIPT_STYLE`'s own `@page` rule.
+# ---------------------------------------------------------------------
+
+_RECEIPT_STYLE = """
+  :root {
+    --ink: #111111;
+    --ink-soft: #555555;
+    --rule: #d0d0d0;
+    --rule-strong: #111111;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: 'Inter', -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: #eeeeee;
+  }
+  body {
+    padding: 16px 8px;
+    display: flex;
+    justify-content: center;
+  }
+  .sheet {
+    width: 76mm;
+    background: #ffffff;
+    border: 1px solid #dddddd;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    padding: 3mm 3mm 4mm;
+  }
+
+  /* ---------- Header — stacked/centered, not the old 3-column grid,
+     since there is no room at 76mm for a logo, a centered name, and a
+     right-aligned contact block to sit side by side. ---------- */
+  .header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+  }
+  .logo {
+    height: 30px;
+    width: auto;
+    object-fit: contain;
+    margin-bottom: 3px;
+  }
+  .identity .name {
+    font-size: 12.5px;
+    font-weight: 800;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    margin: 0;
+    line-height: 1.3;
+  }
+  .identity .tagline {
+    margin-top: 2px;
+    font-size: 8px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+  .contact-block {
+    margin-top: 5px;
+    font-size: 8px;
+    line-height: 1.55;
+    color: var(--ink-soft);
+  }
+  .contact-block strong { color: var(--ink); font-weight: 600; }
+  .header-rule { border: none; border-top: 1.5px solid var(--rule-strong); margin: 7px 0 8px; }
+
+  /* ---------- Title box — label above token (stacked), not
+     side-by-side: a long label plus a token both fit comfortably at
+     76mm only when stacked, and stacking reads like a real ticket
+     stub. Monospace on the token now applies uniformly across all
+     three documents (previously only the medicine slip had it). ---------- */
+  .title-box {
+    text-align: center;
+    border: 1px solid var(--rule-strong);
+    padding: 5px 8px;
+    margin-bottom: 9px;
+  }
+  .title-box .label {
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+  .title-box .token {
+    display: block;
+    margin-top: 2px;
+    font-size: 14px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    font-family: 'Courier New', Consolas, monospace;
+  }
+
+  /* ---------- Reference sections — a stacked column of label/value
+     rows, one section at a time (Patient Information, then Visit
+     Details, ...), never the old 2-column .body-grid. A dashed rule
+     between sections is the standard receipt convention for a soft
+     block break (a heavier solid rule is reserved for the totals
+     transition below, which carries more weight). ---------- */
+  .section { padding-top: 8px; margin-top: 8px; border-top: 1px dashed var(--rule); }
+  .section:first-child { padding-top: 0; margin-top: 0; border-top: none; }
+  /* .items is always a peer of .section, never the first block on the
+     sheet — same divider treatment, kept as its own single class
+     (rather than "section items" on one element) so it stays a plain,
+     unambiguous marker for "this is the item list", matching the
+     class name this module has always used for it. */
+  .items { padding-top: 8px; margin-top: 8px; border-top: 1px dashed var(--rule); }
+  .section-heading {
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    padding: 2px 0;
+  }
+  .row .label {
+    font-size: 9px;
+    font-weight: 500;
+    color: var(--ink-soft);
+    flex-shrink: 0;
+  }
+  .row .value {
+    font-size: 9.5px;
+    font-weight: 700;
+    text-align: right;
+    word-break: break-word;
+  }
+
+  /* ---------- Item rows — replaces every wide multi-column layout
+     (the medicine slip's old five-field row most of all): each item is
+     its own flex row, name left (wrapping naturally to a second line
+     if long, rather than a cramped cell forcing an ellipsis or a
+     squeezed column), amount right, pinned to the top so a wrapped
+     name never pushes the amount out of alignment. A second, smaller
+     muted line under the name (.item-meta) carries whatever else that
+     line item needs — quantity/unit price/category for medicines —
+     the same "name on one line, qty x price on the next" shape real
+     pharmacy receipts use. ---------- */
+  .item-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 3.5px 0;
+    border-bottom: 1px dotted var(--rule);
+  }
+  .item-row:last-child { border-bottom: none; }
+  .item-main { flex: 1; min-width: 0; }
+  .item-name {
+    font-size: 9.5px;
+    font-weight: 600;
+    word-break: break-word;
+  }
+  .item-meta {
+    font-size: 8px;
+    color: var(--ink-soft);
+    margin-top: 1px;
+  }
+  .item-amount {
+    flex-shrink: 0;
+    font-size: 9.5px;
+    font-weight: 700;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  /* ---------- Totals — replaces the old table footer: stacked rows,
+     a heavier rule ahead of the block (the "final answer" transition
+     deserves more visual weight than the dashed section breaks above),
+     and the bottom-line and outstanding-balance rows get real size/
+     weight emphasis rather than just a bold cell. ---------- */
+  .totals {
+    margin-top: 5px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--rule-strong);
+  }
+  .total-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 2px 0;
+    font-size: 9.5px;
+    font-weight: 600;
+    color: var(--ink-soft);
+  }
+  .total-row .amount { color: var(--ink); font-weight: 700; }
+  .total-row.pending { font-weight: 800; color: var(--ink); }
+  .total-row.pending .amount { font-size: 11px; }
+  .net-row {
+    display: flex;
+    justify-content: space-between;
+    padding-top: 6px;
+    margin-top: 4px;
+    border-top: 2px solid var(--rule-strong);
+    font-size: 13px;
+    font-weight: 800;
+    color: var(--ink);
+  }
+  .paid-via-row {
+    font-size: 8px;
+    color: var(--ink-soft);
+    padding-top: 3px;
+  }
+
+  /* ---------- Payment strip — the registration slip's own conditional
+     "genuine outstanding balance" callout (see that function's own
+     docstring); a standalone block rather than folded into .totals
+     since it is a rarer, worth-calling-out case, not a routine row
+     set. Stacked rows now, not the old 3-column grid. ---------- */
+  .payment-strip {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1.5px solid var(--rule-strong);
+  }
+  .payment-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 2px 0;
+  }
+  .payment-row .payment-label {
+    font-size: 8.5px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+  .payment-row .payment-value { font-size: 9.5px; font-weight: 700; }
+  .payment-row.pending .payment-value { font-size: 11.5px; font-weight: 800; }
+
+  /* ---------- Note ---------- */
+  .note {
+    margin-top: 9px;
+    padding-top: 7px;
+    border-top: 1px dashed var(--rule);
+  }
+  .note .note-label {
+    font-size: 8.5px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+  .note .note-text {
+    font-size: 8px;
+    line-height: 1.55;
+    color: var(--ink-soft);
+  }
+
+  /* ---------- Print — the actual fix for the reported bug: the
+     previous rule declared a fixed A-series page length regardless of
+     how short the content is, which is exactly what left a large blank
+     trailing section on the roll below the receipt. `auto` sizes the
+     printed page to the content's own height instead.
+     `margin: 0` gives the full 80mm to the page; .sheet's own 76mm
+     width (unchanged from the screen-preview rule above — one width,
+     not a print-specific override) is what leaves the ~2mm-per-side
+     safety gap against the printer's own unprintable edge. ---------- */
+  @page { size: 80mm auto; margin: 0; }
+  @media print {
+    * {
+      print-color-adjust: exact !important;
+      -webkit-print-color-adjust: exact !important;
+      color: #000000 !important;
+    }
+    html, body {
+      background: #ffffff !important;
+      padding: 0 !important;
+      color: #000000 !important;
+    }
+    .sheet {
+      border: none !important;
+      box-shadow: none !important;
+      color: #000000 !important;
+      background: #ffffff !important;
+    }
+    .logo { filter: grayscale(1); }
+  }
+"""
+
+
+def _row(label: str, value: str) -> str:
+    return (
+        f'<div class="row"><span class="label">{_escape(label)}</span>'
+        f'<span class="value">{_escape(value)}</span></div>'
+    )
+
+
+def _header_html(hospital_name: str) -> str:
+    """The masthead every one of the three documents opens with —
+    logo, hospital identity, contact block, then a rule. Centered/
+    stacked (not the old 3-column grid) — see `_RECEIPT_STYLE`'s own
+    `.header` comment."""
+    logo_data_uri = _logo_data_uri()
+    logo_html = (
+        f'<img class="logo" src="{logo_data_uri}" alt="{_escape(hospital_name)} logo">'
+        if logo_data_uri
+        else ""
+    )
+    return f"""
+    <div class="header">
+      {logo_html}
+      <div class="identity">
+        <p class="name">{_escape(hospital_name)}</p>
+        <div class="tagline">Gynecology &bull; Maternity &bull; Women's Care</div>
+      </div>
+      <div class="contact-block">
+        <div>Shalimar Link Road, Lahore</div>
+        <div><strong>International Standard Healthcare</strong></div>
+        <div>Open 24 Hours &middot; 0300-0430009</div>
+      </div>
+    </div>
+    <hr class="header-rule">
+"""
+
+
+def _title_box_html(label: str, token: str) -> str:
+    return f"""
+    <div class="title-box">
+      <span class="label">{_escape(label)}</span>
+      <span class="token">{_escape(token)}</span>
+    </div>
+"""
+
+
+def render_invoice_receipt(
+    *,
+    hospital_name: str,
+    patient_full_name: str,
+    patient_mr_number: str,
+    visit_queue_token: str,
+    visit_procedure: str,
+    invoice_id: str,
+    invoice_status: str,
+    invoice_created_at: datetime,
+    line_items: list[tuple[str, Decimal]],
+    total_amount: Decimal,
+    amount_paid: Decimal,
+    discount_amount: Decimal = Decimal("0.00"),
+    discount_reason: str | None = None,
+    payment_methods: list[str] | None = None,
+) -> str:
+    """Renders a print-ready HTML receipt for one Invoice. Every dynamic
+    value is HTML-escaped — this document assembles patient- and
+    doctor-supplied free text (names, procedure, descriptions) directly
+    into markup, so unescaped interpolation would be a stored-XSS vector
+    the moment this HTML is ever opened in a browser (which is its
+    entire purpose).
+
+    2026-08-24 redesign: brought up to the same shared 80mm receipt
+    layout `render_registration_slip`/`render_medicine_bill_receipt`
+    already use (see `_RECEIPT_STYLE`'s own module-level docstring) —
+    previously this was the one template left on a plain Arial/no-logo/
+    no-title-box layout while its two siblings got the grayscale-receipt
+    treatment. `visit_queue_token` (already a parameter) is now the
+    prominent title-box token, matching what the other two documents
+    show there; `invoice_id` (a full UUID, far too long for that slot)
+    moves to a shortened reference row instead, the same fallback
+    shortening `render_medicine_bill_receipt` already uses for a legacy
+    bill's own id (`bill_id.split("-")[0].upper()`).
+
+    Still leads with the four-line mental model every workspace screen
+    shares (2026-08-19 revision, adding the third line below — the
+    original three-line version left the actual post-discount total
+    only implied by Received+Pending, never shown as its own line):
+    **Total Amount** (the pre-discount subtotal — `total_amount` is
+    already post-discount on the stored Invoice, see
+    BillingService.generate_invoice's docstring, so this recovers it as
+    `total_amount + discount_amount` rather than storing it twice),
+    **Discount** (only shown when actually applied — `discount_amount
+    == 0` means the row is fully absent, never a zero line), **Net
+    Amount** (the actual bottom-line total after discount — exactly the
+    stored `total_amount`, always shown), then **Received**/**Pending**
+    (`amount_paid` / `total_amount - amount_paid`).
+
+    `payment_methods` (2026-08-19 addition) is the caller-computed list
+    of *distinct* methods across every `InvoicePayment` on this Invoice,
+    in first-payment order (see billing/router.py's `print_invoice`,
+    which builds it with `dict.fromkeys` rather than a plain `set` to
+    preserve that order) — rendered as one "Paid via: Cash, JazzCash"
+    summary line next to Received, not a full itemized per-payment
+    breakdown. Omitted entirely when empty (nothing paid yet)."""
+    pending = total_amount - amount_paid
+    subtotal = total_amount + discount_amount
+    short_invoice_id = invoice_id.split("-")[0].upper()
+
+    item_rows = "".join(
+        f"""
+      <div class="item-row">
+        <div class="item-main"><div class="item-name">{_escape(description)}</div></div>
+        <div class="item-amount">{_money(amount)}</div>
+      </div>"""
+        for description, amount in line_items
+    )
+
+    discount_row = ""
+    if discount_amount > 0:
+        discount_label = "Discount"
+        if discount_reason:
+            discount_label = f"Discount ({_escape(discount_reason)})"
+        discount_row = (
+            f'<div class="total-row"><span>{discount_label}</span>'
+            f'<span class="amount">-{_money(discount_amount)}</span></div>'
+        )
+    paid_via_row = ""
+    if payment_methods:
+        labels = ", ".join(PAYMENT_METHOD_LABELS.get(method, method) for method in payment_methods)
+        paid_via_row = f'<div class="paid-via-row">Paid via: {_escape(labels)}</div>'
+
+    reference_rows = "".join(
+        [
+            _row("Patient", f"{patient_full_name} (MR: {patient_mr_number})"),
+            _row("Procedure", visit_procedure),
+            _row("Invoice Ref", short_invoice_id),
+            _row("Status", invoice_status),
+            _row("Date", invoice_created_at.strftime("%Y-%m-%d %H:%M")),
+        ]
+    )
+
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Invoice Receipt — {_escape(visit_queue_token)}</title>
+<style>
+{_RECEIPT_STYLE}
+</style>
+</head>
+<body>
+  <div class="sheet">
+    {_header_html(hospital_name)}
+    {_title_box_html("Invoice Receipt", visit_queue_token)}
+
+    <div class="section">
+      {reference_rows}
+    </div>
+
+    <div class="section">
+      <div class="section-heading">Charges</div>
+      {item_rows}
+      <div class="totals">
+        <div class="total-row"><span>Total Amount</span><span class="amount">{_money(subtotal)}</span></div>
+        {discount_row}
+        <div class="net-row"><span>Net Amount</span><span>{_money(total_amount)}</span></div>
+        <div class="total-row"><span>Received</span><span class="amount">{_money(amount_paid)}</span></div>
+        {paid_via_row}
+        <div class="total-row pending"><span>Pending</span><span class="amount">{_money(pending)}</span></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+
 def render_registration_slip(
     *,
     hospital_name: str,
@@ -225,16 +605,13 @@ def render_registration_slip(
     fast-registration §6/§7) — printed immediately after a visit is
     registered, before any doctor may have been assigned yet.
 
-    Layout: A4, at most half a page (verified via a Playwright print-
-    height measurement, same technique/target as
-    `render_medicine_bill_receipt`'s own density pass — two slips fit
-    one printed A4 page), grayscale-only (borders/dividers/typography
-    only — no filled color blocks), matching a real front-desk
-    registration document rather than a receipt-roll ticket. Previous
-    revisions of this template targeted an 80mm thermal roll; this one
-    is intentionally A4-first per a later design pass — see this
-    module's docstring for why HTML (browser print pipeline), not a
-    server-side PDF, is still this build's chosen output format.
+    Layout (2026-08-24 redesign): this hospital prints exclusively on an
+    80mm continuous-roll thermal printer, not A4 — see this module's own
+    top-level docstring and `_RECEIPT_STYLE` for the shared 80mm receipt
+    layout every one of the three Central Print Service templates now
+    uses. Every field this slip has ever shown still renders; only the
+    arrangement changed (stacked reference sections instead of a
+    2-column grid, flex item-rows instead of a `<table>`).
 
     `assigned_doctor_full_name` is deliberately accepted but not
     rendered — the attending doctor is intentionally omitted from this
@@ -251,19 +628,15 @@ def render_registration_slip(
     between this slip's two possible layouts — a real, confirmed design
     decision, not a stopgap: a visit registered before 2026-08-21 has
     none at all (permanently — see app/modules/visits/models.py's
-    `VisitProcedureItem` docstring) and renders exactly as this
-    template always has, byte-for-byte: a single "Procedure" row, a
-    single "Amount" row, plus Discount/Net Amount rows when
-    `visit_discount_amount > 0` — this branch's output is completely
-    unchanged by this addition. A visit registered from 2026-08-21
-    onward always has at least one and instead renders a full itemized
-    `Procedure | Amount` table (mirroring
-    `render_medicine_bill_receipt`'s own `.items` table exactly), with
-    the row-based "Visit Details" section shrinking to just
-    "Registered On" — `visit_procedure`/`visit_amount` are still
-    accepted and still correct in this case (see that column's own
-    docstring) but are not displayed as a single row; the real,
-    itemized breakdown is.
+    `VisitProcedureItem` docstring) and renders the legacy shape — a
+    single "Procedure" row, a single "Amount" row, plus Discount/Net
+    Amount rows when `visit_discount_amount > 0`. A visit registered
+    from 2026-08-21 onward always has at least one and instead renders
+    a full itemized Procedure/Amount item list, with the "Visit
+    Details" section shrinking to just "Registered On" —
+    `visit_procedure`/`visit_amount` are still accepted and still
+    correct in this case (see that column's own docstring) but are not
+    displayed as a single row; the real, itemized breakdown is.
 
     `visit_discount_amount`/`visit_discount_reason` (2026-08-19
     addition) mirror `render_invoice_receipt`'s/
@@ -280,18 +653,14 @@ def render_registration_slip(
     are `None` for every visit that predates registration-charge
     payment tracking (see app/modules/visits/models.py's `Visit.
     payment_status` docstring) — in that case, and whenever the visit
-    is fully `paid`, this slip renders byte-for-byte as it always has,
-    with no payment strip at all (a deliberately conservative choice,
-    unlike `render_medicine_bill_receipt`'s own unconditional Received/
-    Pending rows — this slip only ever gains the extra strip when there
-    is a real, non-zero balance still owed, to protect the half-A4
-    budget for the overwhelmingly common full-payment case). Only when
-    `payment_status` is `partially_paid` (a genuine outstanding balance)
-    does a compact 3-column "Total | Received | Pending" strip appear
-    below the Patient/Visit Details section (and below the itemized
-    table, when present) — a single row, not three stacked full-width
-    ones, specifically to stay within the half-A4 budget alongside the
-    itemized table's own extra rows."""
+    is fully `paid`, this slip renders with no payment strip at all (a
+    deliberately conservative choice — this slip only ever gains the
+    extra strip when there is a real, non-zero balance still owed).
+    Only when `payment_status` is `partially_paid` (a genuine
+    outstanding balance) does a "Total / Received / Pending" strip
+    appear below the Patient/Visit Details section (and below the
+    itemized list, when present) — stacked rows, not the old 3-column
+    grid (see `_RECEIPT_STYLE`'s own `.payment-strip` comment)."""
     registered_on = _to_local_time(visit_created_at, display_timezone).strftime(
         "%d %b %Y, %I:%M %p"
     )
@@ -310,33 +679,11 @@ def render_registration_slip(
     if pending_amount is not None and pending_amount > 0:
         payment_strip = f"""
     <div class="payment-strip">
-      <div class="payment-cell">
-        <span class="payment-label">Total</span>
-        <span class="payment-value">{_money(visit_amount)}</span>
-      </div>
-      <div class="payment-cell">
-        <span class="payment-label">Received</span>
-        <span class="payment-value">{_money(visit_amount_paid)}</span>
-      </div>
-      <div class="payment-cell pending">
-        <span class="payment-label">Pending</span>
-        <span class="payment-value">{_money(pending_amount)}</span>
-      </div>
+      <div class="payment-row"><span class="payment-label">Total</span><span class="payment-value">{_money(visit_amount)}</span></div>
+      <div class="payment-row"><span class="payment-label">Received</span><span class="payment-value">{_money(visit_amount_paid)}</span></div>
+      <div class="payment-row pending"><span class="payment-label">Pending</span><span class="payment-value">{_money(pending_amount)}</span></div>
     </div>
 """
-
-    logo_data_uri = _logo_data_uri()
-    logo_html = (
-        f'<img class="logo" src="{logo_data_uri}" alt="{_escape(hospital_name)} logo">'
-        if logo_data_uri
-        else ""
-    )
-
-    def _row(label: str, value: str) -> str:
-        return (
-            f'<div class="row"><span class="label">{_escape(label)}</span>'
-            f'<span class="value">{_escape(value)}</span></div>'
-        )
 
     patient_rows = "".join(
         [
@@ -351,12 +698,16 @@ def render_registration_slip(
     if is_itemized:
         # The itemized layout — "Visit Details" shrinks to just
         # Registered On; the real Procedure/Amount breakdown lives in
-        # the full-width table below instead (see this function's own
+        # the item list below instead (see this function's own
         # docstring).
         visit_rows = _row("Registered On", registered_on)
 
         item_rows = "".join(
-            f"<tr><td>{_escape(name)}</td><td class='amount'>{_money(amount)}</td></tr>"
+            f"""
+      <div class="item-row">
+        <div class="item-main"><div class="item-name">{_escape(name)}</div></div>
+        <div class="item-amount">{_money(amount)}</div>
+      </div>"""
             for name, amount in visit_procedure_items
         )
         discount_row = ""
@@ -365,38 +716,24 @@ def render_registration_slip(
             if visit_discount_reason:
                 discount_label = f"Discount ({_escape(visit_discount_reason)})"
             discount_row = (
-                f'<tr><td>{discount_label}</td>'
-                f"<td class='amount'>-{_money(visit_discount_amount)}</td></tr>"
+                f'<div class="total-row"><span>{discount_label}</span>'
+                f'<span class="amount">-{_money(visit_discount_amount)}</span></div>'
             )
         items_section = f"""
     <div class="items">
-      <table>
-        <thead>
-          <tr>
-            <th>Procedure</th>
-            <th class="amount">Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          {item_rows}
-        </tbody>
-        <tfoot>
-          <tr>
-            <td>Total Amount</td>
-            <td class="amount">{_money(subtotal)}</td>
-          </tr>
-          {discount_row}
-          <tr class="net-amount">
-            <td>Net Amount</td>
-            <td class="amount">{_money(visit_amount)}</td>
-          </tr>
-        </tfoot>
-      </table>
+      <div class="section-heading">Procedures</div>
+      {item_rows}
+      <div class="totals">
+        <div class="total-row"><span>Total Amount</span><span class="amount">{_money(subtotal)}</span></div>
+        {discount_row}
+        <div class="net-row"><span>Net Amount</span><span>{_money(visit_amount)}</span></div>
+      </div>
     </div>
 """
     else:
-        # The legacy layout — completely unchanged from before this
-        # feature existed (see this function's own docstring).
+        # The legacy layout — same fields this template has always
+        # shown for a pre-2026-08-21 visit, now inside the shared
+        # stacked-section container instead of the old 2-column grid.
         visit_row_items = [
             _row("Procedure", visit_procedure),
             _row("Amount", _money(subtotal)),
@@ -417,314 +754,29 @@ def render_registration_slip(
 <meta charset="utf-8">
 <title>Registration Slip — {_escape(visit_queue_token)}</title>
 <style>
-  :root {{
-    --ink: #111111;
-    --ink-soft: #555555;
-    --rule: #d0d0d0;
-    --rule-strong: #111111;
-  }}
-  * {{ box-sizing: border-box; }}
-  html, body {{
-    margin: 0;
-    padding: 0;
-    font-family: 'Inter', -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-    color: var(--ink);
-    background: #eeeeee;
-  }}
-  body {{
-    padding: 28px 16px;
-    display: flex;
-    justify-content: center;
-  }}
-  .sheet {{
-    width: 100%;
-    max-width: 720px;
-    background: #ffffff;
-    border: 1px solid #dddddd;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-    padding: 32px 36px;
-  }}
-
-  /* ---------- Header ---------- */
-  /* ---------- Density pass (2026-08-21) ----------
-     Every margin/padding/font-size value below is deliberately smaller
-     than this template's own original (which predates the itemized-
-     procedures feature) — mirroring render_medicine_bill_receipt's own
-     2026-08-20 density pass exactly (same target values), verified via
-     the same Playwright print-height measurement technique: two slips
-     must fit one printed A4 page, and the new itemized table (when
-     present) pushed the un-tightened version over that budget. */
-  .header {{
-    display: grid;
-    grid-template-columns: auto 1fr auto;
-    align-items: center;
-    gap: 20px;
-    padding-bottom: 8px;
-  }}
-  .logo {{
-    height: 46px;
-    width: auto;
-    object-fit: contain;
-  }}
-  .identity {{ text-align: center; }}
-  .identity .name {{
-    font-size: 19px;
-    font-weight: 800;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    margin: 0;
-  }}
-  .identity .tagline {{
-    margin-top: 4px;
-    font-size: 10.5px;
-    font-weight: 600;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    color: var(--ink-soft);
-  }}
-  .contact-block {{
-    text-align: right;
-    font-size: 9.5px;
-    line-height: 1.5;
-    color: var(--ink-soft);
-    white-space: nowrap;
-  }}
-  .contact-block strong {{ color: var(--ink); font-weight: 600; }}
-  .header-rule {{ border: none; border-top: 2px solid var(--rule-strong); margin: 0 0 12px; }}
-
-  /* ---------- Title box ---------- */
-  .title-box {{
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    border: 1.5px solid var(--rule-strong);
-    padding: 6px 14px;
-    margin-bottom: 12px;
-  }}
-  .title-box .label {{
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-  }}
-  .title-box .token {{
-    font-size: 22px;
-    font-weight: 800;
-    letter-spacing: 1px;
-  }}
-
-  /* ---------- Body columns ---------- */
-  .body-grid {{
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 28px;
-  }}
-  .section-heading {{
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 6px;
-  }}
-  .section-heading .bar {{
-    width: 4px;
-    height: 13px;
-    background: var(--ink);
-    flex-shrink: 0;
-  }}
-  .section-heading .text {{
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-  }}
-  .row {{
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 12px;
-    padding: 4px 0;
-    border-bottom: 1px solid var(--rule);
-  }}
-  .row:last-child {{ border-bottom: none; }}
-  .row .label {{
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--ink-soft);
-    white-space: nowrap;
-  }}
-  .row .value {{
-    font-size: 13px;
-    font-weight: 700;
-    text-align: right;
-  }}
-
-  /* ---------- Itemized table (2026-08-21 addition) ----------
-     Reuses render_medicine_bill_receipt's own already-verified
-     .items/table/thead/tbody/tfoot structure exactly — only rendered
-     when this visit has real VisitProcedureItem rows (see this
-     function's own docstring for the legacy-vs-itemized switch). */
-  .items {{ margin-top: 8px; }}
-  table {{ width: 100%; border-collapse: collapse; }}
-  thead th {{
-    text-align: left;
-    font-size: 10.5px;
-    font-weight: 700;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    color: var(--ink-soft);
-    border-bottom: 1.5px solid var(--rule-strong);
-    padding: 0 0 4px;
-  }}
-  tbody td {{
-    font-size: 13px;
-    padding: 4px 0;
-    border-bottom: 1px solid var(--rule);
-  }}
-  th.amount, td.amount {{ text-align: right; width: 130px; }}
-  tfoot td {{
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--ink-soft);
-    padding-top: 3px;
-    border-bottom: none;
-  }}
-  tfoot tr.net-amount td {{
-    font-size: 14px;
-    font-weight: 800;
-    color: var(--ink);
-    padding-top: 6px;
-    border-top: 2px solid var(--rule-strong);
-  }}
-  tfoot td.amount {{ text-align: right; }}
-
-  /* ---------- Payment strip (2026-08-22 addition) ----------
-     Only rendered when a genuine outstanding balance exists (see
-     render_registration_slip's own docstring) — a single compact row,
-     not three stacked full-width ones, so a partially-paid slip's
-     itemized table plus this strip still fits the same half-A4 budget
-     the plain full-payment case already comfortably clears. */
-  .payment-strip {{
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
-    margin-top: 5px;
-    padding-top: 4px;
-    border-top: 1.5px solid var(--rule-strong);
-  }}
-  .payment-cell {{
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 8px;
-  }}
-  .payment-label {{
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    color: var(--ink-soft);
-  }}
-  .payment-value {{
-    font-size: 12.5px;
-    font-weight: 800;
-  }}
-  .payment-cell.pending .payment-value {{ color: var(--ink); }}
-
-  /* ---------- Note ---------- */
-  .note-box {{
-    display: flex;
-    gap: 18px;
-    border: 1px solid var(--rule-strong);
-    padding: 6px 12px;
-    margin-top: 10px;
-  }}
-  .note-box .note-label {{
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    flex-shrink: 0;
-  }}
-  .note-box .note-text {{
-    font-size: 10.5px;
-    line-height: 1.6;
-    color: var(--ink-soft);
-  }}
-
-  /* ---------- Print ---------- */
-  @page {{ size: A4; margin: 14mm; }}
-  @media print {{
-    * {{
-      print-color-adjust: exact !important; 
-      -webkit-print-color-adjust: exact !important; 
-      color: #000000 !important;
-    }}
-    html, body {{ 
-      background: #ffffff !important; 
-      padding: 0 !important; 
-      color: #000000 !important; 
-    }}
-    body {{ display: block !important; }}
-    .sheet {{
-      max-width: none !important;
-      width: 100% !important;
-      border: none !important;
-      box-shadow: none !important;
-      padding: 0 !important;
-      color: #000000 !important;
-      background: #ffffff !important;
-      page-break-inside: avoid; 
-      break-inside: avoid;
-    }}
-    .logo {{ filter: grayscale(1); }}
-  }}
+{_RECEIPT_STYLE}
 </style>
 </head>
 <body>
   <div class="sheet">
-    <div class="header">
-      {logo_html}
-      <div class="identity">
-        <p class="name">{_escape(hospital_name)}</p>
-        <div class="tagline">Gynecology &bull; Maternity &bull; Women's Care</div>
-      </div>
-      <div class="contact-block">
-        <div>Shalimar Link Road, Lahore</div>
-        <div><strong>International Standard Healthcare</strong></div>
-        <div>Open 24 Hours</div>
-        <div>Contact Us : 0300-0430009</div>
-      </div>
-    </div>
-    <hr class="header-rule">
+    {_header_html(hospital_name)}
+    {_title_box_html("Registration Slip", visit_queue_token)}
 
-    <div class="title-box">
-      <span class="label">Registration Slip</span>
-      <span class="token">{_escape(visit_queue_token)}</span>
+    <div class="section">
+      <div class="section-heading">Patient Information</div>
+      {patient_rows}
     </div>
-
-    <div class="body-grid">
-      <div>
-        <div class="section-heading">
-          <span class="bar"></span>
-          <span class="text">Patient Information</span>
-        </div>
-        {patient_rows}
-      </div>
-      <div>
-        <div class="section-heading">
-          <span class="bar"></span>
-          <span class="text">Visit Details</span>
-        </div>
-        {visit_rows}
-      </div>
+    <div class="section">
+      <div class="section-heading">Visit Details</div>
+      {visit_rows}
     </div>
     {items_section}{payment_strip}
-    <div class="note-box">
-      <span class="note-label">Note</span>
-      <span class="note-text">
+    <div class="note">
+      <div class="note-label">Note</div>
+      <div class="note-text">
         Please retain this registration slip for your appointment and billing records.
         Present it at the reception desk during your visit for faster check-in.
-      </span>
+      </div>
     </div>
   </div>
 </body>
@@ -749,18 +801,10 @@ def render_medicine_bill_receipt(
     discount_reason: str | None = None,
     payment_methods: list[str] | None = None,
 ) -> str:
-    """Renders the Pharmacy module's medicine bill slip — reuses the
-    exact `.sheet`/`.header`/`.title-box`/`.body-grid` grayscale, A4,
-    print-ready structure `render_registration_slip` established (same
-    design language, same reasons: this document also prints on a plain
-    B&W office printer, where layout/typography carries the document,
-    not color — see this module's own docstring on the Central Print
-    Service's grayscale convention). Tightened for density (2026-08-20
-    revision) so two of these fit on one printed A4 page instead of
-    one — see the CSS comments below for the specific spacing values
-    that changed, and this module's own historical note: the original
-    version left roughly half a page of unused space below a typical
-    few-item bill.
+    """Renders the Pharmacy module's medicine bill slip — shares the
+    exact 80mm receipt layout the other two Central Print Service
+    templates use (see this module's own top-level docstring and
+    `_RECEIPT_STYLE`).
 
     `bill_queue_token` (2026-08-20 addition, replacing the removed
     `visit_queue_token`/`patient_mr_number` parameters — see
@@ -770,11 +814,7 @@ def render_medicine_bill_receipt(
     token, since every bill draws its own fresh value at creation.
     `None` only for a bill that predates this feature, in which case
     the title-box falls back to the pre-existing `MED-<uuid fragment>`
-    display. The MR Number and Queue Token rows that used to appear in
-    the Patient/Visit Reference section below are gone entirely — this
-    bill's own identifying number in the title-box is now the slip's
-    one and only number, and MR Number added little the patient's name
-    didn't already convey on this particular document.
+    display.
 
     `patient_full_name`/`patient_age_years`/`patient_phone_number` are
     all `None` for a standalone walk-in sale with no linked Visit (see
@@ -784,31 +824,31 @@ def render_medicine_bill_receipt(
     linked, `patient_age_years`/`patient_phone_number` mirror the same
     two fields `render_registration_slip` already shows (Age, Contact
     Number) — this is the identical `Patient` record, just rendered a
-    second time on a different document. The remaining reference rows
-    (Patient Name, Age, Contact Number, Billed On) render in the same
-    2-column `.body-grid` `render_registration_slip` already
-    established, instead of one long stacked column — halves this
-    section's height.
+    second time on a different document.
 
     `line_items` is `(medicine_name, category, quantity, unit_price,
     line_total)` tuples, already snapshotted at billing time (see
     `MedicineBillItem`'s docstring) — this function renders exactly what
-    was billed, never re-reads the live price list. Each line's own
-    `line_total` is never affected by `discount_amount` — a bill-level
-    discount is applied once, below the itemized table, exactly like
-    `render_invoice_receipt`'s identical Total Amount / Discount / Net
-    Amount footer (2026-08-19 addition — Pharmacy previously had no
-    discount concept at all; see app/modules/pharmacy/models.py's
-    `MedicineBill.discount_amount` docstring). `discount_amount == 0`
-    means the Discount row is fully absent, never a zero line, same
-    convention as the invoice receipt's. `total_amount` is already
-    post-discount (the pre-discount subtotal is recovered as
-    `total_amount + discount_amount`, same as the invoice receipt) —
-    `Net Amount` always shows it, then `Received`/`Pending` follow: a
-    bill freshly created and not yet paid renders `Received: 0.00` /
-    `Pending` equal to the (post-discount) total, exactly like an
-    unpaid Invoice would, rather than silently implying the sale was
-    already settled.
+    was billed, never re-reads the live price list. 2026-08-24 redesign:
+    the old 5-column table (Medicine/Category/Qty/Unit Price/Line Total)
+    cannot fit legibly at 76mm — each item is now its own row, the
+    medicine name on its own line (wrapping naturally if long) and a
+    small muted second line underneath carrying category/quantity/unit
+    price (`"Tablet · 2 × 50.00"`), with the line total right-aligned
+    against the name — the same shape a real pharmacy thermal receipt
+    uses. All five original fields still render; only the arrangement
+    changed. Each line's own `line_total` is never affected by
+    `discount_amount` — a bill-level discount is applied once, below the
+    item list, exactly like `render_invoice_receipt`'s identical Total
+    Amount / Discount / Net Amount footer. `discount_amount == 0` means
+    the Discount row is fully absent, never a zero line, same convention
+    as the invoice receipt's. `total_amount` is already post-discount
+    (the pre-discount subtotal is recovered as `total_amount +
+    discount_amount`, same as the invoice receipt) — `Net Amount` always
+    shows it, then `Received`/`Pending` follow: a bill freshly created
+    and not yet paid renders `Received: 0.00` / `Pending` equal to the
+    (post-discount) total, exactly like an unpaid Invoice would, rather
+    than silently implying the sale was already settled.
 
     `payment_methods` (2026-08-19 addition) mirrors
     `render_invoice_receipt`'s identical parameter exactly — the
@@ -826,59 +866,43 @@ def render_medicine_bill_receipt(
     # own docstring.
     token_display = bill_queue_token or f"MED-{short_bill_id}"
 
-    logo_data_uri = _logo_data_uri()
-    logo_html = (
-        f'<img class="logo" src="{logo_data_uri}" alt="{_escape(hospital_name)} logo">'
-        if logo_data_uri
-        else ""
-    )
-
-    def _row(label: str, value: str) -> str:
-        return (
-            f'<div class="row"><span class="label">{_escape(label)}</span>'
-            f'<span class="value">{_escape(value)}</span></div>'
-        )
-
     reference_section = ""
     if patient_full_name is not None:
-        # 2-column layout (2026-08-20 revision) — same `.body-grid`
-        # `render_registration_slip` already uses, instead of one long
-        # stacked column of rows. MR Number and Queue Token are gone
-        # entirely (see this function's own docstring); only these four
-        # remain, two per column.
-        reference_rows = f"""
-    <div class="body-grid">
-      <div>
-        {_row("Patient Name", patient_full_name)}
-        {_row("Age", f"{patient_age_years} years" if patient_age_years is not None else "—")}
-      </div>
-      <div>
-        {_row("Contact Number", patient_phone_number or "—")}
-        {_row("Billed On", billed_on)}
-      </div>
-    </div>
-"""
+        reference_rows = "".join(
+            [
+                _row("Patient Name", patient_full_name),
+                _row(
+                    "Age",
+                    f"{patient_age_years} years" if patient_age_years is not None else "—",
+                ),
+                _row("Contact Number", patient_phone_number or "—"),
+                _row("Billed On", billed_on),
+            ]
+        )
         reference_section = f"""
-    <div class="section-heading">
-      <span class="bar"></span>
-      <span class="text">Patient / Visit Reference</span>
+    <div class="section">
+      <div class="section-heading">Patient / Visit Reference</div>
+      {reference_rows}
     </div>
-    {reference_rows}
 """
     else:
         reference_section = f"""
-    <div class="section-heading">
-      <span class="bar"></span>
-      <span class="text">Sale Reference</span>
+    <div class="section">
+      <div class="section-heading">Sale Reference</div>
+      {_row("Sale Type", "Walk-in (no visit on file)")}
+      {_row("Billed On", billed_on)}
     </div>
-    {_row("Sale Type", "Walk-in (no visit on file)")}
-    {_row("Billed On", billed_on)}
 """
 
     item_rows = "".join(
-        f"<tr><td>{_escape(name)}</td><td class='category'>{_escape(category.title())}</td>"
-        f"<td class='qty'>{quantity}</td><td class='amount'>{_money(unit_price)}</td>"
-        f"<td class='amount'>{_money(line_total)}</td></tr>"
+        f"""
+      <div class="item-row">
+        <div class="item-main">
+          <div class="item-name">{_escape(name)}</div>
+          <div class="item-meta">{_escape(category.title())} &middot; {quantity} &times; {_money(unit_price)}</div>
+        </div>
+        <div class="item-amount">{_money(line_total)}</div>
+      </div>"""
         for name, category, quantity, unit_price, line_total in line_items
     )
 
@@ -888,15 +912,13 @@ def render_medicine_bill_receipt(
         if discount_reason:
             discount_label = f"Discount ({_escape(discount_reason)})"
         discount_row = (
-            f'<tr><td colspan="4">{discount_label}</td>'
-            f"<td class='amount'>-{_money(discount_amount)}</td></tr>"
+            f'<div class="total-row"><span>{discount_label}</span>'
+            f'<span class="amount">-{_money(discount_amount)}</span></div>'
         )
     paid_via_row = ""
     if payment_methods:
         labels = ", ".join(PAYMENT_METHOD_LABELS.get(method, method) for method in payment_methods)
-        paid_via_row = (
-            f'<tr class="paid-via"><td colspan="5">Paid via: {_escape(labels)}</td></tr>'
-        )
+        paid_via_row = f'<div class="paid-via-row">Paid via: {_escape(labels)}</div>'
 
     return f"""<!doctype html>
 <html>
@@ -904,306 +926,35 @@ def render_medicine_bill_receipt(
 <meta charset="utf-8">
 <title>Medicine Slip — {_escape(token_display)}</title>
 <style>
-  :root {{
-    --ink: #111111;
-    --ink-soft: #555555;
-    --rule: #d0d0d0;
-    --rule-strong: #111111;
-  }}
-  * {{ box-sizing: border-box; }}
-  html, body {{
-    margin: 0;
-    padding: 0;
-    font-family: 'Inter', -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-    color: var(--ink);
-    background: #eeeeee;
-  }}
-  body {{
-    padding: 28px 16px;
-    display: flex;
-    justify-content: center;
-  }}
-  .sheet {{
-    width: 100%;
-    max-width: 720px;
-    background: #ffffff;
-    border: 1px solid #dddddd;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-    padding: 32px 36px;
-  }}
-
-  /* ---------- Header ---------- */
-  .header {{
-    display: grid;
-    grid-template-columns: auto 1fr auto;
-    align-items: center;
-    gap: 20px;
-    padding-bottom: 10px;
-  }}
-  .logo {{
-    height: 46px;
-    width: auto;
-    object-fit: contain;
-  }}
-  .identity {{ text-align: center; }}
-  .identity .name {{
-    font-size: 19px;
-    font-weight: 800;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    margin: 0;
-  }}
-  .identity .tagline {{
-    margin-top: 4px;
-    font-size: 10.5px;
-    font-weight: 600;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    color: var(--ink-soft);
-  }}
-  .contact-block {{
-    text-align: right;
-    font-size: 9.5px;
-    line-height: 1.5;
-    color: var(--ink-soft);
-    white-space: nowrap;
-  }}
-  .contact-block strong {{ color: var(--ink); font-weight: 600; }}
-  /* ---------- Density pass (2026-08-20) ----------
-     Every margin/padding value below is deliberately smaller than
-     render_registration_slip's own (which this template originally
-     copied verbatim) — this document has less content per slip and no
-     reason to consume as much vertical space; the goal is two slips
-     per printed A4 page instead of one. */
-  .header-rule {{ border: none; border-top: 2px solid var(--rule-strong); margin: 0 0 12px; }}
-
-  /* ---------- Title box ---------- */
-  .title-box {{
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    border: 1.5px solid var(--rule-strong);
-    padding: 8px 16px;
-    margin-bottom: 16px;
-  }}
-  .title-box .label {{
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-  }}
-  .title-box .token {{
-    font-size: 22px;
-    font-weight: 800;
-    letter-spacing: 1px;
-    font-family: 'Courier New', monospace;
-  }}
-
-  /* ---------- Reference section ---------- */
-  .section-heading {{
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 6px;
-  }}
-  .section-heading .bar {{
-    width: 4px;
-    height: 13px;
-    background: var(--ink);
-    flex-shrink: 0;
-  }}
-  .section-heading .text {{
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-  }}
-  .row {{
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 12px;
-    padding: 5px 0;
-    border-bottom: 1px solid var(--rule);
-  }}
-  .row:last-child {{ border-bottom: none; }}
-  .row .label {{
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--ink-soft);
-    white-space: nowrap;
-  }}
-  .row .value {{
-    font-size: 13px;
-    font-weight: 700;
-    text-align: right;
-  }}
-
-  /* ---------- Body columns (2026-08-20 addition) ----------
-     Same 2-column grid render_registration_slip's .body-grid already
-     established — the four remaining reference rows (two identity
-     fields removed entirely, see this function's own docstring) sit
-     two per column instead of stacked in one long column. */
-  .body-grid {{
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 28px;
-  }}
-
-  /* ---------- Itemized table ---------- */
-  .items {{ margin-top: 14px; }}
-  table {{ width: 100%; border-collapse: collapse; }}
-  thead th {{
-    text-align: left;
-    font-size: 10.5px;
-    font-weight: 700;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    color: var(--ink-soft);
-    border-bottom: 1.5px solid var(--rule-strong);
-    padding: 0 0 6px;
-  }}
-  tbody td {{
-    font-size: 13px;
-    padding: 5px 0;
-    border-bottom: 1px solid var(--rule);
-  }}
-  th.qty, td.qty {{ text-align: center; width: 60px; }}
-  th.category, td.category {{ width: 110px; }}
-  th.amount, td.amount {{ text-align: right; width: 110px; }}
-  tfoot td {{
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--ink-soft);
-    padding-top: 4px;
-    border-bottom: none;
-  }}
-  tfoot tr.net-amount td {{
-    font-size: 14px;
-    font-weight: 800;
-    color: var(--ink);
-    padding-top: 8px;
-    border-top: 2px solid var(--rule-strong);
-  }}
-  tfoot td.amount {{ text-align: right; }}
-
-  /* ---------- Note ---------- */
-  .note-box {{
-    display: flex;
-    gap: 18px;
-    border: 1px solid var(--rule-strong);
-    padding: 8px 14px;
-    margin-top: 14px;
-  }}
-  .note-box .note-label {{
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    flex-shrink: 0;
-  }}
-  .note-box .note-text {{
-    font-size: 10.5px;
-    line-height: 1.6;
-    color: var(--ink-soft);
-  }}
-
-  /* ---------- Print ---------- */
-  @page {{ size: A4; margin: 14mm; }}
-  @media print {{
-    * {{
-      print-color-adjust: exact !important;
-      -webkit-print-color-adjust: exact !important;
-      color: #000000 !important;
-    }}
-    html, body {{
-      background: #ffffff !important;
-      padding: 0 !important;
-      color: #000000 !important;
-    }}
-    body {{ display: block !important; }}
-    .sheet {{
-      max-width: none !important;
-      width: 100% !important;
-      border: none !important;
-      box-shadow: none !important;
-      padding: 0 !important;
-      color: #000000 !important;
-      background: #ffffff !important;
-      page-break-inside: avoid;
-      break-inside: avoid;
-    }}
-    .logo {{ filter: grayscale(1); }}
-  }}
+{_RECEIPT_STYLE}
 </style>
 </head>
 <body>
   <div class="sheet">
-    <div class="header">
-      {logo_html}
-      <div class="identity">
-        <p class="name">{_escape(hospital_name)}</p>
-        <div class="tagline">Gynecology &bull; Maternity &bull; Women's Care</div>
-      </div>
-      <div class="contact-block">
-        <div>Shalimar Link Road, Lahore</div>
-        <div><strong>International Standard Healthcare</strong></div>
-        <div>Open 24 Hours</div>
-        <div>Contact Us : 0300-0430009</div>
-      </div>
-    </div>
-    <hr class="header-rule">
-
-    <div class="title-box">
-      <span class="label">Medicine Slip</span>
-      <span class="token">{_escape(token_display)}</span>
-    </div>
+    {_header_html(hospital_name)}
+    {_title_box_html("Medicine Slip", token_display)}
 
     {reference_section}
 
     <div class="items">
-      <table>
-        <thead>
-          <tr>
-            <th>Medicine</th>
-            <th class="category">Category</th>
-            <th class="qty">Qty</th>
-            <th class="amount">Unit Price</th>
-            <th class="amount">Line Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {item_rows}
-        </tbody>
-        <tfoot>
-          <tr>
-            <td colspan="4">Total Amount</td>
-            <td class="amount">{_money(subtotal)}</td>
-          </tr>
-          {discount_row}
-          <tr class="net-amount">
-            <td colspan="4">Net Amount</td>
-            <td class="amount">{_money(total_amount)}</td>
-          </tr>
-          <tr>
-            <td colspan="4">Received</td>
-            <td class="amount">{_money(amount_paid)}</td>
-          </tr>
-          {paid_via_row}
-          <tr>
-            <td colspan="4">Pending</td>
-            <td class="amount">{_money(pending)}</td>
-          </tr>
-        </tfoot>
-      </table>
+      <div class="section-heading">Items</div>
+      {item_rows}
+      <div class="totals">
+        <div class="total-row"><span>Total Amount</span><span class="amount">{_money(subtotal)}</span></div>
+        {discount_row}
+        <div class="net-row"><span>Net Amount</span><span>{_money(total_amount)}</span></div>
+        <div class="total-row"><span>Received</span><span class="amount">{_money(amount_paid)}</span></div>
+        {paid_via_row}
+        <div class="total-row pending"><span>Pending</span><span class="amount">{_money(pending)}</span></div>
+      </div>
     </div>
 
-    <div class="note-box">
-      <span class="note-label">Note</span>
-      <span class="note-text">
+    <div class="note">
+      <div class="note-label">Note</div>
+      <div class="note-text">
         Please retain this medicine slip for your records. Prices reflect the pharmacy
         price list at the time of this sale and are not affected by any later change.
-      </span>
+      </div>
     </div>
   </div>
 </body>
