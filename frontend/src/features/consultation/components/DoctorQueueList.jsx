@@ -1,7 +1,8 @@
 'use client';
 
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { HeartPulse } from 'lucide-react';
+import { HeartPulse, Printer } from 'lucide-react';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import {
   useMyQueue,
@@ -9,7 +10,9 @@ import {
   usePatientsForVisits,
   useStartConsultation,
   useVitalsPendingForDoctor,
+  useViewRegistrationSlip,
 } from '@/features/consultation/hooks/useConsultation';
+import { useToast } from '@/shared/components/toast/ToastProvider';
 import { useVitalsForVisits } from '@/features/vitals/hooks/useVitals';
 import { getWorstSeverity, SEVERITY_BADGE_VARIANT, SEVERITY_LABEL } from '@/features/vitals/utils/vitalsSeverity';
 import { VisitProcedureDisplay } from '@/features/visits/components/VisitProcedureDisplay';
@@ -39,7 +42,17 @@ function VitalsBadge({ records, ageYears, isLoading }) {
   );
 }
 
-function QueueTable({ visits, patientsById, vitalsByVisitId, isLoadingVitals, actionLabel, onAction, isActionPending }) {
+function QueueTable({
+  visits,
+  patientsById,
+  vitalsByVisitId,
+  isLoadingVitals,
+  actionLabel,
+  onAction,
+  isActionPending,
+  onViewSlip,
+  viewingSlipVisitId,
+}) {
   return (
     <Table>
       <TableHeader>
@@ -77,9 +90,20 @@ function QueueTable({ visits, patientsById, vitalsByVisitId, isLoadingVitals, ac
                 </Badge>
               </TableCell>
               <TableCell>
-                <Button size="sm" onClick={() => onAction(visit.id)} disabled={isActionPending}>
-                  {actionLabel}
-                </Button>
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={() => onAction(visit.id)} disabled={isActionPending}>
+                    {actionLabel}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onViewSlip(visit.id)}
+                    disabled={viewingSlipVisitId === visit.id}
+                  >
+                    <Printer className="h-3.5 w-3.5" />
+                    {viewingSlipVisitId === visit.id ? 'Opening…' : 'View Slip'}
+                  </Button>
+                </div>
               </TableCell>
             </TableRow>
           );
@@ -159,10 +183,33 @@ export function DoctorQueueList() {
   ]);
   const { vitalsByVisitId, isLoading: isLoadingVitals } = useVitalsForVisits(allVisits);
   const startConsultation = useStartConsultation();
+  const viewSlip = useViewRegistrationSlip();
+  const { toast } = useToast();
+  // Tracks which single row's slip is currently opening, mirroring
+  // MyRegistrations.jsx's identical `printingVisitId` one-in-flight
+  // pattern — disables only that row's button, not every "View Slip"
+  // button on the screen.
+  const [viewingSlipVisitId, setViewingSlipVisitId] = useState(null);
 
   async function handleStart(visitId) {
     await startConsultation.mutateAsync(visitId);
     router.push(`/doctor/consultation/${visitId}`);
+  }
+
+  async function handleViewSlip(visitId) {
+    if (viewingSlipVisitId) return;
+    setViewingSlipVisitId(visitId);
+    try {
+      await viewSlip.mutateAsync(visitId);
+    } catch (error) {
+      toast.error({
+        title: 'Unable to open this registration slip',
+        description: error.message,
+        onRetry: () => handleViewSlip(visitId),
+      });
+    } finally {
+      setViewingSlipVisitId(null);
+    }
   }
 
   if (isLoadingMyQueue) return <PageLoader label="Loading your queue" />;
@@ -187,6 +234,8 @@ export function DoctorQueueList() {
               actionLabel="Start Consultation"
               onAction={handleStart}
               isActionPending={startConsultation.isPending}
+              onViewSlip={handleViewSlip}
+              viewingSlipVisitId={viewingSlipVisitId}
             />
           )}
         </CardContent>
@@ -232,6 +281,8 @@ export function DoctorQueueList() {
                 actionLabel="Claim & Start"
                 onAction={handleStart}
                 isActionPending={startConsultation.isPending}
+                onViewSlip={handleViewSlip}
+                viewingSlipVisitId={viewingSlipVisitId}
               />
             )}
           </CardContent>

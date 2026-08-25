@@ -34,3 +34,15 @@ PERMISSION_RECEPTION_DELETE_VISIT = "reception:delete_visit"
 # separate mutating action and gets its own atomic permission, matching
 # this module's existing register/cancel/update/delete convention.
 PERMISSION_RECEPTION_CLEAR_OWN_REVENUE = "reception:clear_own_revenue"
+
+# View-only access to a visit's registration slip (2026-08-25 addition)
+# — narrower than PERMISSION_RECEPTION_REGISTER_VISIT, which the print
+# endpoint (GET /reception/visits/{id}/slip/print) already accepted:
+# that permission is the composite register/cancel-visit capability,
+# far broader than "view a slip" and not something a Doctor should
+# hold just to check what was registered from the Doctor Queue. The
+# print endpoint accepts *either* permission (see dependencies.py's
+# `require_any_permission`) — Reception's own access via
+# PERMISSION_RECEPTION_REGISTER_VISIT is unchanged; this is purely an
+# additive, narrower path for roles that only need to view.
+PERMISSION_RECEPTION_VIEW_SLIP = "reception:view_slip"

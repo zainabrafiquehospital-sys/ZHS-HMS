@@ -3,6 +3,7 @@
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { consultationService } from '@/features/consultation/api/consultationService';
 import { visitsService } from '@/features/visits/api/visitsService';
+import { openAndPrintHtml } from '@/utils/printWindow';
 
 export { usePatientsForVisits } from '@/features/patients/hooks/usePatientsForVisits';
 
@@ -163,6 +164,21 @@ export function useCompleteConsultation() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['visits', 'doctor'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+  });
+}
+
+/** "View Slip" (2026-08-25 addition) — DoctorQueueList.jsx's own button,
+ * mirroring Reception's usePrintRegistrationSlip exactly (same fetch +
+ * openAndPrintHtml pipeline, same hidden-iframe print mechanism,
+ * untouched) so a doctor can see exactly what was registered
+ * (procedures, discount, payment status) before or without starting
+ * the consultation. */
+export function useViewRegistrationSlip() {
+  return useMutation({
+    mutationFn: async (visitId) => {
+      const html = await consultationService.fetchRegistrationSlipHtml(visitId);
+      await openAndPrintHtml(html);
     },
   });
 }

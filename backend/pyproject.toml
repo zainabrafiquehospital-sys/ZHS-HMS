@@ -18,6 +18,7 @@ extend-immutable-calls = [
     "fastapi.Body",
     "app.modules.auth.dependencies.require_permission",
     "app.modules.auth.dependencies.require_role",
+    "app.modules.reception.dependencies.require_any_permission",
 ]
 
 [tool.black]

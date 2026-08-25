@@ -22,4 +22,15 @@ export const consultationService = {
   complete(consultationId, updates) {
     return httpClient.post(`/consultations/${consultationId}/complete`, updates);
   },
+
+  // "View Slip" (2026-08-25 addition) — DoctorQueueList.jsx's own
+  // registration-slip button, reusing Reception's exact print endpoint
+  // (`reception:view_slip` now satisfies its permission gate alongside
+  // Reception's own `reception:register_visit` — see backend
+  // reception/dependencies.py's `require_any_permission`). Returns a
+  // raw HTML document (not the JSON envelope), same as
+  // receptionService.fetchRegistrationSlipHtml's identical shape.
+  fetchRegistrationSlipHtml(visitId) {
+    return httpClient.get(`/reception/visits/${visitId}/slip/print`, { responseType: 'text' });
+  },
 };

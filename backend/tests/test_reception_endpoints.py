@@ -13,6 +13,7 @@ from app.modules.reception.constants import (
     PERMISSION_RECEPTION_DELETE_VISIT,
     PERMISSION_RECEPTION_REGISTER_VISIT,
     PERMISSION_RECEPTION_UPDATE_VISIT,
+    PERMISSION_RECEPTION_VIEW_SLIP,
 )
 from app.modules.visits.constants import (
     PERMISSION_PROCEDURES_MANAGE,
@@ -333,6 +334,62 @@ async def test_print_registration_slip_success(api_client, real_session, grant_p
 
 async def test_print_registration_slip_requires_permission(api_client, real_session):
     _actor, access_token = await _create_and_login(api_client, real_session, "print-slip-no-perm")
+
+    resp = await api_client.get(
+        "/api/v1/reception/visits/00000000-0000-0000-0000-000000000000/slip/print",
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_print_registration_slip_accessible_with_view_slip_permission_alone(
+    api_client, real_session, grant_permission
+):
+    """2026-08-25 addition — Doctor Queue's "View Slip" button: a user
+    holding only `reception:view_slip` (never `reception:register_visit`,
+    the composite register/cancel-visit capability a Doctor should not
+    hold) must still be able to view an already-registered visit's slip
+    — see reception/dependencies.py's `require_any_permission`."""
+    receptionist, receptionist_token = await _create_and_login(
+        api_client, real_session, "view-slip-registering-receptionist"
+    )
+    await grant_permission(receptionist, PERMISSION_RECEPTION_REGISTER_VISIT)
+    register_resp = await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("ViewSlipOnly"),
+            "procedures": [{"name": "Consultation", "amount": "1500.00"}],
+            "vitals_required": False,
+            "initial_payment_amount": "0.01",
+            "initial_payment_method": "cash",
+        },
+        headers=_auth_header(receptionist_token),
+    )
+    visit_id = register_resp.json()["data"]["visit"]["id"]
+    mr_number = register_resp.json()["data"]["patient"]["mr_number"]
+
+    viewer, viewer_token = await _create_and_login(api_client, real_session, "view-slip-viewer")
+    await grant_permission(viewer, PERMISSION_RECEPTION_VIEW_SLIP)
+
+    resp = await api_client.get(
+        f"/api/v1/reception/visits/{visit_id}/slip/print", headers=_auth_header(viewer_token)
+    )
+
+    assert resp.status_code == 200
+    assert mr_number in resp.text
+
+
+async def test_print_registration_slip_rejects_neither_permission(api_client, real_session):
+    """Regression guard alongside the "alone" test above: holding
+    neither `reception:register_visit` nor `reception:view_slip` is
+    still a 403, same as test_print_registration_slip_requires_permission
+    already covers for a user with no permissions at all — this one
+    pins the still-two-option (not "any permission at all") shape of
+    the check specifically."""
+    _actor, access_token = await _create_and_login(
+        api_client, real_session, "view-slip-neither-perm"
+    )
 
     resp = await api_client.get(
         "/api/v1/reception/visits/00000000-0000-0000-0000-000000000000/slip/print",

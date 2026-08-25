@@ -5,9 +5,13 @@ fast-registration slip print endpoint (§6/§7), admin-only "update"/
 AdminUpdateVisitRequest's and ReceptionService.admin_delete_visit's own
 docstrings), (2026-08-19 addition) a receptionist's own "My Revenue"
 read/clear actions — see ReceptionRevenueOut's and ReceptionService.
-get_own_revenue's own docstrings — and (2026-08-24 addition) a
+get_own_revenue's own docstrings — (2026-08-24 addition) a
 doctor-selection read endpoint for RegisterVisitForm.jsx's optional
-doctor dropdown — see DoctorSelectionOut's own docstring."""
+doctor dropdown — see DoctorSelectionOut's own docstring — and
+(2026-08-25 addition) the slip-print endpoint accepting a second,
+narrower permission so Doctor Queue can view a slip without the full
+register/cancel-visit capability — see PERMISSION_RECEPTION_VIEW_SLIP's
+own docstring."""
 
 from uuid import UUID
 
@@ -28,8 +32,9 @@ from app.modules.reception.constants import (
     PERMISSION_RECEPTION_DELETE_VISIT,
     PERMISSION_RECEPTION_REGISTER_VISIT,
     PERMISSION_RECEPTION_UPDATE_VISIT,
+    PERMISSION_RECEPTION_VIEW_SLIP,
 )
-from app.modules.reception.dependencies import get_reception_service
+from app.modules.reception.dependencies import get_reception_service, require_any_permission
 from app.modules.reception.schemas import (
     AdminUpdateVisitRequest,
     AdminUpdateVisitResponse,
@@ -108,13 +113,18 @@ async def print_registration_slip(
     visit_service: VisitService = Depends(get_visit_service),
     user_service: UserService = Depends(get_user_service),
     settings: Settings = Depends(get_settings),
-    _actor: User = Depends(require_permission(PERMISSION_RECEPTION_REGISTER_VISIT)),
+    _actor: User = Depends(
+        require_any_permission(PERMISSION_RECEPTION_REGISTER_VISIT, PERMISSION_RECEPTION_VIEW_SLIP)
+    ),
 ) -> HTMLResponse:
     """Same Central Print Service pattern as Billing's invoice print
     endpoint (app/modules/billing/router.py) — Reception decides
-    *whether* this may be printed (the same `reception:register_visit`
-    gate as registering it) and supplies the data; the shared printing
-    service only renders it (Phase 6 §14)."""
+    *whether* this may be printed and supplies the data; the shared
+    printing service only renders it (Phase 6 §14). Accepts either the
+    original `reception:register_visit` (Reception's own, unchanged
+    access) or the narrower `reception:view_slip` (2026-08-25 addition
+    — Doctor Queue's "View Slip" button, see reception/constants.py's
+    own docstring on that permission)."""
     visit = await visit_service.get_visit(visit_id)
     patient = await patient_service.get_patient(visit.patient_id)
     doctor_full_name = None
