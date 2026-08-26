@@ -102,6 +102,15 @@ class PatientService:
             raise PatientNotFoundError
         return patient
 
+    async def list_by_ids(self, patient_ids: list[UUID]) -> list[Patient]:
+        """Batch lookup — see PatientRepository.list_by_ids's own
+        docstring. Never raises PatientNotFoundError for a missing id
+        (unlike get_patient): a caller resolving a name for display
+        (e.g. the Inventory module's usage-history print log) should
+        simply have fewer rows to match against, not fail outright over
+        one stale/soft-deleted reference."""
+        return await self._patient_repo.list_by_ids(patient_ids)
+
     async def list_patients(
         self, *, search: str | None, sort_by: str, sort_desc: bool, page: int, page_size: int
     ) -> tuple[list[Patient], int]:

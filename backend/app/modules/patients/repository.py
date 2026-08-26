@@ -6,6 +6,8 @@ no business rules; persistence only, exactly as the layered
 `router -> service -> repository -> model` architecture requires (see
 app/modules/auth/repository.py's identical module docstring)."""
 
+from uuid import UUID
+
 from sqlalchemy import Sequence, func, or_, select
 from sqlalchemy.orm import InstrumentedAttribute
 
@@ -56,6 +58,23 @@ class PatientRepository(BaseRepository[Patient]):
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def list_by_ids(self, patient_ids: list[UUID]) -> list[Patient]:
+        """One query for every given id, not one `get_by_id` per id —
+        added (2026-08-26) for the Inventory module's usage-history print
+        log, which needs the real name/MR number behind each usage
+        entry's `patient_id` in one request rather than N sequential
+        round-trips. Same `.in_(...)` batch-fetch shape as
+        `MedicineBillItemRepository.count_items_for_bills`. An empty
+        input list short-circuits to an empty result without a wasted
+        `WHERE id IN ()` query."""
+        if not patient_ids:
+            return []
+        stmt = self._exclude_soft_deleted(
+            select(Patient).where(Patient.id.in_(patient_ids)), include_deleted=False
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
 
     async def search(
         self,

@@ -335,6 +335,13 @@ class UserService:
             raise UserNotFoundError
         return user
 
+    async def list_by_ids(self, user_ids: list[UUID]) -> list[User]:
+        """Batch lookup — see UserRepository.list_by_ids's own docstring.
+        Never raises UserNotFoundError for a missing id (unlike
+        get_user): a caller resolving a name for display should simply
+        have fewer rows to match against, not fail outright."""
+        return await self._user_repo.list_by_ids(user_ids)
+
     async def list_users(
         self,
         *,

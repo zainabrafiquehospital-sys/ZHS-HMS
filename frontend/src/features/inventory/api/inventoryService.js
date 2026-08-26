@@ -3,9 +3,7 @@ import { httpClient } from '@/services/api/httpClient';
 // Thin wrapper over backend/app/modules/inventory/router.py — see that
 // file's own module docstring for the permission split
 // (inventory:read/manage/record_usage/request_restock) each endpoint
-// requires. Print endpoints are deliberately not here yet — see this
-// module's own Step 6 (report-style PDF, a different mechanism than
-// this codebase's existing thermal-receipt print pipeline).
+// requires.
 export const inventoryService = {
   // Catalog — every item, active and inactive alike (mirrors
   // pharmacyService.listMedicines's identical "admin management
@@ -109,5 +107,31 @@ export const inventoryService = {
   // ward/emergency patient with no OPD visit on file), never an error.
   getPatientContext(patientId) {
     return httpClient.get(`/inventory/patients/${patientId}/context`);
+  },
+
+  // Print (step 6) — report-style A4 documents, raw HTML (not the JSON
+  // envelope) — see billingService.fetchInvoiceReceiptHtml's identical
+  // docstring for why this is fetched rather than a plain <a href>.
+  // Inventory Manager-only (inventory:manage) — prints whichever
+  // History sub-tab and filter is currently active.
+  fetchHistoryLogHtml({ logType, itemId, startDate, endDate }) {
+    return httpClient.get('/inventory/history/print', {
+      params: {
+        log_type: logType,
+        item_id: itemId || undefined,
+        start_date: startDate || undefined,
+        end_date: endDate || undefined,
+      },
+      responseType: 'text',
+    });
+  },
+
+  // Vitals-only (inventory:record_usage) — always the calling user's
+  // own day, same actor-scoping as `listUsageEntries`'s `mine` sibling.
+  fetchDailyUsageSlipHtml(date) {
+    return httpClient.get('/inventory/usage/mine/print', {
+      params: { date },
+      responseType: 'text',
+    });
   },
 };

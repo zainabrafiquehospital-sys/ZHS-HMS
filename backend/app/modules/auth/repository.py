@@ -89,6 +89,23 @@ class UserRepository(BaseRepository[User]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def list_by_ids(self, user_ids: list[UUID]) -> list[User]:
+        """One query for every given id — added (2026-08-26) for the
+        Inventory module's history print log, which resolves a
+        "Recorded By" name per row from each row's own `created_by`
+        without one `GET /users/{id}`-equivalent round trip per row
+        (the N-parallel-fetches pattern `useUsersForMedicineBills` uses
+        client-side isn't available to a single server-rendered print
+        response). Same `.in_(...)` batch-fetch shape as
+        `PatientRepository.list_by_ids`."""
+        if not user_ids:
+            return []
+        stmt = self._exclude_soft_deleted(
+            select(User).where(User.id.in_(user_ids)), include_deleted=False
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def count_active_holders_of_permission(
         self, permission_code: str, *, now: datetime, exclude_user_id: UUID | None = None
     ) -> int:

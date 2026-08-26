@@ -1,13 +1,16 @@
 'use client';
 
 import { useState } from 'react';
+import { Printer } from 'lucide-react';
 import {
   useInventoryItems,
   useInventoryReceipts,
   useInventoryTransfers,
   useInventoryUsageEntries,
+  usePrintInventoryHistoryLog,
 } from '@/features/inventory/hooks/useInventory';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
+import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
 import { Label } from '@/shared/components/ui/Label';
 import { Select } from '@/shared/components/ui/Select';
@@ -29,6 +32,16 @@ const HISTORY_TABS = [
   { value: 'transfers', label: 'Transfers' },
   { value: 'usage', label: 'Usage' },
 ];
+
+// This panel's own tab values are plural (matching the tab labels);
+// backend/app/modules/inventory/router.py's `log_type` query param is
+// singular (`"receipt" | "transfer" | "usage"`) — this is the one place
+// that translates between the two.
+const HISTORY_TAB_TO_LOG_TYPE = {
+  receipts: 'receipt',
+  transfers: 'transfer',
+  usage: 'usage',
+};
 
 function itemName(items, itemId) {
   return items.find((item) => item.id === itemId)?.name ?? 'Unknown item';
@@ -179,11 +192,33 @@ export function InventoryHistoryPanel() {
   const [itemId, setItemId] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const printHistoryLog = usePrintInventoryHistoryLog();
+  const [printError, setPrintError] = useState(null);
+
+  async function handlePrint() {
+    setPrintError(null);
+    try {
+      await printHistoryLog.mutateAsync({
+        logType: HISTORY_TAB_TO_LOG_TYPE[activeTab],
+        itemId,
+        startDate,
+        endDate,
+      });
+    } catch (error) {
+      setPrintError(error.message || 'Unable to print this log.');
+    }
+  }
 
   return (
     <Card>
       <CardHeader className="flex flex-col gap-4">
-        <CardTitle>History</CardTitle>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle>History</CardTitle>
+          <Button size="sm" variant="outline" onClick={handlePrint} disabled={printHistoryLog.isPending}>
+            <Printer className="h-4 w-4" />
+            {printHistoryLog.isPending ? 'Preparing…' : 'Print'}
+          </Button>
+        </div>
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="history-item">Item</Label>
@@ -242,6 +277,7 @@ export function InventoryHistoryPanel() {
         ) : (
           <UsageTable items={items ?? []} itemId={itemId} startDate={startDate} endDate={endDate} />
         )}
+        {printError ? <p className="mt-3 text-sm text-destructive">{printError}</p> : null}
       </CardContent>
     </Card>
   );

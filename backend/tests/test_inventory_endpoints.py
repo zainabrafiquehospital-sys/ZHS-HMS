@@ -587,3 +587,183 @@ async def test_patient_context_has_no_visit_when_none_registered(
     assert resp.status_code == 200, resp.text
     assert resp.json()["data"]["patient_id"] == patient_id
     assert resp.json()["data"]["latest_visit"] is None
+
+
+# ----------------------------------------------------------------------
+# Print (step 6) — report-style A4 documents, HTML (browser handles
+# Print/Save-as-PDF), never the 42mm receipt layout.
+# ----------------------------------------------------------------------
+
+
+async def test_print_history_log_requires_manage_permission(
+    api_client, real_session, grant_permission
+):
+    """inventory:read alone (Vitals/Admin's shared visibility permission)
+    must not be enough — this is a management-oversight document, gated
+    the same as every write action on this module."""
+    actor, access_token = await _create_and_login(api_client, real_session, "print-log-no-perm")
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
+
+    resp = await api_client.get(
+        "/api/v1/inventory/history/print",
+        params={"log_type": "usage"},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_print_history_log_usage_contains_resolved_names(
+    api_client, real_session, grant_permission
+):
+    """The one real regression risk this endpoint has: every id (item,
+    patient, creator) must come back as a resolved display name, not a
+    raw id or a crash — this is what a Playwright click-through against
+    real data also confirmed visually, pinned here as a fast regression
+    check."""
+    actor, access_token = await _create_and_login(api_client, real_session, "print-log-usage")
+    await grant_permission(actor, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(actor, PERMISSION_INVENTORY_RECORD_USAGE)
+    await grant_permission(actor, PERMISSION_PATIENTS_CREATE)
+    item_id = await _create_item(
+        api_client, access_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}PrintLogUsage"
+    )
+    await api_client.post(
+        f"/api/v1/inventory/items/{item_id}/receive",
+        json={"quantity": "10", "received_on": _TODAY},
+        headers=_auth_header(access_token),
+    )
+    await api_client.post(
+        f"/api/v1/inventory/items/{item_id}/transfer",
+        json={"quantity": "10", "transferred_on": _TODAY},
+        headers=_auth_header(access_token),
+    )
+    patient_id = await _create_patient(
+        api_client, access_token, f"{TEST_PATIENT_NAME_PREFIX}PrintLogUsage"
+    )
+    await api_client.post(
+        "/api/v1/inventory/usage",
+        json={
+            "item_id": item_id,
+            "quantity": "3",
+            "used_on": _TODAY,
+            "patient_id": patient_id,
+            "reason_note": "Print log regression check",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    resp = await api_client.get(
+        "/api/v1/inventory/history/print",
+        params={"log_type": "usage", "item_id": item_id},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert f"{TEST_INVENTORY_ITEM_NAME_PREFIX}PrintLogUsage" in body
+    assert f"{TEST_PATIENT_NAME_PREFIX}PrintLogUsage" in body
+    assert "Print log regression check" in body
+    assert actor.full_name in body  # "Recorded By"
+    assert "Total Quantity" in body
+
+
+async def test_print_history_log_receipt_type_uses_correct_title(
+    api_client, real_session, grant_permission
+):
+    """log_type selects the title only (see render_inventory_history_log's
+    own docstring) — pinning that "receipt" doesn't accidentally render
+    the "usage"/"transfer" title, the one thing that's easy to get wrong
+    in a function serving three cases from one title lookup."""
+    actor, access_token = await _create_and_login(api_client, real_session, "print-log-receipt")
+    await grant_permission(actor, PERMISSION_INVENTORY_MANAGE)
+
+    resp = await api_client.get(
+        "/api/v1/inventory/history/print",
+        params={"log_type": "receipt"},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert "Main Stock Receipt Log" in resp.text
+    assert "Transfer to Emergency Stock Log" not in resp.text
+    assert "Emergency Stock Usage Log" not in resp.text
+
+
+async def test_print_daily_usage_slip_requires_record_usage_permission(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "print-slip-no-perm")
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
+
+    resp = await api_client.get(
+        "/api/v1/inventory/usage/mine/print",
+        params={"date": _TODAY},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_print_daily_usage_slip_is_scoped_to_the_calling_actor(
+    api_client, real_session, grant_permission
+):
+    """The identical hard actor-scoping GET /inventory/usage/mine already
+    established — a second Vitals staff member's own usage entry on the
+    same item/day must never appear on this user's printed slip."""
+    manager, manager_token = await _create_and_login(api_client, real_session, "print-slip-mgr")
+    await grant_permission(manager, PERMISSION_INVENTORY_MANAGE)
+    item_id = await _create_item(
+        api_client, manager_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}PrintSlipScoping"
+    )
+    await api_client.post(
+        f"/api/v1/inventory/items/{item_id}/receive",
+        json={"quantity": "10", "received_on": _TODAY},
+        headers=_auth_header(manager_token),
+    )
+    await api_client.post(
+        f"/api/v1/inventory/items/{item_id}/transfer",
+        json={"quantity": "10", "transferred_on": _TODAY},
+        headers=_auth_header(manager_token),
+    )
+
+    vitals_a, vitals_a_token = await _create_and_login(api_client, real_session, "print-slip-a")
+    await grant_permission(vitals_a, PERMISSION_INVENTORY_RECORD_USAGE)
+    vitals_b, vitals_b_token = await _create_and_login(api_client, real_session, "print-slip-b")
+    await grant_permission(vitals_b, PERMISSION_INVENTORY_RECORD_USAGE)
+
+    await api_client.post(
+        "/api/v1/inventory/usage",
+        json={
+            "item_id": item_id,
+            "quantity": "1",
+            "used_on": _TODAY,
+            "manual_patient_name": "Slip A Patient",
+            "manual_patient_age": 30,
+            "manual_patient_phone": "03001112222",
+        },
+        headers=_auth_header(vitals_a_token),
+    )
+    await api_client.post(
+        "/api/v1/inventory/usage",
+        json={
+            "item_id": item_id,
+            "quantity": "1",
+            "used_on": _TODAY,
+            "manual_patient_name": "Slip B Patient",
+            "manual_patient_age": 31,
+            "manual_patient_phone": "03001112223",
+        },
+        headers=_auth_header(vitals_b_token),
+    )
+
+    resp = await api_client.get(
+        "/api/v1/inventory/usage/mine/print",
+        params={"date": _TODAY},
+        headers=_auth_header(vitals_a_token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert "Slip A Patient" in resp.text
+    assert "Slip B Patient" not in resp.text
+    assert vitals_a.full_name in resp.text  # "Vitals Staff:" header line

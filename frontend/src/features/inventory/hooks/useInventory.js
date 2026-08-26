@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { inventoryService } from '@/features/inventory/api/inventoryService';
+import { openAndPrintHtml } from '@/utils/printWindow';
 
 /** Catalog listing — every item, active and inactive alike (mirrors
  * usePharmacy.js's useMedicines identical shape). `category`/
@@ -219,5 +220,38 @@ export function useInventoryPatientContext(patientId) {
     queryKey: ['inventory', 'patient-context', patientId],
     queryFn: () => inventoryService.getPatientContext(patientId).then((res) => res.data),
     enabled: Boolean(patientId),
+  });
+}
+
+// ------------------------------------------------------------------
+// Print (step 6) — fetches the report as an HTML document and opens it
+// in a hidden iframe for the browser's own print pipeline (Print, or
+// "Save as PDF" as a destination in that same dialog — see
+// backend/app/shared/printing/service.py's own module docstring on why
+// this is the whole mechanism, no separate PDF-generation endpoint).
+// Same `usePrintMedicineBill`/`fetchMedicineBillReceiptHtml` shape
+// every other print action in this app already uses.
+// ------------------------------------------------------------------
+
+export function usePrintInventoryHistoryLog() {
+  return useMutation({
+    mutationFn: async ({ logType, itemId, startDate, endDate }) => {
+      const html = await inventoryService.fetchHistoryLogHtml({
+        logType,
+        itemId,
+        startDate,
+        endDate,
+      });
+      await openAndPrintHtml(html);
+    },
+  });
+}
+
+export function usePrintDailyUsageSlip() {
+  return useMutation({
+    mutationFn: async (date) => {
+      const html = await inventoryService.fetchDailyUsageSlipHtml(date);
+      await openAndPrintHtml(html);
+    },
   });
 }

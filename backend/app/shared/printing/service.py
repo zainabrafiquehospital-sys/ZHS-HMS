@@ -48,7 +48,7 @@ this redesign."""
 
 import base64
 import html
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
@@ -109,6 +109,22 @@ def _to_local_time(moment: datetime, zone_name: str) -> datetime:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=UTC)
     return moment.astimezone(ZoneInfo(zone_name))
+
+
+def format_local_timestamp(moment: datetime, zone_name: str) -> str:
+    """Public (unlike `_to_local_time`) specifically for
+    `render_inventory_history_log`'s caller (app/modules/inventory/
+    router.py) — that render function's `rows` are already-formatted
+    display strings, not raw domain values, since its columns are
+    caller-defined and heterogeneous across the receipt/transfer/usage
+    cases it serves (see that section's own top-level docstring for why
+    one shared function, not three typed ones). Every other render
+    function above keeps owning its own timestamp formatting internally
+    because it knows its exact fixed field set; this is the one
+    deliberate exception, so the timezone-conversion logic itself still
+    lives in exactly one place rather than being duplicated in the
+    router."""
+    return _to_local_time(moment, zone_name).strftime("%d %b %Y, %I:%M %p")
 
 
 # ---------------------------------------------------------------------
@@ -1093,3 +1109,353 @@ def render_medicine_bill_receipt(
 </body>
 </html>
 """
+
+
+# ---------------------------------------------------------------------
+# A4 report layout (2026-08-26 addition, Ward/Emergency Inventory
+# Management module) — genuinely different in kind from every document
+# above: multi-row tabular reports, primarily meant to be saved as a
+# PDF via the browser's own Print dialog "Save as PDF" destination
+# (investigated before building: no PDF-generation library exists in
+# this project's dependencies, and this module's own top-level
+# docstring already committed to "the browser rasterizes, this service
+# only ever renders HTML" — adding a second, disconnected binary-PDF
+# pipeline for these two documents alone would duplicate what the
+# browser already does today for every other print in this app), with
+# printing as a secondary option on the exact same document. Never the
+# narrow 42mm single-column `_RECEIPT_STYLE` layout above — a real A4
+# page, real `<table>` columns, letterhead-style report typography.
+#
+# `render_inventory_history_log` (the Inventory Manager's own filterable
+# log) is deliberately ONE function serving all three of receipts/
+# transfers/usage entries, not three near-identical typed functions —
+# unlike `render_invoice_receipt`/`render_registration_slip`/
+# `render_medicine_bill_receipt` above (which are genuinely different
+# documents, with different sections), these three are structurally
+# identical reports — a title, a scope description, a table, a summary
+# — differing only in which columns apply. `log_type` here exists only
+# to pick the title text; every column header and every cell's own
+# formatting (item names, patient names, "Recorded By" names — all
+# already resolved from ids to display strings) is the caller's
+# responsibility (app/modules/inventory/router.py), matching this
+# module's own "the owning module decides what to render" boundary.
+#
+# `render_inventory_daily_usage_slip` is a separate, second function —
+# Vitals' own one-staff-member, one-day summary has a genuinely
+# different framing (staff name + day, not a generic item/date-range
+# filter) even though its content shape (a table of usage rows) is the
+# same "usage" case as the log above; it shares the same low-level
+# `_report_shell_html`/`_report_table_html` building blocks rather than
+# duplicating them.
+# ---------------------------------------------------------------------
+
+_INVENTORY_LOG_TITLES = {
+    "receipt": "Main Stock Receipt Log",
+    "transfer": "Transfer to Emergency Stock Log",
+    "usage": "Emergency Stock Usage Log",
+}
+
+_REPORT_STYLE = """
+  :root {
+    --ink: #111111;
+    --ink-soft: #555555;
+    --rule: #d0d0d0;
+    --rule-strong: #111111;
+    --header-tint: #f2f2f2;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: 'Inter', -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: #eeeeee;
+  }
+  body {
+    padding: 16px;
+    display: flex;
+    justify-content: center;
+  }
+  .sheet {
+    width: 100%;
+    max-width: 190mm;
+    background: #ffffff;
+    border: 1px solid #dddddd;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    padding: 12mm;
+  }
+
+  /* ---------- Header — logo left, identity + contact right, a
+     letterhead shape rather than the receipt's centered/stacked one:
+     a report is read at a desk, not torn off a till, so a wider
+     side-by-side layout reads more like a real business document. ---------- */
+  .report-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .report-header .identity {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .report-header .logo {
+    height: 40px;
+    width: auto;
+    object-fit: contain;
+  }
+  .report-header .name {
+    font-size: 16px;
+    font-weight: 800;
+    letter-spacing: 0.2px;
+    margin: 0;
+  }
+  .report-header .tagline {
+    margin-top: 1px;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+  .report-header .contact-block {
+    text-align: right;
+    font-size: 9px;
+    line-height: 1.5;
+    color: var(--ink-soft);
+  }
+  .header-rule { border: none; border-top: 1.5px solid var(--rule-strong); margin: 10px 0 14px; }
+
+  /* ---------- Title block ---------- */
+  .report-title { font-size: 15px; font-weight: 800; margin: 0 0 4px; }
+  .report-meta { font-size: 10px; color: var(--ink-soft); line-height: 1.7; margin-bottom: 14px; }
+  .report-meta strong { color: var(--ink); font-weight: 600; }
+
+  /* ---------- Table ---------- */
+  table.report-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+  table.report-table thead th {
+    background: var(--header-tint);
+    border: 1px solid var(--rule);
+    padding: 6px 8px;
+    text-align: left;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-size: 9px;
+  }
+  table.report-table td {
+    border: 1px solid var(--rule);
+    padding: 6px 8px;
+    vertical-align: top;
+  }
+  table.report-table tbody tr:nth-child(even) { background: #fafafa; }
+  table.report-table td.numeric, table.report-table th.numeric { text-align: right; }
+  .report-empty { padding: 24px 0; text-align: center; color: var(--ink-soft); font-size: 11px; }
+
+  /* ---------- Summary footer ---------- */
+  .report-summary {
+    margin-top: 12px;
+    padding-top: 8px;
+    border-top: 1.5px solid var(--rule-strong);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 20px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--ink-soft);
+  }
+  .report-summary strong { color: var(--ink); }
+
+  @page { size: A4; margin: 15mm; }
+  @media print {
+    * {
+      print-color-adjust: exact !important;
+      -webkit-print-color-adjust: exact !important;
+    }
+    html, body { background: #ffffff !important; padding: 0 !important; }
+    .sheet { border: none !important; box-shadow: none !important; max-width: none; width: 100%; }
+    .logo { filter: grayscale(1); }
+  }
+"""
+
+
+def _report_table_html(
+    *, column_headers: list[str], rows: list[list[str]], numeric_columns: set[int]
+) -> str:
+    if not rows:
+        return '<p class="report-empty">No rows match this report.</p>'
+
+    header_cells = "".join(
+        f'<th class="{"numeric" if index in numeric_columns else ""}">{_escape(header)}</th>'
+        for index, header in enumerate(column_headers)
+    )
+    body_rows = "".join(
+        "<tr>"
+        + "".join(
+            f'<td class="{"numeric" if index in numeric_columns else ""}">{_escape(str(cell))}</td>'
+            for index, cell in enumerate(row)
+        )
+        + "</tr>"
+        for row in rows
+    )
+    return f"""
+    <table class="report-table">
+      <thead><tr>{header_cells}</tr></thead>
+      <tbody>{body_rows}</tbody>
+    </table>
+"""
+
+
+def _report_shell_html(
+    *,
+    hospital_name: str,
+    document_title: str,
+    title_text: str,
+    meta_lines: list[str],
+    table_html: str,
+    summary_line: str,
+) -> str:
+    logo_data_uri = _logo_data_uri()
+    logo_html = (
+        f'<img class="logo" src="{logo_data_uri}" alt="{_escape(hospital_name)} logo">'
+        if logo_data_uri
+        else ""
+    )
+    meta_html = "".join(f"<div>{line}</div>" for line in meta_lines)
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{_escape(document_title)}</title>
+<style>
+{_REPORT_STYLE}
+</style>
+</head>
+<body>
+  <div class="sheet">
+    <div class="report-header">
+      <div class="identity">
+        {logo_html}
+        <div>
+          <p class="name">{_escape(hospital_name)}</p>
+          <div class="tagline">Gynecology &bull; Maternity &bull; Women's Care</div>
+        </div>
+      </div>
+      <div class="contact-block">
+        <div>Shalimar Link Road, Lahore</div>
+        <div>Open 24 Hours &middot; 0300-0430009</div>
+      </div>
+    </div>
+    <hr class="header-rule">
+
+    <div class="report-title">{_escape(title_text)}</div>
+    <div class="report-meta">{meta_html}</div>
+
+    {table_html}
+
+    <div class="report-summary">{summary_line}</div>
+  </div>
+</body>
+</html>
+"""
+
+
+def render_inventory_history_log(
+    *,
+    hospital_name: str,
+    display_timezone: str,
+    log_type: str,
+    generated_at: datetime,
+    item_name_filter: str | None,
+    start_date: date | None,
+    end_date: date | None,
+    column_headers: list[str],
+    numeric_columns: set[int],
+    rows: list[list[str]],
+    total_quantity: Decimal | None,
+) -> str:
+    """The Inventory Manager's own filterable history log — "print
+    whichever sub-tab and filters are currently active" (confirmed
+    design): `log_type` selects the title only (see
+    `_INVENTORY_LOG_TITLES`); every column header, every cell's already-
+    resolved display string (item names, patient names, "Recorded By"
+    names), and `total_quantity` (the sum of whichever numeric column is
+    the row quantity, or `None` when that summary wouldn't be
+    meaningful) are all supplied by the caller — see this section's own
+    top-level docstring for why this one function deliberately serves
+    all three receipt/transfer/usage cases rather than three duplicated
+    ones."""
+    title_text = _INVENTORY_LOG_TITLES[log_type]
+    generated_line = f"Generated: {format_local_timestamp(generated_at, display_timezone)}"
+    scope_line = f"<strong>Item:</strong> {_escape(item_name_filter or 'All Items')}"
+    date_range_line = (
+        "<strong>Date Range:</strong> "
+        f"{start_date.isoformat() if start_date else 'Any'} to "
+        f"{end_date.isoformat() if end_date else 'Any'}"
+    )
+    meta_lines = [scope_line, date_range_line, generated_line]
+
+    table_html = _report_table_html(
+        column_headers=column_headers, rows=rows, numeric_columns=numeric_columns
+    )
+    summary_parts = [f"<strong>{len(rows)}</strong> row{'s' if len(rows) != 1 else ''}"]
+    if total_quantity is not None:
+        summary_parts.append(f"<strong>Total Quantity:</strong> {total_quantity}")
+    summary_line = " &middot; ".join(summary_parts)
+
+    return _report_shell_html(
+        hospital_name=hospital_name,
+        document_title=title_text,
+        title_text=title_text,
+        meta_lines=meta_lines,
+        table_html=table_html,
+        summary_line=summary_line,
+    )
+
+
+def render_inventory_daily_usage_slip(
+    *,
+    hospital_name: str,
+    display_timezone: str,
+    vitals_staff_name: str,
+    day: date,
+    generated_at: datetime,
+    column_headers: list[str],
+    numeric_columns: set[int],
+    rows: list[list[str]],
+    total_quantity: Decimal | None,
+) -> str:
+    """Vitals' own end-of-day usage summary/audit — "everything used
+    that day and which patient it went to" (confirmed design), scoped
+    to the one staff member who generated it (never a request-suppliable
+    user id — see app/modules/inventory/router.py's own print endpoint
+    docstring for the actor-scoping this mirrors from `GET /inventory/
+    usage/mine`). Shares `_report_shell_html`/`_report_table_html` with
+    `render_inventory_history_log` above rather than duplicating them —
+    see this section's own top-level docstring for why these two stay
+    separate top-level functions despite that shared plumbing."""
+    title_text = "Daily Usage Slip"
+    generated_line = f"Generated: {format_local_timestamp(generated_at, display_timezone)}"
+    meta_lines = [
+        f"<strong>Vitals Staff:</strong> {_escape(vitals_staff_name)}",
+        f"<strong>Date:</strong> {day.isoformat()}",
+        generated_line,
+    ]
+
+    table_html = _report_table_html(
+        column_headers=column_headers, rows=rows, numeric_columns=numeric_columns
+    )
+    summary_parts = [f"<strong>{len(rows)}</strong> entr{'y' if len(rows) == 1 else 'ies'}"]
+    if total_quantity is not None:
+        summary_parts.append(f"<strong>Total Quantity:</strong> {total_quantity}")
+    summary_line = " &middot; ".join(summary_parts)
+
+    return _report_shell_html(
+        hospital_name=hospital_name,
+        document_title=f"{title_text} — {day.isoformat()}",
+        title_text=title_text,
+        meta_lines=meta_lines,
+        table_html=table_html,
+        summary_line=summary_line,
+    )
