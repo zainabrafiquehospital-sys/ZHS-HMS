@@ -26,6 +26,7 @@ export const ROUTES = {
   BILLING: '/billing',
   ADMIN: '/admin',
   PHARMACY: '/pharmacy',
+  INVENTORY: '/inventory',
   ADMIN_MEDICINES: '/admin/medicines',
   ADMIN_PROCEDURES: '/admin/procedures',
   // A top-level route, not nested under /admin — shared by both Admin

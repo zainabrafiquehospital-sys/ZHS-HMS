@@ -15,6 +15,7 @@ import {
   BookUser,
   Users,
   ListChecks,
+  Warehouse,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { ROUTES } from '@/core/constants/routes';
@@ -38,6 +39,16 @@ const NAV_ITEMS = [
   { href: ROUTES.VITALS, label: 'Vitals', icon: HeartPulse, permission: 'vitals:read' },
   { href: ROUTES.BILLING, label: 'Billing', icon: Receipt, permission: 'billing:read' },
   { href: ROUTES.PHARMACY, label: 'Pharmacy', icon: Pill, permission: 'pharmacy:bill' },
+  // Inventory Manager-only — gated on inventory:manage, not the
+  // broader inventory:read Vitals also holds (see access.js's identical
+  // MODULE_ACCESS entry's own comment): Vitals' own usage/restock
+  // actions live on their own worklist screen, not this one.
+  {
+    href: ROUTES.INVENTORY,
+    label: 'Inventory',
+    icon: Warehouse,
+    permission: 'inventory:manage',
+  },
   // A genuinely shared screen, not an Admin sub-screen — gated purely on
   // `patients:read`, which both Admin (full catalog) and Receptionist
   // (granted directly — see scripts/seed_launch_bootstrap.py's

@@ -1,0 +1,248 @@
+'use client';
+
+import { useState } from 'react';
+import {
+  useInventoryItems,
+  useInventoryReceipts,
+  useInventoryTransfers,
+  useInventoryUsageEntries,
+} from '@/features/inventory/hooks/useInventory';
+import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
+import { Input } from '@/shared/components/ui/Input';
+import { Label } from '@/shared/components/ui/Label';
+import { Select } from '@/shared/components/ui/Select';
+import { Tabs } from '@/shared/components/ui/Tabs';
+import { PageLoader } from '@/shared/components/PageLoader';
+import { PageError } from '@/shared/components/PageError';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/shared/components/ui/Table';
+import { formatDisplayTime } from '@/utils/timezone';
+
+const HISTORY_TABS = [
+  { value: 'receipts', label: 'Receipts' },
+  { value: 'transfers', label: 'Transfers' },
+  { value: 'usage', label: 'Usage' },
+];
+
+function itemName(items, itemId) {
+  return items.find((item) => item.id === itemId)?.name ?? 'Unknown item';
+}
+
+function ReceiptsTable({ items, itemId, startDate, endDate }) {
+  const { data, isLoading, isError, error, refetch } = useInventoryReceipts({
+    itemId: itemId || undefined,
+    startDate: startDate || undefined,
+    endDate: endDate || undefined,
+  });
+
+  if (isLoading) return <PageLoader label="Loading receipts" />;
+  if (isError) {
+    return <PageError error={error} reset={refetch} message="Couldn't load receipts." />;
+  }
+  const rows = data ?? [];
+  if (rows.length === 0) return <p className="text-sm text-muted-foreground">No receipts found.</p>;
+
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Item</TableHead>
+          <TableHead className="text-right">Quantity</TableHead>
+          <TableHead>Received On</TableHead>
+          <TableHead>Entered</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((receipt) => (
+          <TableRow key={receipt.id}>
+            <TableCell className="font-medium text-foreground">
+              {itemName(items, receipt.item_id)}
+            </TableCell>
+            <TableCell className="text-right tabular-nums">{receipt.quantity}</TableCell>
+            <TableCell>{receipt.received_on}</TableCell>
+            <TableCell className="text-muted-foreground">
+              {formatDisplayTime(receipt.created_at)}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+function TransfersTable({ items, itemId, startDate, endDate }) {
+  const { data, isLoading, isError, error, refetch } = useInventoryTransfers({
+    itemId: itemId || undefined,
+    startDate: startDate || undefined,
+    endDate: endDate || undefined,
+  });
+
+  if (isLoading) return <PageLoader label="Loading transfers" />;
+  if (isError) {
+    return <PageError error={error} reset={refetch} message="Couldn't load transfers." />;
+  }
+  const rows = data ?? [];
+  if (rows.length === 0) return <p className="text-sm text-muted-foreground">No transfers found.</p>;
+
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Item</TableHead>
+          <TableHead className="text-right">Quantity</TableHead>
+          <TableHead>Transferred On</TableHead>
+          <TableHead>Entered</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((transfer) => (
+          <TableRow key={transfer.id}>
+            <TableCell className="font-medium text-foreground">
+              {itemName(items, transfer.item_id)}
+            </TableCell>
+            <TableCell className="text-right tabular-nums">{transfer.quantity}</TableCell>
+            <TableCell>{transfer.transferred_on}</TableCell>
+            <TableCell className="text-muted-foreground">
+              {formatDisplayTime(transfer.created_at)}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+function UsageTable({ items, itemId, startDate, endDate }) {
+  const { data, isLoading, isError, error, refetch } = useInventoryUsageEntries({
+    itemId: itemId || undefined,
+    startDate: startDate || undefined,
+    endDate: endDate || undefined,
+  });
+
+  if (isLoading) return <PageLoader label="Loading usage entries" />;
+  if (isError) {
+    return <PageError error={error} reset={refetch} message="Couldn't load usage entries." />;
+  }
+  const rows = data ?? [];
+  if (rows.length === 0) {
+    return <p className="text-sm text-muted-foreground">No usage entries found.</p>;
+  }
+
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Item</TableHead>
+          <TableHead className="text-right">Quantity</TableHead>
+          <TableHead>Patient</TableHead>
+          <TableHead>Reason</TableHead>
+          <TableHead>Used On</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((entry) => (
+          <TableRow key={entry.id}>
+            <TableCell className="font-medium text-foreground">
+              {itemName(items, entry.item_id)}
+            </TableCell>
+            <TableCell className="text-right tabular-nums">{entry.quantity}</TableCell>
+            <TableCell>
+              {entry.manual_patient_name ?? (entry.patient_id ? entry.patient_id.slice(0, 8) : '—')}
+            </TableCell>
+            <TableCell className="max-w-[220px] truncate text-muted-foreground">
+              {entry.reason_note ?? '—'}
+            </TableCell>
+            <TableCell>{entry.used_on}</TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+/** Receipts/Transfers/Usage, each its own sub-tab, sharing one item +
+ * date-range filter strip — the confirmed design's "History: receipts/
+ * transfers/usage entries, filterable by item/date range." Patient
+ * identity on a usage row shows the manual name when present, or a
+ * shortened patient id otherwise (a full name lookup is one more join
+ * this read-only log doesn't need; the Vitals-side screens already show
+ * the full identity at the point of entry). */
+export function InventoryHistoryPanel() {
+  const { data: items } = useInventoryItems();
+  const [activeTab, setActiveTab] = useState('receipts');
+  const [itemId, setItemId] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-col gap-4">
+        <CardTitle>History</CardTitle>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="history-item">Item</Label>
+            <Select
+              id="history-item"
+              value={itemId}
+              onChange={(event) => setItemId(event.target.value)}
+              className="w-auto"
+            >
+              <option value="">All items</option>
+              {(items ?? []).map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="history-start">From</Label>
+            <Input
+              id="history-start"
+              type="date"
+              value={startDate}
+              onChange={(event) => setStartDate(event.target.value)}
+              className="w-auto"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="history-end">To</Label>
+            <Input
+              id="history-end"
+              type="date"
+              value={endDate}
+              onChange={(event) => setEndDate(event.target.value)}
+              className="w-auto"
+            />
+          </div>
+          <Tabs value={activeTab} onValueChange={setActiveTab} tabs={HISTORY_TABS} />
+        </div>
+      </CardHeader>
+      <CardContent>
+        {activeTab === 'receipts' ? (
+          <ReceiptsTable
+            items={items ?? []}
+            itemId={itemId}
+            startDate={startDate}
+            endDate={endDate}
+          />
+        ) : activeTab === 'transfers' ? (
+          <TransfersTable
+            items={items ?? []}
+            itemId={itemId}
+            startDate={startDate}
+            endDate={endDate}
+          />
+        ) : (
+          <UsageTable items={items ?? []} itemId={itemId} startDate={startDate} endDate={endDate} />
+        )}
+      </CardContent>
+    </Card>
+  );
+}

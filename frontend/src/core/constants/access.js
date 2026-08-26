@@ -24,6 +24,13 @@ export const MODULE_ACCESS = [
   { route: ROUTES.VITALS, permission: 'vitals:read', label: 'Vitals' },
   { route: ROUTES.BILLING, permission: 'billing:read', label: 'Billing' },
   { route: ROUTES.PHARMACY, permission: 'pharmacy:bill', label: 'Pharmacy' },
+  // Inventory Manager holds inventory:manage but not any of the other
+  // module permissions above — without this entry, that role would land
+  // on the dashboard root and see "No dashboards are available for your
+  // role" (DashboardOverview.jsx only checks reception/doctor/vitals
+  // permissions), the same landing-route gap every other module's own
+  // entry here already closes.
+  { route: ROUTES.INVENTORY, permission: 'inventory:manage', label: 'Inventory' },
   // ADMIN_MEDICINES/ADMIN_PROCEDURES are not listed here — both are
   // Admin sub-screens, not landing modules in their own right;
   // ROUTES.ADMIN (above) already covers "where does an admin-only
