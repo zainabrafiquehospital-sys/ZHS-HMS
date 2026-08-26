@@ -13,18 +13,19 @@ import { Select } from '@/shared/components/ui/Select';
 import { useToast } from '@/shared/components/toast/ToastProvider';
 
 /**
- * Self-service staff signup — Receptionist, Vitals staff, or Doctor
- * (backend/app/modules/auth/signup_schemas.py's SignupRole; every role
- * shares this exact same form/OTP/approval flow, only the `role` field
- * changes which Role gets granted on approval). Field set mirrors
- * PatientIdentityFields/CreateUserRequest's established conventions;
- * `shift` is the one genuinely new field, required for Receptionist/
- * Vitals specifically because the hospital runs exactly two shifts for
- * front-desk and nursing staff — Doctor is the one role that skips it
- * entirely (see signupSchema.js's own comment and backend
- * SignupRequest._shift_required_unless_doctor: doctors have no shift
- * concept anywhere else in this system), so the field is hidden rather
- * than shown with a meaningless choice once Doctor is selected.
+ * Self-service staff signup — Receptionist, Vitals staff, Doctor, or
+ * Inventory Manager (backend/app/modules/auth/signup_schemas.py's
+ * SignupRole; every role shares this exact same form/OTP/approval flow,
+ * only the `role` field changes which Role gets granted on approval).
+ * Field set mirrors PatientIdentityFields/CreateUserRequest's
+ * established conventions; `shift` is the one genuinely new field,
+ * required for Receptionist/Vitals specifically because the hospital
+ * runs exactly two shifts for front-desk and nursing staff — Doctor and
+ * Inventory Manager are the two roles that skip it entirely (see
+ * signupSchema.js's own comment and backend SignupRequest.
+ * _shift_required_unless_shiftless_role: neither has a shift concept
+ * anywhere else in this system), so the field is hidden rather than
+ * shown with a meaningless choice once either is selected.
  */
 export function SignupForm() {
   const router = useRouter();
@@ -48,17 +49,18 @@ export function SignupForm() {
   });
 
   const role = watch('role');
-  const isDoctor = role === 'doctor';
+  // Mirrors backend's `_SHIFTLESS_SIGNUP_ROLES` exactly.
+  const isShiftless = role === 'doctor' || role === 'inventory_manager';
 
   async function onSubmit(values) {
     try {
-      // Belt-and-braces alongside the hidden field below: a doctor
+      // Belt-and-braces alongside the hidden field below: a shift-less
       // signup never carries a shift, regardless of whatever value
       // react-hook-form's uncontrolled input state happens to still
-      // hold from before the role was switched to Doctor. `null`, not
-      // `''` — the backend's `shift` field is `Shift | None`, and an
-      // empty string is not a valid `Shift` value.
-      const payload = isDoctor ? { ...values, shift: null } : values;
+      // hold from before the role was switched. `null`, not `''` — the
+      // backend's `shift` field is `Shift | None`, and an empty string
+      // is not a valid `Shift` value.
+      const payload = isShiftless ? { ...values, shift: null } : values;
       const response = await signup.mutateAsync(payload);
       toast.success({
         title: 'Account created',
@@ -113,11 +115,12 @@ export function SignupForm() {
           <option value="receptionist">Receptionist</option>
           <option value="vitals">Vitals Staff (Nurse)</option>
           <option value="doctor">Doctor</option>
+          <option value="inventory_manager">Inventory Manager</option>
         </Select>
         {errors.role ? <p className="text-xs text-destructive">{errors.role.message}</p> : null}
       </div>
 
-      {isDoctor ? null : (
+      {isShiftless ? null : (
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="shift">Shift</Label>
           <Select id="shift" defaultValue="" {...register('shift')}>

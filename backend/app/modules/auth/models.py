@@ -138,11 +138,21 @@ class SignupRole(PyEnum):
     depends on. Unlike Receptionist/Vitals, a Doctor signup carries no
     `shift` — see `User.shift`'s own docstring on doctors having no
     shift concept in this system — enforced at the request-schema level
-    (`signup_schemas.SignupRequest`), not here."""
+    (`signup_schemas.SignupRequest`), not here.
+
+    `INVENTORY_MANAGER` (2026-08-26 addition, Ward/Emergency Inventory
+    Management module): unlike Doctor, there was no pre-existing ad hoc
+    role here to investigate/rename — confirmed directly against both
+    dev and production before writing the accompanying migration, which
+    creates the "Inventory Manager" Role fresh (with its own
+    `inventory:read`/`inventory:manage` grants) rather than renaming
+    anything. Also shift-less, for the same reason Doctor is — confirmed
+    with the user rather than assumed."""
 
     RECEPTIONIST = "receptionist"
     VITALS = "vitals"
     DOCTOR = "doctor"
+    INVENTORY_MANAGER = "inventory_manager"
 
 
 class User(BaseEntity):

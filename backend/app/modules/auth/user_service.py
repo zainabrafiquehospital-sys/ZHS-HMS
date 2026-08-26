@@ -94,11 +94,14 @@ _USER_PHONE_CONSTRAINT = "ix_user_phone_number_active"
 # already existed (admin-provisioned accounts, never self-service) under
 # the ad hoc name `demo-doctor-demo` — see
 # 8c263fc375ec_add_doctor_self_service_signup_role.py for the rename to
-# `Doctor` this entry depends on.
+# `Doctor` this entry depends on. "Inventory Manager" (2026-08-26) is
+# created fresh by its own migration — no rename involved, see
+# models.SignupRole.INVENTORY_MANAGER's own docstring.
 _SIGNUP_ROLE_TO_ROLE_NAME: dict[SignupRole, str] = {
     SignupRole.RECEPTIONIST: "Receptionist",
     SignupRole.VITALS: "Vitals",
     SignupRole.DOCTOR: "Doctor",
+    SignupRole.INVENTORY_MANAGER: "Inventory Manager",
 }
 
 

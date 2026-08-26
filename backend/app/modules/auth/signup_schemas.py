@@ -13,9 +13,10 @@ already validates against, `password` policy-checked the same way
 validation shapes — `shift` is the one genuinely new field, required
 for Receptionist/Vitals signups (unlike on `User` itself, where it's
 nullable — see Shift's model docstring) since those roles always state
-one; required for every self-service role *except* Doctor (2026-08-24
-addition — see `SignupRequest._shift_required_unless_doctor` and
-`SignupRole.DOCTOR`'s own docstring)."""
+one; required for every self-service role *except* the shift-less ones
+(Doctor, 2026-08-24; Inventory Manager, 2026-08-26 — see
+`SignupRequest._shift_required_unless_shiftless_role` and
+`_SHIFTLESS_SIGNUP_ROLES`)."""
 
 import re
 from enum import Enum as PyEnum
@@ -62,11 +63,26 @@ class SignupRole(str, PyEnum):
     `demo-doctor-demo` -> `Doctor` role-naming investigation behind it.
     The one genuine difference: a Doctor signup carries no `shift` (see
     `SignupRequest.shift`'s own docstring) — every other field and the
-    entire signup/OTP/approval pipeline is shared, unchanged."""
+    entire signup/OTP/approval pipeline is shared, unchanged.
+
+    `INVENTORY_MANAGER` (2026-08-26 addition, Ward/Emergency Inventory
+    Management module) — the identical additive pattern a third time,
+    and shift-less for the same reason Doctor is (confirmed with the
+    user rather than assumed): unlike Doctor, there was no pre-existing
+    ad hoc role to investigate/rename here at all — confirmed directly
+    against both dev and production before writing the accompanying
+    migration, which creates the "Inventory Manager" role fresh."""
 
     RECEPTIONIST = "receptionist"
     VITALS = "vitals"
     DOCTOR = "doctor"
+    INVENTORY_MANAGER = "inventory_manager"
+
+
+# Signup roles that carry no `shift` — see `SignupRequest.
+# _shift_required_unless_shiftless_role` below and `SignupRole.DOCTOR`'s/
+# `INVENTORY_MANAGER`'s own docstrings for why each was added here.
+_SHIFTLESS_SIGNUP_ROLES = frozenset({SignupRole.DOCTOR, SignupRole.INVENTORY_MANAGER})
 
 
 # ---------------------------------------------------------------------
@@ -81,15 +97,16 @@ class SignupRequest(BaseModel):
     email: EmailStr
     phone_number: str = Field(min_length=7, max_length=20)
     password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
-    # Required for every self-service role except Doctor (2026-08-24):
-    # see User.shift's own docstring — doctors have no shift concept
-    # anywhere else in this system (admin-provisioned accounts leave it
-    # unset the same way), so a Doctor signup must not be forced to
-    # invent one. Nullable here at the type level; `_shift_required_
-    # unless_doctor` below is what actually enforces "required for
-    # every other role" and normalizes a Doctor signup's shift to None
-    # regardless of what was submitted, rather than trusting the client
-    # to omit it.
+    # Required for every self-service role except the shift-less ones
+    # (Doctor, 2026-08-24; Inventory Manager, 2026-08-26 — see
+    # `_SHIFTLESS_SIGNUP_ROLES`): see User.shift's own docstring — those
+    # roles have no shift concept anywhere else in this system
+    # (admin-provisioned accounts leave it unset the same way), so their
+    # signup must not be forced to invent one. Nullable here at the type
+    # level; `_shift_required_unless_shiftless_role` below is what
+    # actually enforces "required for every other role" and normalizes a
+    # shift-less signup's shift to None regardless of what was
+    # submitted, rather than trusting the client to omit it.
     shift: Shift | None = None
     role: SignupRole = SignupRole.RECEPTIONIST
 
@@ -110,12 +127,13 @@ class SignupRequest(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def _shift_required_unless_doctor(self) -> "SignupRequest":
-        if self.role == SignupRole.DOCTOR:
-            # Doctor carries no shift — normalize away any value a
-            # client sent rather than reject it outright, the same
-            # forgiving treatment `SignupResponse`'s minimal shape and
-            # this module's other "generic, non-leaky" responses favor.
+    def _shift_required_unless_shiftless_role(self) -> "SignupRequest":
+        if self.role in _SHIFTLESS_SIGNUP_ROLES:
+            # Doctor/Inventory Manager carry no shift — normalize away
+            # any value a client sent rather than reject it outright,
+            # the same forgiving treatment `SignupResponse`'s minimal
+            # shape and this module's other "generic, non-leaky"
+            # responses favor.
             self.shift = None
         elif self.shift is None:
             raise ValueError("Shift is required for this role.")

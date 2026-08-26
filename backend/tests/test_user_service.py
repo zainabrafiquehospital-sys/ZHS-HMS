@@ -597,3 +597,24 @@ async def test_approve_signup_grants_the_doctor_role_for_a_doctor_signup(
     assert approved.status == UserStatus.ACTIVE
     active_role_names = {ur.role.name for ur in approved.user_roles if ur.deleted_at is None}
     assert "Doctor" in active_role_names
+
+
+async def test_approve_signup_grants_the_inventory_manager_role_for_an_inventory_manager_signup(
+    user_service, auth_service, real_session
+):
+    """Same live-database dependency as the Doctor test above, for
+    `_SIGNUP_ROLE_TO_ROLE_NAME`'s `SignupRole.INVENTORY_MANAGER ->
+    "Inventory Manager"` entry (2026-08-26 addition) — created fresh by
+    d3d6140ba992_add_inventory_manager_self_service_.py, not a rename."""
+    actor = await _register(auth_service, "approve-inventory-manager-actor")
+    target = await _make_pending_approval_signup(
+        real_session,
+        "approve-inventory-manager-target",
+        signup_role=SignupRole.INVENTORY_MANAGER,
+    )
+
+    approved = await user_service.approve_signup(actor=actor, user_id=target.id)
+
+    assert approved.status == UserStatus.ACTIVE
+    active_role_names = {ur.role.name for ur in approved.user_roles if ur.deleted_at is None}
+    assert "Inventory Manager" in active_role_names

@@ -178,6 +178,45 @@ async def test_signup_doctor_role_normalizes_a_submitted_shift_to_none(api_clien
     assert user.shift is None
 
 
+async def test_signup_inventory_manager_role_succeeds_without_shift(api_client, real_session):
+    """Same shift-less treatment as Doctor (2026-08-26 addition — see
+    SignupRequest._shift_required_unless_shiftless_role's own docstring):
+    Inventory Manager has no shift concept in this system either."""
+    payload = _signup_payload(
+        email=make_test_email("signup-inventory-manager-no-shift"),
+        phone_number="0300-5551005",
+        role="inventory_manager",
+    )
+    del payload["shift"]
+
+    resp = await api_client.post("/api/v1/auth/signup", json=payload)
+
+    assert resp.status_code == 201
+    assert resp.json()["data"]["email"] == payload["email"]
+
+    user = await UserRepository(real_session).get_by_email(payload["email"])
+    assert user.signup_role.value == "inventory_manager"
+    assert user.shift is None
+
+
+async def test_signup_inventory_manager_role_normalizes_a_submitted_shift_to_none(
+    api_client, real_session
+):
+    payload = _signup_payload(
+        email=make_test_email("signup-inventory-manager-with-shift"),
+        phone_number="0300-5551006",
+        role="inventory_manager",
+        shift="night",
+    )
+
+    resp = await api_client.post("/api/v1/auth/signup", json=payload)
+
+    assert resp.status_code == 201
+
+    user = await UserRepository(real_session).get_by_email(payload["email"])
+    assert user.shift is None
+
+
 async def test_signup_receptionist_role_still_requires_shift(api_client):
     """Regression check: Doctor being exempt from `shift` must not have
     loosened the requirement for the roles that still need it."""

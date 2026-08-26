@@ -25,20 +25,22 @@ import { useToast } from '@/shared/components/toast/ToastProvider';
 
 // Mirrors backend/app/modules/auth/models.py's SignupRole values —
 // human-readable labels for the "Role" column below, since the roles
-// this now mixes together (Receptionist, Vitals staff, and Doctor)
-// need to be told apart at a glance, not just inferred from context
-// the way a single-role list never needed to.
+// this now mixes together (Receptionist, Vitals staff, Doctor, and
+// Inventory Manager) need to be told apart at a glance, not just
+// inferred from context the way a single-role list never needed to.
 const SIGNUP_ROLE_LABEL = {
   receptionist: 'Receptionist',
   vitals: 'Vitals Staff',
   doctor: 'Doctor',
+  inventory_manager: 'Inventory Manager',
 };
 
 /**
  * Every self-service signup currently awaiting an admin decision,
  * across every role that supports self-service signup (Receptionist,
- * Vitals staff, and Doctor — see backend/app/modules/auth/models.py's
- * SignupRole) — see backend/app/modules/auth/user_service.py's
+ * Vitals staff, Doctor, and Inventory Manager — see
+ * backend/app/modules/auth/models.py's SignupRole) — see
+ * backend/app/modules/auth/user_service.py's
  * approve_signup/reject_signup, which grants whichever role each row's
  * own signup requested, not a single hardcoded one. Read-only list
  * plus the two actions; this is deliberately not user/role management
