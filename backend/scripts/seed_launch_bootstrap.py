@@ -95,6 +95,12 @@ from app.modules.dashboard.constants import (
     PERMISSION_DASHBOARD_RECEPTION_READ,
     PERMISSION_DASHBOARD_VITALS_READ,
 )
+from app.modules.inventory.constants import (
+    PERMISSION_INVENTORY_MANAGE,
+    PERMISSION_INVENTORY_READ,
+    PERMISSION_INVENTORY_RECORD_USAGE,
+    PERMISSION_INVENTORY_REQUEST_RESTOCK,
+)
 from app.modules.patients.constants import (
     PERMISSION_PATIENTS_CREATE,
     PERMISSION_PATIENTS_READ,
@@ -277,6 +283,36 @@ PERMISSION_CATALOG: list[tuple[str, str, str]] = [
         "Admin-only: soft-delete a mistakenly-created medicine bill. Blocked if the bill has "
         "a paid or partially-paid balance. Not granted to Receptionist.",
     ),
+    # Ward/Emergency Inventory Management (new module, 2026-08-26) — see
+    # app/modules/inventory/constants.py's own docstring for the full
+    # read/manage/record_usage/request_restock split rationale. Only
+    # Vitals and admin are wired to any of these by this script (see
+    # VITALS_PERMISSION_CODES below) — the "Inventory Manager" role
+    # itself, and its own inventory:manage grant, are seeded separately
+    # alongside that role's self-service-signup rollout, the same
+    # two-step shape Doctor's own role/RBAC split already established.
+    (
+        PERMISSION_INVENTORY_READ,
+        "View Inventory",
+        "View the inventory catalog, both stock levels, transfer/usage history, and "
+        "restock requests.",
+    ),
+    (
+        PERMISSION_INVENTORY_MANAGE,
+        "Manage Inventory",
+        "Manage the inventory catalog, record Main Stock receipts, transfer stock to "
+        "Emergency Stock, and fulfill/reject restock requests.",
+    ),
+    (
+        PERMISSION_INVENTORY_RECORD_USAGE,
+        "Record Inventory Usage",
+        "Record an Emergency Stock item as used against a patient.",
+    ),
+    (
+        PERMISSION_INVENTORY_REQUEST_RESTOCK,
+        "Request Inventory Restock",
+        "Raise a restock request against a low/out Emergency Stock item.",
+    ),
 ]
 
 # ---------------------------------------------------------------------
@@ -360,6 +396,15 @@ VITALS_PERMISSION_CODES: list[str] = [
     PERMISSION_VISITS_READ,  # GET /visits — the vitals worklist's Visit/Patient join
     PERMISSION_QUEUE_READ,  # GET /queue/worklist — the vitals worklist itself
     PERMISSION_DASHBOARD_VITALS_READ,  # the Vitals dashboard card on "/"
+    # Ward/Emergency Inventory Management (2026-08-26 addition) — Vitals
+    # records usage against Emergency Stock and raises restock requests,
+    # and needs read access to search items and see stock levels while
+    # doing either. Deliberately NOT PERMISSION_INVENTORY_MANAGE —
+    # catalog/receipt/transfer/request-resolution actions are Inventory
+    # Manager-only (see app/modules/inventory/constants.py's docstring).
+    PERMISSION_INVENTORY_READ,
+    PERMISSION_INVENTORY_RECORD_USAGE,
+    PERMISSION_INVENTORY_REQUEST_RESTOCK,
 ]
 
 

@@ -120,6 +120,11 @@ TEST_MEDICINE_NAME_PREFIX = "Medicine Test "
 # TEST_MEDICINE_NAME_PREFIX above.
 TEST_PROCEDURE_NAME_PREFIX = "Procedure Test "
 
+# Every inventory item created through InventoryService by the Inventory
+# module's test suite uses this name prefix — identical rationale to
+# TEST_MEDICINE_NAME_PREFIX above.
+TEST_INVENTORY_ITEM_NAME_PREFIX = "Inventory Test "
+
 
 @pytest.fixture
 async def db_session():
@@ -419,8 +424,7 @@ async def real_session():
             )
             await session.execute(
                 text(
-                    "DELETE FROM visit_payment WHERE visit_id IN "
-                    f"({visit_owned_by_test_data})"
+                    "DELETE FROM visit_payment WHERE visit_id IN " f"({visit_owned_by_test_data})"
                 ),
                 cleanup_params,
             )
@@ -432,6 +436,94 @@ async def real_session():
                 text(f"DELETE FROM visit WHERE id IN ({visit_owned_by_test_data})"),
                 cleanup_params,
             )
+            # Inventory rows — identified by their item's name prefix
+            # (the same way TEST_MEDICINE_NAME_PREFIX tags Medicine
+            # rows), since an item is never tied to a single test user
+            # or patient the way a visit/bill is. Must run before the
+            # patient deletion just below: inventory_usage_entry.
+            # patient_id is a plain FK with no ON DELETE clause (see
+            # app/modules/inventory/models.py), same reasoning as every
+            # other no-ON-DELETE-clause cleanup ordering in this
+            # fixture. Deletion order within this block mirrors the
+            # FK graph: restock_request (may reference transfer) and
+            # usage_entry first, then transfer and receipt, then the
+            # item row itself last.
+            inventory_item_owned_by_test_data = (
+                "SELECT id FROM inventory_item WHERE name LIKE :inventory_item_pattern"
+            )
+            cleanup_params["inventory_item_pattern"] = f"{TEST_INVENTORY_ITEM_NAME_PREFIX}%"
+            await session.execute(
+                text(
+                    "DELETE FROM audit_log WHERE entity_id IN "
+                    "(SELECT id FROM inventory_restock_request WHERE item_id IN "
+                    f"({inventory_item_owned_by_test_data}))"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM inventory_restock_request WHERE item_id IN "
+                    f"({inventory_item_owned_by_test_data})"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM audit_log WHERE entity_id IN "
+                    "(SELECT id FROM inventory_usage_entry WHERE item_id IN "
+                    f"({inventory_item_owned_by_test_data}))"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM inventory_usage_entry WHERE item_id IN "
+                    f"({inventory_item_owned_by_test_data})"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM audit_log WHERE entity_id IN "
+                    "(SELECT id FROM inventory_transfer WHERE item_id IN "
+                    f"({inventory_item_owned_by_test_data}))"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM inventory_transfer WHERE item_id IN "
+                    f"({inventory_item_owned_by_test_data})"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM audit_log WHERE entity_id IN "
+                    "(SELECT id FROM inventory_main_stock_receipt WHERE item_id IN "
+                    f"({inventory_item_owned_by_test_data}))"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM inventory_main_stock_receipt WHERE item_id IN "
+                    f"({inventory_item_owned_by_test_data})"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM audit_log WHERE entity_id IN "
+                    f"({inventory_item_owned_by_test_data})"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text("DELETE FROM inventory_item WHERE name LIKE :inventory_item_pattern"),
+                cleanup_params,
+            )
+
             await session.execute(
                 text(
                     "DELETE FROM audit_log WHERE entity_id IN "
