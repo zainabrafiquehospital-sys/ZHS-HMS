@@ -3,7 +3,17 @@
 import { useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { ClipboardList, Pencil, Pill, Printer, Receipt, Search, Trash2, Wallet } from 'lucide-react';
+import {
+  Bell,
+  ClipboardList,
+  Pencil,
+  Pill,
+  Printer,
+  Receipt,
+  Search,
+  Trash2,
+  Wallet,
+} from 'lucide-react';
 import {
   useAdminVisitsForDay,
   useDeleteVisit,
@@ -34,13 +44,18 @@ import {
 } from '@/features/pharmacy/schemas/pharmacySchemas';
 import { PendingApprovals } from '@/features/admin/components/PendingApprovals';
 import { DateNavigator } from '@/features/admin/components/DateNavigator';
+import {
+  useInventoryItems,
+  useInventoryRequests,
+} from '@/features/inventory/hooks/useInventory';
+import { InventoryHistoryPanel } from '@/features/inventory/components/InventoryHistoryPanel';
 import { LeadsSection } from '@/features/admin/components/LeadsSection';
 import { RevenueByActorPieChart } from '@/features/admin/components/RevenueByActorPieChart';
 import {
   computeCombinedRevenueByActor,
   resolveActorSlices,
 } from '@/features/admin/utils/revenueByActor';
-import { Card, CardContent, CardHeader } from '@/shared/components/ui/Card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
 import { ConfirmDialog } from '@/shared/components/ui/ConfirmDialog';
@@ -68,7 +83,20 @@ import { PAYMENT_METHOD_LABELS } from '@/shared/constants/paymentMethod';
 const OVERVIEW_TABS = [
   { value: 'visits', label: 'Visits' },
   { value: 'medicine_bills', label: 'Medicine Bills' },
+  { value: 'inventory', label: 'Inventory' },
 ];
+
+const INVENTORY_SUB_TABS = [
+  { value: 'stock_levels', label: 'Stock Levels' },
+  { value: 'requests', label: 'Restock Requests' },
+  { value: 'history', label: 'History' },
+];
+
+const INVENTORY_REQUEST_STATUS_BADGE_VARIANT = {
+  pending: 'warning',
+  fulfilled: 'success',
+  rejected: 'destructive',
+};
 
 const PAGE_SIZE = 15;
 
@@ -824,6 +852,217 @@ function MedicineBillsPanel({ selectedDate }) {
   );
 }
 
+/** The always-visible "count indicator" for pending Ward/Emergency
+ * Inventory restock requests — same visual shape as `PendingApprovals`
+ * above (a small Card, icon + live count in the title), positioned
+ * right alongside it rather than gated behind the Inventory tab below,
+ * per the confirmed design's own "mirroring how PendingApprovals' own
+ * count already surfaces there" instruction. Deliberately just a count
+ * plus a compact list, not a duplicate of the Inventory tab's own full
+ * pending-and-resolved requests table (see `InventoryRequestsPanel`
+ * below) — this is a glanceable indicator, not a second place to browse
+ * the same data twice. No Fulfill/Reject actions here or anywhere in
+ * this file: those are Inventory-Manager-only operational actions (see
+ * backend/app/modules/inventory/constants.py's own read/manage split);
+ * Admin Overview's own role throughout this file is oversight/
+ * correction (Edit/Delete on Visits and Medicine Bills), never the
+ * primary way an action gets performed, and Inventory has no admin
+ * data-correction endpoint built at all — this stays pure visibility. */
+function PendingInventoryRequestsCard() {
+  const { data: items } = useInventoryItems();
+  const { data: pendingRequests, isLoading, isError, error, refetch } = useInventoryRequests({
+    status: 'pending',
+  });
+
+  const rows = pendingRequests ?? [];
+
+  return (
+    <Card>
+      <CardHeader className="flex-row items-center gap-2">
+        <Bell className="h-4 w-4 text-muted-foreground" />
+        <CardTitle>Pending Inventory Requests ({rows.length})</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <PageLoader label="Loading pending inventory requests" />
+        ) : isError ? (
+          <PageError
+            error={error}
+            reset={refetch}
+            message="Couldn't load pending inventory requests."
+          />
+        ) : rows.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No restock requests are currently awaiting the Inventory Manager.
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-1.5 text-sm">
+            {rows.map((request) => {
+              const item = (items ?? []).find((candidate) => candidate.id === request.item_id);
+              return (
+                <li key={request.id} className="flex items-center justify-between gap-2">
+                  <span className="text-foreground">{item?.name ?? 'Unknown item'}</span>
+                  <span className="text-muted-foreground">
+                    {request.requested_quantity ?? 'unspecified quantity'}
+                    {request.note ? ` — "${request.note}"` : ''}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Read-only "both stock levels" table — Admin sees the exact same
+ * `InventoryItemOut` rows the Inventory Manager's own Catalog tab does,
+ * minus every write action (no Edit, no Activate/Deactivate): this is
+ * oversight, not a second inventory-management surface. */
+function InventoryStockLevelsTable() {
+  const { data: items, isLoading, isError, error, refetch } = useInventoryItems();
+
+  if (isLoading) return <PageLoader label="Loading inventory catalog" />;
+  if (isError) {
+    return <PageError error={error} reset={refetch} message="Couldn't load the item catalog." />;
+  }
+
+  const rows = items ?? [];
+  if (rows.length === 0) {
+    return <p className="text-sm text-muted-foreground">No inventory items have been added yet.</p>;
+  }
+
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Name</TableHead>
+          <TableHead>Category</TableHead>
+          <TableHead>Unit</TableHead>
+          <TableHead className="text-right">Main Stock</TableHead>
+          <TableHead className="text-right">Emergency Stock</TableHead>
+          <TableHead>Status</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((item) => (
+          <TableRow key={item.id}>
+            <TableCell className="font-medium text-foreground">{item.name}</TableCell>
+            <TableCell className="capitalize">{item.category}</TableCell>
+            <TableCell className="capitalize">{item.unit}</TableCell>
+            <TableCell className="text-right tabular-nums">{item.main_stock_level}</TableCell>
+            <TableCell className="text-right tabular-nums">
+              <span className="inline-flex items-center gap-1.5">
+                {item.emergency_stock_level}
+                {item.is_low_stock ? <Badge variant="warning">Low</Badge> : null}
+              </span>
+            </TableCell>
+            <TableCell>
+              <Badge variant={item.is_active ? 'success' : 'outline'}>
+                {item.is_active ? 'Active' : 'Inactive'}
+              </Badge>
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+/** Read-only "all restock requests (pending and resolved)" table — the
+ * Inventory tab's own copy of the same data `PendingInventoryRequestsCard`
+ * above only summarizes; no status filter, so a resolved request never
+ * disappears from Admin's view the way it does from the Inventory
+ * Manager's own worklist-shaped Restock Requests tab. */
+function InventoryRequestsPanel() {
+  const { data: items } = useInventoryItems();
+  const { data: requests, isLoading, isError, error, refetch } = useInventoryRequests({});
+
+  if (isLoading) return <PageLoader label="Loading restock requests" />;
+  if (isError) {
+    return <PageError error={error} reset={refetch} message="Couldn't load restock requests." />;
+  }
+
+  const rows = requests ?? [];
+  if (rows.length === 0) {
+    return <p className="text-sm text-muted-foreground">No restock requests have been raised yet.</p>;
+  }
+
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Item</TableHead>
+          <TableHead className="text-right">Requested Qty</TableHead>
+          <TableHead>Note</TableHead>
+          <TableHead>Status</TableHead>
+          <TableHead>Raised</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((request) => {
+          const item = (items ?? []).find((candidate) => candidate.id === request.item_id);
+          return (
+            <TableRow key={request.id}>
+              <TableCell className="font-medium text-foreground">
+                {item?.name ?? 'Unknown item'}
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                {request.requested_quantity ?? '—'}
+              </TableCell>
+              <TableCell className="max-w-[220px] truncate text-muted-foreground">
+                {request.note ?? '—'}
+              </TableCell>
+              <TableCell>
+                <Badge
+                  variant={INVENTORY_REQUEST_STATUS_BADGE_VARIANT[request.status]}
+                  className="capitalize"
+                >
+                  {request.status}
+                </Badge>
+              </TableCell>
+              <TableCell className="text-muted-foreground">
+                {formatDisplayTime(request.created_at)}
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
+}
+
+/** Ward/Emergency Inventory Management's own Admin Overview tab —
+ * "Admin sees both stock levels, full transfer history, full usage
+ * history (patient-linked or manual), and all restock requests (pending
+ * and resolved)" (confirmed design). Not day-scoped like the Visits/
+ * Medicine Bills tabs (no `selectedDate` prop) — inventory state is a
+ * live, cumulative position, the same "all-time, not scoped to today"
+ * framing `usePendingRevenue` already established for Pending Revenue.
+ * "History" reuses `InventoryHistoryPanel` wholesale, the exact same
+ * component the Inventory Manager's own History tab uses — it was
+ * already fully read-only (no action buttons anywhere in it), so
+ * reusing it here is a real cross-feature reuse, not a coincidence;
+ * it also covers Receipts alongside Transfers/Usage, a superset of what
+ * was asked for at no extra cost. */
+function InventoryPanel() {
+  const [subTab, setSubTab] = useState('stock_levels');
+
+  return (
+    <div className="flex flex-col gap-5">
+      <Tabs value={subTab} onValueChange={setSubTab} tabs={INVENTORY_SUB_TABS} />
+      {subTab === 'stock_levels' ? (
+        <InventoryStockLevelsTable />
+      ) : subTab === 'requests' ? (
+        <InventoryRequestsPanel />
+      ) : (
+        <InventoryHistoryPanel />
+      )}
+    </div>
+  );
+}
+
 export function AdminOverview() {
   const [selectedDate, setSelectedDate] = useState(todayDisplayDayKey());
   const [searchTerm, setSearchTerm] = useState('');
@@ -918,6 +1157,7 @@ export function AdminOverview() {
       </div>
 
       <PendingApprovals />
+      <PendingInventoryRequestsCard />
 
       {/* Combined revenue row (2026-08-20 addition) — visible regardless
           of which tab is active below, same three-way breakdown as the
@@ -956,10 +1196,19 @@ export function AdminOverview() {
       <Card>
         <CardHeader className="flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
           <Tabs value={activeTab} onValueChange={setActiveTab} tabs={OVERVIEW_TABS} />
-          <DateNavigator selectedDate={selectedDate} onChange={handleDateChange} />
+          {/* Hidden on the Inventory tab — inventory state is a live,
+              cumulative position, not scoped to `selectedDate` the way
+              Visits/Medicine Bills are (see InventoryPanel's own
+              docstring); showing a date picker that visibly filters
+              nothing would be misleading. */}
+          {activeTab === 'inventory' ? null : (
+            <DateNavigator selectedDate={selectedDate} onChange={handleDateChange} />
+          )}
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
-          {activeTab === 'medicine_bills' ? (
+          {activeTab === 'inventory' ? (
+            <InventoryPanel />
+          ) : activeTab === 'medicine_bills' ? (
             <MedicineBillsPanel selectedDate={selectedDate} />
           ) : isLoading ? (
             <PageLoader label="Loading visit activity" />
