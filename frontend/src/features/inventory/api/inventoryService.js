@@ -90,4 +90,24 @@ export const inventoryService = {
   getStats() {
     return httpClient.get('/inventory/stats');
   },
+
+  // Vitals' own two write actions (step 4) — record_usage/
+  // request_restock, never inventory:manage's catalog/receipt/transfer/
+  // fulfillment actions above.
+  recordUsage(payload) {
+    return httpClient.post('/inventory/usage', payload);
+  },
+
+  raiseRestockRequest(payload) {
+    return httpClient.post('/inventory/requests', payload);
+  },
+
+  // The usage-entry screen's read-only "MR number + most recent
+  // registered procedure" preview once a patient is picked — see
+  // backend/app/modules/inventory/service.py's get_patient_context
+  // docstring. `latest_visit: null` is a normal outcome (a genuine
+  // ward/emergency patient with no OPD visit on file), never an error.
+  getPatientContext(patientId) {
+    return httpClient.get(`/inventory/patients/${patientId}/context`);
+  },
 };

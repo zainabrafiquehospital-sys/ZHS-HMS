@@ -175,3 +175,49 @@ export function useInventoryStats() {
     queryFn: () => inventoryService.getStats().then((res) => res.data),
   });
 }
+
+// ------------------------------------------------------------------
+// Vitals' own two actions (step 4) — record usage against Emergency
+// Stock, raise a restock request. Both live here (not a separate
+// vitals-owned hooks module) since they're thin wrappers over the same
+// inventoryService/query-key space every hook above already shares —
+// the Vitals feature's own components import these directly, the same
+// cross-feature-imports-a-service pattern RegisterVisitForm.jsx already
+// establishes for pharmacyService.
+// ------------------------------------------------------------------
+
+export function useRecordInventoryUsage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload) => inventoryService.recordUsage(payload),
+    onSuccess: () => {
+      // record_usage's response has no item to spare for
+      // patchItemInCache (InventoryUsageEntryOut, not InventoryItemOut)
+      // — plain invalidation here, same acceptance as useFulfillRequest.
+      invalidateItems(queryClient);
+      queryClient.invalidateQueries({ queryKey: ['inventory', 'stats'] });
+      queryClient.invalidateQueries({ queryKey: ['inventory', 'usage'] });
+    },
+  });
+}
+
+export function useRaiseInventoryRestockRequest() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload) => inventoryService.raiseRestockRequest(payload),
+    onSuccess: () => invalidateRequests(queryClient),
+  });
+}
+
+/** The usage-entry screen's read-only patient preview — see
+ * inventoryService.getPatientContext's own docstring. Disabled until a
+ * patient is actually picked, same `enabled: Boolean(...)` convention
+ * as every other on-demand hook in this codebase (e.g. usePharmacy.js's
+ * useMedicineBillDetail). */
+export function useInventoryPatientContext(patientId) {
+  return useQuery({
+    queryKey: ['inventory', 'patient-context', patientId],
+    queryFn: () => inventoryService.getPatientContext(patientId).then((res) => res.data),
+    enabled: Boolean(patientId),
+  });
+}
