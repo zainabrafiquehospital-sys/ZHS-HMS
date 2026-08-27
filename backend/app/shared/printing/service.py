@@ -1111,6 +1111,160 @@ def render_medicine_bill_receipt(
 """
 
 
+def render_lab_bill_receipt(
+    *,
+    hospital_name: str,
+    display_timezone: str,
+    bill_id: str,
+    bill_created_at: datetime,
+    bill_queue_token: str | None,
+    patient_full_name: str | None,
+    patient_age_years: int | None,
+    patient_phone_number: str | None,
+    line_items: list[tuple[str, str, Decimal]],
+    total_amount: Decimal,
+    amount_paid: Decimal,
+    discount_amount: Decimal = Decimal("0.00"),
+    discount_reason: str | None = None,
+    payment_methods: list[str] | None = None,
+) -> str:
+    """Renders the Laboratory Billing module's lab bill slip — shares
+    the exact 80mm receipt layout every other Central Print Service
+    template uses (see this module's own top-level docstring and
+    `_RECEIPT_STYLE`), and mirrors `render_medicine_bill_receipt`'s own
+    shape almost exactly, with the one difference that module's own
+    design already carries: no quantity.
+
+    `bill_queue_token` mirrors `MedicineBill.queue_token`'s identical
+    mechanism (same unified Postgres sequence) — every LabBill gets a
+    real token from creation (see that model's own docstring), so the
+    `LAB-<uuid fragment>` fallback below only exists for schema-shape
+    symmetry, never expected to actually render in practice.
+
+    `patient_full_name`/`patient_age_years`/`patient_phone_number` are
+    all `None` for a standalone walk-in sale with no linked Patient
+    (confirmed design — LabBill.patient_id is a direct Patient link,
+    never Visit-mediated, see app/modules/lab/models.py's own
+    docstring) — the patient reference section is simply omitted in
+    that case, same convention `render_medicine_bill_receipt` follows
+    for its own walk-in case.
+
+    `line_items` is `(lab_test_name, category, price)` triples, already
+    snapshotted at billing time (see `LabBillItem`'s docstring) — this
+    function renders exactly what was billed, never re-reads the live
+    price list. Unlike the medicine slip's own item rows, there is no
+    quantity/unit-price sub-line to show (confirmed design: a lab test
+    is a service performed, not a countable dispensed unit) — each row
+    is just the test's name (with its category as a small muted second
+    line) and its price, right-aligned. Two rows for the same test
+    (ordered twice) render as two independent rows, exactly as billed.
+
+    Discount/Total/Net/Received/Pending footer, `payment_methods`
+    handling, and the `discount_amount == 0` "row fully absent" rule
+    are all identical to `render_medicine_bill_receipt`'s own — see
+    that function's docstring for the full rationale."""
+    billed_on = _to_local_time(bill_created_at, display_timezone).strftime("%d %b %Y, %I:%M %p")
+    pending = total_amount - amount_paid
+    subtotal = total_amount + discount_amount
+    short_bill_id = bill_id.split("-")[0].upper()
+    token_display = bill_queue_token or f"LAB-{short_bill_id}"
+
+    reference_section = ""
+    if patient_full_name is not None:
+        reference_rows = "".join(
+            [
+                _row("Patient Name", patient_full_name),
+                _row(
+                    "Age",
+                    f"{patient_age_years} years" if patient_age_years is not None else "—",
+                ),
+                _row("Contact Number", patient_phone_number or "—"),
+                _row("Billed On", billed_on),
+            ]
+        )
+        reference_section = f"""
+    <div class="section">
+      <div class="section-heading">Patient Reference</div>
+      {reference_rows}
+    </div>
+"""
+    else:
+        reference_section = f"""
+    <div class="section">
+      <div class="section-heading">Sale Reference</div>
+      {_row("Sale Type", "Walk-in (no patient on file)")}
+      {_row("Billed On", billed_on)}
+    </div>
+"""
+
+    item_rows = "".join(
+        f"""
+      <div class="item-row">
+        <div class="item-main">
+          <div class="item-name">{_escape(name)}</div>
+          <div class="item-meta">{_escape(category.title())}</div>
+        </div>
+        <div class="item-amount">{_money(price)}</div>
+      </div>"""
+        for name, category, price in line_items
+    )
+
+    discount_row = ""
+    if discount_amount > 0:
+        discount_label = "Discount"
+        if discount_reason:
+            discount_label = f"Discount ({_escape(discount_reason)})"
+        discount_row = (
+            f'<div class="total-row"><span>{discount_label}</span>'
+            f'<span class="amount">-{_money(discount_amount)}</span></div>'
+        )
+    paid_via_row = ""
+    if payment_methods:
+        labels = ", ".join(PAYMENT_METHOD_LABELS.get(method, method) for method in payment_methods)
+        paid_via_row = f'<div class="paid-via-row">Paid via: {_escape(labels)}</div>'
+
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Lab Slip — {_escape(token_display)}</title>
+<style>
+{_RECEIPT_STYLE}
+</style>
+</head>
+<body>
+  <div class="sheet">
+    {_header_html(hospital_name)}
+    {_title_box_html("Lab Slip", token_display)}
+
+    {reference_section}
+
+    <div class="items">
+      <div class="section-heading">Tests</div>
+      {item_rows}
+      <div class="totals">
+        <div class="total-row"><span>Total Amount</span><span class="amount">{_money(subtotal)}</span></div>
+        {discount_row}
+        <div class="net-row"><span>Net Amount</span><span>{_money(total_amount)}</span></div>
+        <div class="total-row"><span>Received</span><span class="amount">{_money(amount_paid)}</span></div>
+        {paid_via_row}
+        <div class="total-row pending"><span>Pending</span><span class="amount">{_money(pending)}</span></div>
+      </div>
+    </div>
+
+    <div class="note">
+      <div class="note-label">Note</div>
+      <div class="note-text">
+        Please retain this lab slip for your records. Prices reflect the lab test price
+        list at the time of this sale and are not affected by any later change.
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+
 # ---------------------------------------------------------------------
 # A4 report layout (2026-08-26 addition, Ward/Emergency Inventory
 # Management module) — genuinely different in kind from every document

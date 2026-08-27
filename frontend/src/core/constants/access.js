@@ -24,6 +24,7 @@ export const MODULE_ACCESS = [
   { route: ROUTES.VITALS, permission: 'vitals:read', label: 'Vitals' },
   { route: ROUTES.BILLING, permission: 'billing:read', label: 'Billing' },
   { route: ROUTES.PHARMACY, permission: 'pharmacy:bill', label: 'Pharmacy' },
+  { route: ROUTES.LABORATORY, permission: 'lab:bill', label: 'Laboratory' },
   // Inventory Manager holds inventory:manage but not any of the other
   // module permissions above — without this entry, that role would land
   // on the dashboard root and see "No dashboards are available for your

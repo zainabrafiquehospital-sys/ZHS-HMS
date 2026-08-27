@@ -26,6 +26,7 @@ export const ROUTES = {
   BILLING: '/billing',
   ADMIN: '/admin',
   PHARMACY: '/pharmacy',
+  LABORATORY: '/laboratory',
   INVENTORY: '/inventory',
   ADMIN_MEDICINES: '/admin/medicines',
   ADMIN_PROCEDURES: '/admin/procedures',

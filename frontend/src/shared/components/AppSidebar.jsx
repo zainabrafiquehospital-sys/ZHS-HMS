@@ -11,6 +11,7 @@ import {
   Receipt,
   ShieldCheck,
   Pill,
+  FlaskConical,
   PackageSearch,
   BookUser,
   Users,
@@ -39,6 +40,12 @@ const NAV_ITEMS = [
   { href: ROUTES.VITALS, label: 'Vitals', icon: HeartPulse, permission: 'vitals:read' },
   { href: ROUTES.BILLING, label: 'Billing', icon: Receipt, permission: 'billing:read' },
   { href: ROUTES.PHARMACY, label: 'Pharmacy', icon: Pill, permission: 'pharmacy:bill' },
+  // Own top-level entry right after Pharmacy — Reception's existing
+  // role gets this new permission the same way it already holds
+  // pharmacy:bill/reception:register_visit; no new role or account
+  // type for this module (confirmed design, see backend/app/modules/
+  // lab/constants.py's module docstring).
+  { href: ROUTES.LABORATORY, label: 'Laboratory', icon: FlaskConical, permission: 'lab:bill' },
   // Inventory Manager-only — gated on inventory:manage, not the
   // broader inventory:read Vitals also holds (see access.js's identical
   // MODULE_ACCESS entry's own comment): Vitals' own usage/restock

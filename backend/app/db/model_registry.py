@@ -43,6 +43,7 @@ from app.modules.auth.models import *  # noqa: E402,F401,F403
 from app.modules.billing.models import *  # noqa: E402,F401,F403
 from app.modules.consultation.models import *  # noqa: E402,F401,F403
 from app.modules.inventory.models import *  # noqa: E402,F401,F403
+from app.modules.lab.models import *  # noqa: E402,F401,F403
 from app.modules.patients.models import *  # noqa: E402,F401,F403
 from app.modules.pharmacy.models import *  # noqa: E402,F401,F403
 from app.modules.queue.models import *  # noqa: E402,F401,F403

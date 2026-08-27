@@ -125,6 +125,11 @@ TEST_PROCEDURE_NAME_PREFIX = "Procedure Test "
 # TEST_MEDICINE_NAME_PREFIX above.
 TEST_INVENTORY_ITEM_NAME_PREFIX = "Inventory Test "
 
+# Every lab test created through LabService by the Lab module's test
+# suite uses this name prefix — identical rationale to
+# TEST_MEDICINE_NAME_PREFIX above.
+TEST_LAB_TEST_NAME_PREFIX = "Lab Test Test "
+
 
 @pytest.fixture
 async def db_session():
@@ -363,6 +368,54 @@ async def real_session():
                 ),
                 cleanup_params,
             )
+            # lab_bill/lab_bill_item/lab_bill_payment rows must be deleted
+            # before patient below — lab_bill.patient_id is a plain FK with
+            # no ON DELETE clause (see app/modules/lab/models.py), the same
+            # reasoning as inventory_usage_entry.patient_id's own cleanup-
+            # ordering note further below. Test lab bills are identified by
+            # `created_by` (the acting test user), not by `patient_id`,
+            # since a lab bill's patient link is optional (a standalone
+            # walk-in sale has none) — the same single-condition shape
+            # medicine_bill's own cleanup immediately above already uses.
+            lab_bill_owned_by_test_data = (
+                "SELECT id FROM lab_bill WHERE created_by IN "
+                '(SELECT id FROM "user" WHERE email LIKE :email_pattern)'
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM audit_log WHERE entity_id IN "
+                    "(SELECT id FROM lab_bill_item WHERE lab_bill_id IN "
+                    f"({lab_bill_owned_by_test_data}))"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM lab_bill_item WHERE lab_bill_id IN "
+                    f"({lab_bill_owned_by_test_data})"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM lab_bill_payment WHERE lab_bill_id IN "
+                    f"({lab_bill_owned_by_test_data})"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM audit_log WHERE entity_id IN " f"({lab_bill_owned_by_test_data})"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM lab_bill WHERE created_by IN "
+                    '(SELECT id FROM "user" WHERE email LIKE :email_pattern)'
+                ),
+                cleanup_params,
+            )
             # vitals_record rows must be deleted before both visit and
             # consultation — same no-ON-DELETE-clause reasoning (see
             # app/modules/vitals/models.py). Deleted first since it FKs
@@ -552,6 +605,23 @@ async def real_session():
             await session.execute(
                 text("DELETE FROM medicine WHERE name LIKE :pattern"),
                 {"pattern": f"{TEST_MEDICINE_NAME_PREFIX}%"},
+            )
+            # lab_test rows created directly through the admin CRUD
+            # endpoints (not tied to any bill) — identical rationale/shape
+            # to medicine's own cleanup immediately above. Any
+            # lab_bill_item still referencing one of these was already
+            # deleted above (it's always tied to a test user's lab_bill),
+            # so this is safe to delete on its own.
+            await session.execute(
+                text(
+                    "DELETE FROM audit_log WHERE entity_id IN "
+                    "(SELECT id FROM lab_test WHERE name LIKE :pattern)"
+                ),
+                {"pattern": f"{TEST_LAB_TEST_NAME_PREFIX}%"},
+            )
+            await session.execute(
+                text("DELETE FROM lab_test WHERE name LIKE :pattern"),
+                {"pattern": f"{TEST_LAB_TEST_NAME_PREFIX}%"},
             )
             # procedure catalog rows created directly through
             # VisitService's create_procedure (2026-08-21 addition) —
