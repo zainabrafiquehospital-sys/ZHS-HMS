@@ -1,0 +1,177 @@
+'use client';
+
+import { Boxes, Droplet, Pill, Siren, Syringe, Wrench } from 'lucide-react';
+import { useInventoryItems } from '@/features/inventory/hooks/useInventory';
+import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
+import { Badge } from '@/shared/components/ui/Badge';
+import { PageLoader } from '@/shared/components/PageLoader';
+import { PageError } from '@/shared/components/PageError';
+
+// Covers inventorySchemas.js's INVENTORY_CATEGORIES exactly — no
+// category icons existed anywhere in this app before this screen
+// (Catalog's own category column is plain capitalized text), chosen
+// fresh from the lucide-react set this app already uses everywhere else.
+const CATEGORY_ICONS = {
+  medicine: Pill,
+  injection: Syringe,
+  drip: Droplet,
+  equipment: Wrench,
+};
+
+// Mirrors CATEGORY_ALLOWED_UNITS's full set of units, flattened — fixed
+// display order so the per-unit breakdown line reads the same way every
+// time rather than shuffling with whatever order a Map happens to
+// iterate in.
+const UNIT_DISPLAY_ORDER = ['piece', 'bottle', 'box', 'vial', 'ampoule', 'ml'];
+
+function formatQuantity(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '0';
+  return Number.isInteger(num) ? String(num) : num.toFixed(2).replace(/\.?0+$/, '');
+}
+
+function unitLabel(unit, quantity) {
+  // "ml" has no plural form; every other unit here is a countable noun.
+  if (unit === 'ml') return 'ml';
+  return quantity === 1 ? unit : `${unit}s`;
+}
+
+/** Sums `pick(item)` per distinct `unit` across `items` — the confirmed
+ * "Total Inventory"/"Total Emergency Inventory" aggregation approach:
+ * the catalog's units are genuinely incompatible (piece/bottle/box/vial/
+ * ampoule/ml, and not even uniform within one category — see
+ * CATEGORY_ALLOWED_UNITS), so a single raw cross-unit sum would be
+ * meaningless. This groups by unit instead, so every number shown is a
+ * real, addable quantity. Returns display strings already formatted,
+ * e.g. `["180 pieces", "40 bottles"]`; zero-quantity units are omitted. */
+function summarizeByUnit(items, pick) {
+  const totals = new Map();
+  for (const item of items) {
+    const amount = Number(pick(item)) || 0;
+    totals.set(item.unit, (totals.get(item.unit) ?? 0) + amount);
+  }
+  return UNIT_DISPLAY_ORDER.filter((unit) => (totals.get(unit) ?? 0) > 0).map((unit) => {
+    const quantity = totals.get(unit);
+    return `${formatQuantity(quantity)} ${unitLabel(unit, quantity)}`;
+  });
+}
+
+/** Same visual shape as features/admin/components/AdminOverview.jsx's
+ * own `SummaryTile` (icon-in-a-circle + label + bold number) for visual
+ * consistency with the rest of the app, extended with an optional
+ * secondary per-unit breakdown line beneath the headline number. */
+function OverviewStatTile({ icon: Icon, label, value, breakdown }) {
+  return (
+    <div className="flex items-center gap-3 rounded-md border border-border bg-muted/30 p-4">
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+        <Icon className="h-4 w-4" />
+      </div>
+      <div className="flex flex-col">
+        <span className="text-xs text-muted-foreground">{label}</span>
+        <span className="text-xl font-semibold tabular-nums text-foreground">{value}</span>
+        {breakdown ? <span className="text-xs text-muted-foreground">{breakdown}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function ItemCard({ item }) {
+  const Icon = CATEGORY_ICONS[item.category] ?? Boxes;
+  return (
+    <div className="flex items-start gap-3 rounded-md border border-border bg-card p-4">
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+        <Icon className="h-5 w-5" />
+      </div>
+      <div className="flex flex-1 flex-col gap-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="font-medium text-foreground">{item.name}</span>
+          {item.is_low_stock ? <Badge variant="warning">Low</Badge> : null}
+        </div>
+        <p className="text-xs capitalize text-muted-foreground">{item.category}</p>
+        <div className="flex items-center gap-4 text-sm">
+          <span className="text-muted-foreground">
+            Main:{' '}
+            <span className="font-medium tabular-nums text-foreground">
+              {item.main_stock_level}
+            </span>{' '}
+            {item.unit}
+          </span>
+          <span className="text-muted-foreground">
+            Emergency:{' '}
+            <span className="font-medium tabular-nums text-foreground">
+              {item.emergency_stock_level}
+            </span>{' '}
+            {item.unit}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The Inventory Manager's new default landing view (2026-08-27
+ * addition) — a live, at-a-glance overview distinct from Catalog's own
+ * CRUD/management table. "Total Inventory"/"Total Emergency Inventory"
+ * are each an *item count*, not a raw quantity sum (see summarizeByUnit's
+ * docstring for why a sum across incompatible units would be
+ * meaningless) — a real per-unit quantity breakdown still shows under
+ * each tile, so no quantity visibility is lost. */
+export function InventoryOverviewPanel() {
+  const { data: items, isLoading, isError, error, refetch } = useInventoryItems();
+
+  if (isLoading) return <PageLoader label="Loading inventory" />;
+  if (isError) {
+    return <PageError error={error} reset={refetch} message="Couldn't load the item catalog." />;
+  }
+
+  const activeItems = (items ?? []).filter((item) => item.is_active);
+  const emergencyStockedItems = activeItems.filter(
+    (item) => Number(item.emergency_stock_level) > 0,
+  );
+
+  const totalBreakdown = summarizeByUnit(
+    activeItems,
+    (item) => Number(item.main_stock_level) + Number(item.emergency_stock_level),
+  ).join(' · ');
+  const emergencyBreakdown = summarizeByUnit(activeItems, (item) => item.emergency_stock_level).join(
+    ' · ',
+  );
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <OverviewStatTile
+          icon={Boxes}
+          label="Total Inventory"
+          value={`${activeItems.length} Active Item${activeItems.length === 1 ? '' : 's'}`}
+          breakdown={totalBreakdown || 'No stock recorded yet.'}
+        />
+        <OverviewStatTile
+          icon={Siren}
+          label="Total Emergency Inventory"
+          value={`${emergencyStockedItems.length} Item${emergencyStockedItems.length === 1 ? '' : 's'} Stocked`}
+          breakdown={emergencyBreakdown || 'No emergency stock recorded yet.'}
+        />
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Items</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {activeItems.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No active items in the catalog yet — add one under Catalog first.
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {activeItems.map((item) => (
+                <ItemCard key={item.id} item={item} />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

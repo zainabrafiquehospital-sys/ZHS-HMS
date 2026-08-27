@@ -82,21 +82,46 @@ class TransferStockRequest(BaseModel):
     transferred_on: date_type = Field(strict=False)
 
 
-class RecordUsageRequest(BaseModel):
+class UsageLineItemRequest(BaseModel):
+    """One line of a `RecordUsageRequest`'s `items` batch — same
+    per-line shape (`item_id`/`quantity` plus an optional per-line
+    note) as `pharmacy/schemas.py`'s `MedicineBillLineItemRequest`.
+    `reason_note` is per-line (not a single top-level field) since two
+    items used for the same patient in the same batch can easily have
+    different reasons."""
+
     model_config = ConfigDict(strict=True)
 
     item_id: LaxUUID
     quantity: LaxDecimal = Field(gt=0)
+    reason_note: str | None = Field(default=None, max_length=200)
+
+
+class RecordUsageRequest(BaseModel):
+    """Batch usage recording (2026-08-27 addition) — one patient
+    context (linked or manual) plus one-or-more items, submitted
+    together the same way `CreateMedicineBillRequest.items` batches
+    medicine lines. This does **not** introduce a batch/session parent
+    entity: `InventoryService.record_usage` still writes one fully
+    independent `InventoryUsageEntry` row per line (see models.py's
+    `InventoryUsageEntry` docstring), just atomically — all rows
+    commit together, or none do — matching `PharmacyService.
+    create_bill`'s own all-or-nothing shape."""
+
+    model_config = ConfigDict(strict=True)
+
+    items: list[UsageLineItemRequest] = Field(min_length=1)
     used_on: date_type = Field(strict=False)
     # Patient-linked (mutually exclusive with the manual fields below,
     # all-or-nothing) — see models.py's InventoryUsageEntry docstring
     # for the full rationale; cross-field validation happens in
-    # InventoryService.record_usage, not here.
+    # InventoryService.record_usage, not here. Fixed for the whole
+    # batch, mirroring RegisterVisitForm keeping one patient context
+    # while procedures are added one at a time.
     patient_id: LaxUUID | None = None
     manual_patient_name: str | None = Field(default=None, min_length=1, max_length=150)
     manual_patient_age: int | None = Field(default=None, ge=0, le=150)
     manual_patient_phone: str | None = Field(default=None, min_length=6, max_length=20)
-    reason_note: str | None = Field(default=None, max_length=200)
 
 
 class RaiseRestockRequestRequest(BaseModel):

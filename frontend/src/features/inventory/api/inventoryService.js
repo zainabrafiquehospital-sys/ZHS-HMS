@@ -5,6 +5,15 @@ import { httpClient } from '@/services/api/httpClient';
 // (inventory:read/manage/record_usage/request_restock) each endpoint
 // requires.
 export const inventoryService = {
+  // Active-only, case-insensitive partial-name match — feeds the
+  // item-picker SearchSelect on Receive Stock/Transfer to Emergency/
+  // Record Usage/Raise Restock Request (2026-08-27 addition; the
+  // backend endpoint already existed, this is the first frontend
+  // caller). Same shape as pharmacyService.searchMedicines.
+  searchItems(term) {
+    return httpClient.get('/inventory/items/search', { params: { search: term } });
+  },
+
   // Catalog — every item, active and inactive alike (mirrors
   // pharmacyService.listMedicines's identical "admin management
   // listing" shape).

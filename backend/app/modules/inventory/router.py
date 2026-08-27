@@ -275,18 +275,17 @@ async def record_usage(
     inventory_service: InventoryService = Depends(get_inventory_service),
     actor: User = Depends(require_permission(PERMISSION_INVENTORY_RECORD_USAGE)),
 ) -> dict:
-    entry = await inventory_service.record_usage(
+    entries = await inventory_service.record_usage(
         actor=actor,
-        item_id=payload.item_id,
-        quantity=payload.quantity,
+        items=[(line.item_id, line.quantity, line.reason_note) for line in payload.items],
         used_on=payload.used_on,
         patient_id=payload.patient_id,
         manual_patient_name=payload.manual_patient_name,
         manual_patient_age=payload.manual_patient_age,
         manual_patient_phone=payload.manual_patient_phone,
-        reason_note=payload.reason_note,
     )
-    return success_envelope(InventoryUsageEntryOut.from_entry(entry).model_dump(mode="json"))
+    body = [InventoryUsageEntryOut.from_entry(entry).model_dump(mode="json") for entry in entries]
+    return success_envelope(body)
 
 
 @router.get("/usage")

@@ -91,10 +91,14 @@ export const inventoryManualPatientSchema = z.object({
   manual_patient_phone: z.string().min(6, 'Contact number is required').max(20),
 });
 
-export const recordUsageFormSchema = z.object({
-  item_id: z.string().min(1, 'Select an item'),
+// `used_on` is shared by the whole batch (validated ad hoc alongside the
+// patient-linkage fields in RecordInventoryUsageForm.jsx, the same "plain
+// local state, not folded into a zod schema" convention
+// MedicineBillingWorkspace.jsx's own linkMode toggles already follow) —
+// this only validates one line being added to the running list, same
+// shape as pharmacySchemas.js's billLineItemSchema.
+export const usageLineItemSchema = z.object({
   quantity: positiveQuantity('Quantity must be greater than 0'),
-  used_on: z.string().min(1, 'Select a date'),
   reason_note: z.string().max(200).optional().or(z.literal('')),
 });
 

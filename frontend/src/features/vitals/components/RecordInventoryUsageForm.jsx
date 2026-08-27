@@ -1,29 +1,33 @@
 'use client';
 
 import { useState } from 'react';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { HeartPulse, X } from 'lucide-react';
+import { HeartPulse, Plus, Trash2, X } from 'lucide-react';
 import { patientsService } from '@/features/patients/api/patientsService';
+import { inventoryService } from '@/features/inventory/api/inventoryService';
 import {
-  useInventoryItems,
   useInventoryPatientContext,
   useRecordInventoryUsage,
 } from '@/features/inventory/hooks/useInventory';
 import {
   inventoryManualPatientSchema,
-  recordUsageFormSchema,
+  usageLineItemSchema,
 } from '@/features/inventory/schemas/inventorySchemas';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
 import { Label } from '@/shared/components/ui/Label';
-import { Select } from '@/shared/components/ui/Select';
-import { Textarea } from '@/shared/components/ui/Textarea';
 import { SearchSelect } from '@/shared/components/SearchSelect';
-import { PageLoader } from '@/shared/components/PageLoader';
-import { PageError } from '@/shared/components/PageError';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/shared/components/ui/Table';
 import { todayDisplayDayKey } from '@/utils/timezone';
+
+let nextLineKey = 0;
 
 /** The "which patient is this for" panel — patient-linked, not
  * visit-linked (a deliberate departure from Pharmacy's own
@@ -38,7 +42,9 @@ import { todayDisplayDayKey } from '@/utils/timezone';
  * usage entry itself depends on a visit existing. Manual Entry mirrors
  * VisitLinkPanel's identical fallback exactly (same three fields, same
  * "all three together" rule, same "no patient/visit record is looked up
- * or created" framing). */
+ * or created" framing). Fixed for the whole item batch below — the same
+ * "one context, items added one at a time" shape RegisterVisitForm.jsx
+ * uses for its own patient/visit context while procedures are added. */
 function PatientLinkPanel({
   mode,
   onModeChange,
@@ -167,32 +173,38 @@ function PatientLinkPanel({
   );
 }
 
-/** Records an Emergency Stock usage entry against a patient — the only
- * way emergency_stock_level decreases (see backend/app/modules/
- * inventory/service.py's record_usage docstring). Item picker restricted
- * to active items, mirroring the Inventory Manager's own Receive/
- * Transfer pickers. */
+/** Records one-or-more Emergency Stock usage entries against a fixed
+ * patient context — the only way emergency_stock_level decreases (see
+ * backend/app/modules/inventory/service.py's record_usage docstring).
+ *
+ * Add-to-a-running-list-then-submit-once shape (2026-08-27 redesign),
+ * matching ProcedureItemsEditor.jsx (Reception) and
+ * MedicineBillingWorkspace.jsx's (Pharmacy) own item-adding pattern:
+ * pick an item + quantity (+ optional per-line reason note), add it to
+ * the visible list, repeat, then one "Record Usage" submit sends the
+ * whole list together. The backend still writes one fully independent
+ * InventoryUsageEntry row per line (no batch/session entity), just
+ * atomically — see RecordUsageRequest's own docstring. Item picker is a
+ * SearchSelect against the active-items-only `/inventory/items/search`
+ * endpoint, same reuse as Receive Stock/Transfer to Emergency. */
 export function RecordInventoryUsageForm() {
-  const { data: items, isLoading, isError, error, refetch } = useInventoryItems();
   const recordUsage = useRecordInventoryUsage();
   const [linkMode, setLinkMode] = useState('search');
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [manualName, setManualName] = useState('');
   const [manualAge, setManualAge] = useState('');
   const [manualPhone, setManualPhone] = useState('');
+  const [usedOn, setUsedOn] = useState(todayDisplayDayKey());
+
+  const [selectedItem, setSelectedItem] = useState(null);
+  const [quantity, setQuantity] = useState('');
+  const [reasonNote, setReasonNote] = useState('');
+  const [lineError, setLineError] = useState(null);
+  const [lines, setLines] = useState([]);
+
   const [submitError, setSubmitError] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
-  const {
-    register,
-    handleSubmit,
-    reset,
-    formState: { errors, isSubmitting },
-  } = useForm({
-    resolver: zodResolver(recordUsageFormSchema),
-    defaultValues: { item_id: '', quantity: '', used_on: todayDisplayDayKey(), reason_note: '' },
-  });
-
-  const activeItems = (items ?? []).filter((item) => item.is_active);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   function clearPatientLink() {
     setSelectedPatient(null);
@@ -201,9 +213,44 @@ export function RecordInventoryUsageForm() {
     setManualPhone('');
   }
 
-  async function onSubmit(values) {
+  function handleAddLine() {
+    setLineError(null);
+    if (!selectedItem) return;
+    const parsed = usageLineItemSchema.safeParse({ quantity, reason_note: reasonNote });
+    if (!parsed.success) {
+      setLineError(parsed.error.issues[0]?.message ?? 'Invalid quantity');
+      return;
+    }
+
+    setLines((current) => [
+      ...current,
+      {
+        key: nextLineKey++,
+        item_id: selectedItem.id,
+        name: selectedItem.name,
+        unit: selectedItem.unit,
+        available: selectedItem.emergency_stock_level,
+        quantity: parsed.data.quantity,
+        reason_note: parsed.data.reason_note || '',
+      },
+    ]);
+    setSelectedItem(null);
+    setQuantity('');
+    setReasonNote('');
+  }
+
+  function handleRemoveLine(key) {
+    setLines((current) => current.filter((line) => line.key !== key));
+  }
+
+  async function handleSubmitBatch() {
     setSubmitError(null);
     setSuccessMessage(null);
+
+    if (lines.length === 0) {
+      setSubmitError('Add at least one item before recording usage.');
+      return;
+    }
 
     let manualPatientPayload = {};
     if (!selectedPatient && linkMode === 'manual') {
@@ -222,26 +269,28 @@ export function RecordInventoryUsageForm() {
       return;
     }
 
+    setIsSubmitting(true);
     try {
       await recordUsage.mutateAsync({
-        item_id: values.item_id,
-        quantity: values.quantity,
-        used_on: values.used_on,
-        reason_note: values.reason_note || null,
+        items: lines.map((line) => ({
+          item_id: line.item_id,
+          quantity: line.quantity,
+          reason_note: line.reason_note || null,
+        })),
+        used_on: usedOn,
         patient_id: selectedPatient?.id ?? null,
         ...manualPatientPayload,
       });
-      setSuccessMessage('Usage entry recorded.');
-      reset({ item_id: '', quantity: '', used_on: values.used_on, reason_note: '' });
+      setSuccessMessage(
+        lines.length === 1 ? 'Usage entry recorded.' : `${lines.length} usage entries recorded.`,
+      );
+      setLines([]);
       clearPatientLink();
     } catch (submitErr) {
-      setSubmitError(submitErr.message || 'Unable to record this usage entry.');
+      setSubmitError(submitErr.message || 'Unable to record this usage batch.');
+    } finally {
+      setIsSubmitting(false);
     }
-  }
-
-  if (isLoading) return <PageLoader label="Loading items" />;
-  if (isError) {
-    return <PageError error={error} reset={refetch} message="Couldn't load the item catalog." />;
   }
 
   return (
@@ -262,68 +311,119 @@ export function RecordInventoryUsageForm() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Record Usage</CardTitle>
+          <CardTitle>Add Item</CardTitle>
         </CardHeader>
-        <CardContent>
-          {activeItems.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No active items available right now.</p>
+        <CardContent className="flex flex-col gap-4">
+          <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
+            <div className="flex min-w-[220px] flex-1 flex-col gap-1.5">
+              <Label>Item</Label>
+              <SearchSelect
+                queryKey={['inventory', 'items', 'search']}
+                queryFn={(term) => inventoryService.searchItems(term).then((res) => res.data)}
+                getLabel={(item) => item.name}
+                getDescription={(item) =>
+                  `${item.unit} — ${item.emergency_stock_level} available`
+                }
+                placeholder="Search item by name"
+                selectedLabel={selectedItem ? selectedItem.name : ''}
+                onSelect={(item) => setSelectedItem(item)}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="usage_quantity">Quantity</Label>
+              <Input
+                id="usage_quantity"
+                type="number"
+                step="0.01"
+                min="0"
+                className="w-28"
+                value={quantity}
+                onChange={(event) => setQuantity(event.target.value)}
+              />
+            </div>
+            <div className="flex min-w-[200px] flex-1 flex-col gap-1.5">
+              <Label htmlFor="usage_line_reason_note">Reason (optional)</Label>
+              <Input
+                id="usage_line_reason_note"
+                value={reasonNote}
+                onChange={(event) => setReasonNote(event.target.value)}
+              />
+            </div>
+            <Button type="button" onClick={handleAddLine} disabled={!selectedItem}>
+              <Plus className="h-4 w-4" />
+              Add Item
+            </Button>
+          </div>
+          {lineError ? <p className="text-xs text-destructive">{lineError}</p> : null}
+          <div className="flex flex-col gap-1.5 sm:max-w-xs">
+            <Label htmlFor="usage_used_on">Used On</Label>
+            <Input
+              id="usage_used_on"
+              type="date"
+              value={usedOn}
+              onChange={(event) => setUsedOn(event.target.value)}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Items to Record</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          {lines.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No items added yet.</p>
           ) : (
-            <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
-              <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
-                <div className="flex min-w-[220px] flex-1 flex-col gap-1.5">
-                  <Label htmlFor="usage_item_id">Item</Label>
-                  <Select id="usage_item_id" {...register('item_id')}>
-                    <option value="">Select an item…</option>
-                    {activeItems.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.name} ({item.unit}) — {item.emergency_stock_level} available
-                      </option>
-                    ))}
-                  </Select>
-                  {errors.item_id ? (
-                    <p className="text-xs text-destructive">{errors.item_id.message}</p>
-                  ) : null}
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="usage_quantity">Quantity</Label>
-                  <Input
-                    id="usage_quantity"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    {...register('quantity')}
-                  />
-                  {errors.quantity ? (
-                    <p className="text-xs text-destructive">{errors.quantity.message}</p>
-                  ) : null}
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="usage_used_on">Used On</Label>
-                  <Input id="usage_used_on" type="date" {...register('used_on')} />
-                  {errors.used_on ? (
-                    <p className="text-xs text-destructive">{errors.used_on.message}</p>
-                  ) : null}
-                </div>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="usage_reason_note">Reason (optional)</Label>
-                <Textarea id="usage_reason_note" {...register('reason_note')} />
-              </div>
+            <>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Item</TableHead>
+                    <TableHead className="text-right">Qty</TableHead>
+                    <TableHead>Reason</TableHead>
+                    <TableHead />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {lines.map((line) => (
+                    <TableRow key={line.key}>
+                      <TableCell className="font-medium text-foreground">
+                        {line.name} <span className="text-muted-foreground">({line.unit})</span>
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">{line.quantity}</TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {line.reason_note || '—'}
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => handleRemoveLine(line.key)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
               <div>
-                <Button type="submit" disabled={isSubmitting}>
+                <Button type="button" onClick={handleSubmitBatch} disabled={isSubmitting}>
                   <HeartPulse className="h-4 w-4" />
                   {isSubmitting ? 'Recording…' : 'Record Usage'}
                 </Button>
               </div>
-            </form>
+            </>
           )}
           {submitError ? (
-            <p className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {submitError}
             </p>
           ) : null}
           {successMessage ? (
-            <p className="mt-3 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+            <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
               {successMessage}
             </p>
           ) : null}

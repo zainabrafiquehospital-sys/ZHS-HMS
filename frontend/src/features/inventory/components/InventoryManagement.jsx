@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { AlertTriangle, Bell } from 'lucide-react';
 import { useInventoryStats } from '@/features/inventory/hooks/useInventory';
+import { InventoryOverviewPanel } from '@/features/inventory/components/InventoryOverviewPanel';
 import { InventoryCatalogPanel } from '@/features/inventory/components/InventoryCatalogPanel';
 import { InventoryReceivePanel } from '@/features/inventory/components/InventoryReceivePanel';
 import { InventoryTransferPanel } from '@/features/inventory/components/InventoryTransferPanel';
@@ -12,6 +13,7 @@ import { Badge } from '@/shared/components/ui/Badge';
 import { Tabs } from '@/shared/components/ui/Tabs';
 
 const INVENTORY_TABS = [
+  { value: 'overview', label: 'Overview' },
   { value: 'catalog', label: 'Catalog' },
   { value: 'receive', label: 'Receive Stock' },
   { value: 'transfer', label: 'Transfer to Emergency' },
@@ -21,13 +23,15 @@ const INVENTORY_TABS = [
 
 /** The Inventory Manager's landing screen — same top-level "Tabs switch
  * which panel renders" shape as features/admin/components/
- * AdminOverview.jsx's own OVERVIEW_TABS, extended to five panels instead
- * of two. The stats strip (pending requests / low-stock items) is this
+ * AdminOverview.jsx's own OVERVIEW_TABS, extended to six panels instead
+ * of two. "Overview" (2026-08-27 addition) is the default landing tab —
+ * a live at-a-glance dashboard, distinct from "Catalog"'s CRUD/management
+ * table. The stats strip (pending requests / low-stock items) is this
  * role's own dashboard indicator — surfaced "proactively... on both
  * Inventory Manager's and Admin's dashboards" per the confirmed design;
  * Admin's own copy of these figures is a later step. */
 export function InventoryManagement() {
-  const [activeTab, setActiveTab] = useState('catalog');
+  const [activeTab, setActiveTab] = useState('overview');
   const { data: stats } = useInventoryStats();
 
   return (
@@ -59,7 +63,9 @@ export function InventoryManagement() {
 
       <Tabs value={activeTab} onValueChange={setActiveTab} tabs={INVENTORY_TABS} />
 
-      {activeTab === 'catalog' ? (
+      {activeTab === 'overview' ? (
+        <InventoryOverviewPanel />
+      ) : activeTab === 'catalog' ? (
         <InventoryCatalogPanel />
       ) : activeTab === 'receive' ? (
         <InventoryReceivePanel />

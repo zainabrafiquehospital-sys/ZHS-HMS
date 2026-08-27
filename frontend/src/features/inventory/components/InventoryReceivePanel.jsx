@@ -4,13 +4,14 @@ import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { PackagePlus } from 'lucide-react';
+import { inventoryService } from '@/features/inventory/api/inventoryService';
 import { useInventoryItems, useReceiveStock } from '@/features/inventory/hooks/useInventory';
 import { receiveStockFormSchema } from '@/features/inventory/schemas/inventorySchemas';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
 import { Label } from '@/shared/components/ui/Label';
-import { Select } from '@/shared/components/ui/Select';
+import { SearchSelect } from '@/shared/components/SearchSelect';
 import { PageLoader } from '@/shared/components/PageLoader';
 import { PageError } from '@/shared/components/PageError';
 import { todayDisplayDayKey } from '@/utils/timezone';
@@ -24,12 +25,14 @@ import { todayDisplayDayKey } from '@/utils/timezone';
 export function InventoryReceivePanel() {
   const { data: items, isLoading, isError, error, refetch } = useInventoryItems();
   const receiveStock = useReceiveStock();
+  const [selectedItem, setSelectedItem] = useState(null);
   const [submitError, setSubmitError] = useState(null);
   const [successItemName, setSuccessItemName] = useState(null);
   const {
     register,
     handleSubmit,
     reset,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(receiveStockFormSchema),
@@ -47,6 +50,7 @@ export function InventoryReceivePanel() {
         payload: { quantity: values.quantity, received_on: values.received_on },
       });
       setSuccessItemName(updatedItem.data.name);
+      setSelectedItem(null);
       reset({ item_id: '', quantity: '', received_on: values.received_on });
     } catch (submitErr) {
       setSubmitError(submitErr.message || 'Unable to record this receipt.');
@@ -74,15 +78,19 @@ export function InventoryReceivePanel() {
             className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end"
           >
             <div className="flex min-w-[220px] flex-1 flex-col gap-1.5">
-              <Label htmlFor="item_id">Item</Label>
-              <Select id="item_id" {...register('item_id')}>
-                <option value="">Select an item…</option>
-                {activeItems.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name} ({item.unit})
-                  </option>
-                ))}
-              </Select>
+              <Label>Item</Label>
+              <SearchSelect
+                queryKey={['inventory', 'items', 'search']}
+                queryFn={(term) => inventoryService.searchItems(term).then((res) => res.data)}
+                getLabel={(item) => item.name}
+                getDescription={(item) => item.unit}
+                placeholder="Search item by name"
+                selectedLabel={selectedItem ? selectedItem.name : ''}
+                onSelect={(item) => {
+                  setSelectedItem(item);
+                  setValue('item_id', item.id, { shouldValidate: true });
+                }}
+              />
               {errors.item_id ? (
                 <p className="text-xs text-destructive">{errors.item_id.message}</p>
               ) : null}

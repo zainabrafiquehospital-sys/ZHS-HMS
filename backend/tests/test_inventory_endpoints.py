@@ -118,7 +118,7 @@ async def test_record_usage_requires_record_usage_permission(
 
     resp = await api_client.post(
         "/api/v1/inventory/usage",
-        json={"item_id": item_id, "quantity": "1", "used_on": _TODAY},
+        json={"items": [{"item_id": item_id, "quantity": "1"}], "used_on": _TODAY},
         headers=_auth_header(access_token),
     )
 
@@ -321,23 +321,148 @@ async def test_record_usage_decrements_emergency_stock(api_client, real_session,
     resp = await api_client.post(
         "/api/v1/inventory/usage",
         json={
-            "item_id": item_id,
-            "quantity": "6",
+            "items": [{"item_id": item_id, "quantity": "6", "reason_note": "Post-op drip"}],
             "used_on": _TODAY,
             "patient_id": patient_id,
-            "reason_note": "Post-op drip",
         },
         headers=_auth_header(vitals_token),
     )
 
     assert resp.status_code == 201, resp.text
-    assert resp.json()["data"]["patient_id"] == patient_id
-    assert resp.json()["data"]["reason_note"] == "Post-op drip"
+    assert len(resp.json()["data"]) == 1
+    assert resp.json()["data"][0]["patient_id"] == patient_id
+    assert resp.json()["data"][0]["reason_note"] == "Post-op drip"
 
     item_resp = await api_client.get(
         f"/api/v1/inventory/items/{item_id}", headers=_auth_header(manager_token)
     )
     assert item_resp.json()["data"]["emergency_stock_level"] == "14.00"
+
+
+async def test_record_usage_batch_creates_one_independent_entry_per_item(
+    api_client, real_session, grant_permission
+):
+    """The 2026-08-27 batch addition: multiple items in one `items` list
+    submitted together for the same patient must land as N separate,
+    fully independent `InventoryUsageEntry` rows (matching Reception's
+    procedure-list/Pharmacy's medicine-bill shape) — not a single merged
+    row, and not a new parent/batch entity."""
+    manager, manager_token = await _create_and_login(api_client, real_session, "usage-batch-mgr")
+    await grant_permission(manager, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(manager, PERMISSION_INVENTORY_READ)
+    await grant_permission(manager, PERMISSION_PATIENTS_CREATE)
+    item_a = await _create_item(
+        api_client, manager_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}BatchA"
+    )
+    item_b = await _create_item(
+        api_client, manager_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}BatchB"
+    )
+    for item_id in (item_a, item_b):
+        await api_client.post(
+            f"/api/v1/inventory/items/{item_id}/receive",
+            json={"quantity": "20", "received_on": _TODAY},
+            headers=_auth_header(manager_token),
+        )
+        await api_client.post(
+            f"/api/v1/inventory/items/{item_id}/transfer",
+            json={"quantity": "20", "transferred_on": _TODAY},
+            headers=_auth_header(manager_token),
+        )
+
+    vitals_actor, vitals_token = await _create_and_login(
+        api_client, real_session, "usage-batch-vitals"
+    )
+    await grant_permission(vitals_actor, PERMISSION_INVENTORY_RECORD_USAGE)
+    patient_id = await _create_patient(
+        api_client, manager_token, f"{TEST_PATIENT_NAME_PREFIX}InventoryUsageBatch"
+    )
+
+    resp = await api_client.post(
+        "/api/v1/inventory/usage",
+        json={
+            "items": [
+                {"item_id": item_a, "quantity": "5", "reason_note": "Line A"},
+                {"item_id": item_b, "quantity": "3", "reason_note": "Line B"},
+            ],
+            "used_on": _TODAY,
+            "patient_id": patient_id,
+        },
+        headers=_auth_header(vitals_token),
+    )
+
+    assert resp.status_code == 201, resp.text
+    entries = resp.json()["data"]
+    assert len(entries) == 2
+    assert {entry["id"] for entry in entries} == {entries[0]["id"], entries[1]["id"]}
+    assert all(entry["patient_id"] == patient_id for entry in entries)
+    reason_notes = {entry["item_id"]: entry["reason_note"] for entry in entries}
+    assert reason_notes[item_a] == "Line A"
+    assert reason_notes[item_b] == "Line B"
+
+    item_a_resp = await api_client.get(
+        f"/api/v1/inventory/items/{item_a}", headers=_auth_header(manager_token)
+    )
+    item_b_resp = await api_client.get(
+        f"/api/v1/inventory/items/{item_b}", headers=_auth_header(manager_token)
+    )
+    assert item_a_resp.json()["data"]["emergency_stock_level"] == "15.00"
+    assert item_b_resp.json()["data"]["emergency_stock_level"] == "17.00"
+
+
+async def test_record_usage_batch_is_all_or_nothing(api_client, real_session, grant_permission):
+    """If any line in the batch fails validation, none of the batch's
+    stock decrements or usage-entry rows may land — the same atomicity
+    `PharmacyService.create_bill` guarantees for its own `items` list."""
+    manager, manager_token = await _create_and_login(api_client, real_session, "usage-atomic-mgr")
+    await grant_permission(manager, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(manager, PERMISSION_INVENTORY_READ)
+    ok_item = await _create_item(
+        api_client, manager_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}AtomicOk"
+    )
+    short_item = await _create_item(
+        api_client, manager_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}AtomicShort"
+    )
+    await api_client.post(
+        f"/api/v1/inventory/items/{ok_item}/receive",
+        json={"quantity": "20", "received_on": _TODAY},
+        headers=_auth_header(manager_token),
+    )
+    await api_client.post(
+        f"/api/v1/inventory/items/{ok_item}/transfer",
+        json={"quantity": "20", "transferred_on": _TODAY},
+        headers=_auth_header(manager_token),
+    )
+    # short_item is never received/transferred — emergency_stock_level stays 0.
+
+    vitals_actor, vitals_token = await _create_and_login(
+        api_client, real_session, "usage-atomic-vitals"
+    )
+    await grant_permission(vitals_actor, PERMISSION_INVENTORY_RECORD_USAGE)
+
+    resp = await api_client.post(
+        "/api/v1/inventory/usage",
+        json={
+            "items": [
+                {"item_id": ok_item, "quantity": "5"},
+                {"item_id": short_item, "quantity": "1"},
+            ],
+            "used_on": _TODAY,
+            "manual_patient_name": "Atomic Batch Patient",
+            "manual_patient_age": 33,
+            "manual_patient_phone": "03001114444",
+        },
+        headers=_auth_header(vitals_token),
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "INSUFFICIENT_EMERGENCY_STOCK"
+
+    ok_item_resp = await api_client.get(
+        f"/api/v1/inventory/items/{ok_item}", headers=_auth_header(manager_token)
+    )
+    # Unchanged — the first line's decrement must not have survived the
+    # second line's failure.
+    assert ok_item_resp.json()["data"]["emergency_stock_level"] == "20.00"
 
 
 async def test_record_usage_exceeding_emergency_stock_is_rejected(
@@ -354,8 +479,7 @@ async def test_record_usage_exceeding_emergency_stock_is_rejected(
     resp = await api_client.post(
         "/api/v1/inventory/usage",
         json={
-            "item_id": item_id,
-            "quantity": "1",
+            "items": [{"item_id": item_id, "quantity": "1"}],
             "used_on": _TODAY,
             "manual_patient_name": "Walk-in Patient",
             "manual_patient_age": 40,
@@ -395,8 +519,7 @@ async def test_record_usage_rejects_both_patient_and_manual_fields(
     resp = await api_client.post(
         "/api/v1/inventory/usage",
         json={
-            "item_id": item_id,
-            "quantity": "1",
+            "items": [{"item_id": item_id, "quantity": "1"}],
             "used_on": _TODAY,
             "patient_id": patient_id,
             "manual_patient_name": "Someone Else",
@@ -433,8 +556,7 @@ async def test_record_usage_rejects_incomplete_manual_fields(
     resp = await api_client.post(
         "/api/v1/inventory/usage",
         json={
-            "item_id": item_id,
-            "quantity": "1",
+            "items": [{"item_id": item_id, "quantity": "1"}],
             "used_on": _TODAY,
             "manual_patient_name": "Half Filled",
         },
@@ -644,11 +766,11 @@ async def test_print_history_log_usage_contains_resolved_names(
     await api_client.post(
         "/api/v1/inventory/usage",
         json={
-            "item_id": item_id,
-            "quantity": "3",
+            "items": [
+                {"item_id": item_id, "quantity": "3", "reason_note": "Print log regression check"}
+            ],
             "used_on": _TODAY,
             "patient_id": patient_id,
-            "reason_note": "Print log regression check",
         },
         headers=_auth_header(access_token),
     )
@@ -735,8 +857,7 @@ async def test_print_daily_usage_slip_is_scoped_to_the_calling_actor(
     await api_client.post(
         "/api/v1/inventory/usage",
         json={
-            "item_id": item_id,
-            "quantity": "1",
+            "items": [{"item_id": item_id, "quantity": "1"}],
             "used_on": _TODAY,
             "manual_patient_name": "Slip A Patient",
             "manual_patient_age": 30,
@@ -747,8 +868,7 @@ async def test_print_daily_usage_slip_is_scoped_to_the_calling_actor(
     await api_client.post(
         "/api/v1/inventory/usage",
         json={
-            "item_id": item_id,
-            "quantity": "1",
+            "items": [{"item_id": item_id, "quantity": "1"}],
             "used_on": _TODAY,
             "manual_patient_name": "Slip B Patient",
             "manual_patient_age": 31,

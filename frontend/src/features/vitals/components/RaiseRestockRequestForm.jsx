@@ -13,7 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui
 import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
 import { Label } from '@/shared/components/ui/Label';
-import { Select } from '@/shared/components/ui/Select';
+import { SearchSelect } from '@/shared/components/SearchSelect';
 import { Textarea } from '@/shared/components/ui/Textarea';
 import { Badge } from '@/shared/components/ui/Badge';
 import { PageLoader } from '@/shared/components/PageLoader';
@@ -30,20 +30,33 @@ import { PageError } from '@/shared/components/PageError';
 export function RaiseRestockRequestForm() {
   const { data: items, isLoading, isError, error, refetch } = useInventoryItems();
   const raiseRequest = useRaiseInventoryRestockRequest();
+  const [selectedItem, setSelectedItem] = useState(null);
   const [submitError, setSubmitError] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
   const {
     register,
     handleSubmit,
     reset,
-    watch,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(raiseRestockRequestFormSchema),
     defaultValues: { item_id: '', requested_quantity: '', note: '' },
   });
 
-  const selectedItem = (items ?? []).find((item) => item.id === watch('item_id'));
+  // Client-side filter over the already-fetched full catalog, not the
+  // backend's `/inventory/items/search` (active-items-only) — this
+  // picker deliberately includes inactive items too (see this
+  // component's own docstring on why), so it can't reuse that endpoint
+  // the way Receive Stock/Transfer/Record Usage do. Still the same
+  // SearchSelect component/UX, just backed by a local filter instead of
+  // a network call.
+  function searchCatalog(term) {
+    const lower = term.toLowerCase();
+    return Promise.resolve(
+      (items ?? []).filter((item) => item.name.toLowerCase().includes(lower)),
+    );
+  }
 
   async function onSubmit(values) {
     setSubmitError(null);
@@ -51,6 +64,7 @@ export function RaiseRestockRequestForm() {
     try {
       await raiseRequest.mutateAsync(values);
       setSuccessMessage('Restock request raised — the Inventory Manager has been notified.');
+      setSelectedItem(null);
       reset({ item_id: '', requested_quantity: '', note: '' });
     } catch (submitErr) {
       setSubmitError(submitErr.message || 'Unable to raise this restock request.');
@@ -71,15 +85,19 @@ export function RaiseRestockRequestForm() {
         <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
           <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
             <div className="flex min-w-[220px] flex-1 flex-col gap-1.5">
-              <Label htmlFor="restock_item_id">Item</Label>
-              <Select id="restock_item_id" {...register('item_id')}>
-                <option value="">Select an item…</option>
-                {(items ?? []).map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name} ({item.unit})
-                  </option>
-                ))}
-              </Select>
+              <Label>Item</Label>
+              <SearchSelect
+                queryKey={['inventory', 'items', 'restock-search']}
+                queryFn={searchCatalog}
+                getLabel={(item) => item.name}
+                getDescription={(item) => (item.is_active ? item.unit : `${item.unit} — inactive`)}
+                placeholder="Search item by name"
+                selectedLabel={selectedItem ? selectedItem.name : ''}
+                onSelect={(item) => {
+                  setSelectedItem(item);
+                  setValue('item_id', item.id, { shouldValidate: true });
+                }}
+              />
               {errors.item_id ? (
                 <p className="text-xs text-destructive">{errors.item_id.message}</p>
               ) : null}

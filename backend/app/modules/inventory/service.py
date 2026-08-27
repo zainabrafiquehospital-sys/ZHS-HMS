@@ -325,16 +325,34 @@ class InventoryService:
         self,
         *,
         actor: User,
-        item_id: UUID,
-        quantity: Decimal,
+        items: list[tuple[UUID, Decimal, str | None]],
         used_on: date_type,
         patient_id: UUID | None,
         manual_patient_name: str | None,
         manual_patient_age: int | None,
         manual_patient_phone: str | None,
-        reason_note: str | None,
-    ) -> InventoryUsageEntry:
-        """`patient_id` is mutually exclusive with the three manual
+    ) -> list[InventoryUsageEntry]:
+        """`items` is a list of `(item_id, quantity, reason_note)`
+        triples, already validated non-empty by `RecordUsageRequest` —
+        one patient context (linked or manual) shared by every line,
+        same "fixed context, items added one at a time" shape
+        `RegisterVisitForm` uses for procedures (2026-08-27 batch
+        addition; a single-item call used to be the only shape).
+
+        This does **not** introduce a batch/session parent entity —
+        every line still becomes its own fully independent
+        `InventoryUsageEntry` row (see models.py's docstring for why),
+        just written atomically: one row per line is locked/decremented/
+        inserted in order (so two lines naming the *same* item
+        correctly stack against each other's stock delta, since both
+        run against the same locked, identity-mapped `InventoryItem`
+        row within this one transaction), and if any line fails
+        validation the whole batch raises before the single commit at
+        the end ever runs — no partial usage ever lands, the same
+        all-or-nothing discipline `PharmacyService.create_bill` follows
+        for its own `items` list.
+
+        `patient_id` is mutually exclusive with the three manual
         fields, all-or-nothing when used — validated here (never in the
         request schema), the identical convention `PharmacyService.
         create_bill` already follows for its own `visit_id`/manual-field
@@ -356,50 +374,56 @@ class InventoryService:
         if patient_id is not None:
             await self._patient_service.get_patient(patient_id)
 
-        if quantity <= 0:
-            raise ValidationError("Quantity must be greater than zero.")
-        quantity = _quantize_quantity(quantity)
+        created_entries: list[InventoryUsageEntry] = []
+        for item_id, quantity, reason_note in items:
+            if quantity <= 0:
+                raise ValidationError("Quantity must be greater than zero.")
+            quantity = _quantize_quantity(quantity)
 
-        item = await self._item_repo.get_for_update(item_id)
-        if item is None:
-            raise InventoryItemNotFoundError
-        if not item.is_active:
-            raise InventoryItemInactiveError(item.name)
-        if item.emergency_stock_level < quantity:
-            raise InsufficientEmergencyStockError(item.emergency_stock_level)
+            item = await self._item_repo.get_for_update(item_id)
+            if item is None:
+                raise InventoryItemNotFoundError
+            if not item.is_active:
+                raise InventoryItemInactiveError(item.name)
+            if item.emergency_stock_level < quantity:
+                raise InsufficientEmergencyStockError(item.emergency_stock_level)
 
-        item.emergency_stock_level = item.emergency_stock_level - quantity
-        item.updated_by = actor.id
-        await self._item_repo.add(item)
+            item.emergency_stock_level = item.emergency_stock_level - quantity
+            item.updated_by = actor.id
+            await self._item_repo.add(item)
 
-        entry = InventoryUsageEntry(
-            item_id=item.id,
-            quantity=quantity,
-            used_on=used_on,
-            patient_id=patient_id,
-            manual_patient_name=manual_patient_name,
-            manual_patient_age=manual_patient_age,
-            manual_patient_phone=manual_patient_phone,
-            reason_note=reason_note.strip() if reason_note else None,
-            created_by=actor.id,
-            updated_by=actor.id,
-        )
-        await self._usage_repo.add(entry)
-        await self._audit_repo.record(
-            module="inventory",
-            action="inventory.usage_recorded",
-            entity_type="inventory_usage_entry",
-            entity_id=entry.id,
-            actor_user_id=actor.id,
-            metadata={
-                "item_id": str(item.id),
-                "quantity": str(quantity),
-                "patient_id": str(patient_id) if patient_id else None,
-                "manual_patient_name": manual_patient_name,
-            },
-        )
+            entry = InventoryUsageEntry(
+                item_id=item.id,
+                quantity=quantity,
+                used_on=used_on,
+                patient_id=patient_id,
+                manual_patient_name=manual_patient_name,
+                manual_patient_age=manual_patient_age,
+                manual_patient_phone=manual_patient_phone,
+                reason_note=reason_note.strip() if reason_note else None,
+                created_by=actor.id,
+                updated_by=actor.id,
+            )
+            await self._usage_repo.add(entry)
+            created_entries.append(entry)
+
+        for entry in created_entries:
+            await self._audit_repo.record(
+                module="inventory",
+                action="inventory.usage_recorded",
+                entity_type="inventory_usage_entry",
+                entity_id=entry.id,
+                actor_user_id=actor.id,
+                metadata={
+                    "item_id": str(entry.item_id),
+                    "quantity": str(entry.quantity),
+                    "patient_id": str(patient_id) if patient_id else None,
+                    "manual_patient_name": manual_patient_name,
+                },
+            )
+
         await self._session.commit()
-        return await self._usage_repo.get_by_id(entry.id)
+        return [await self._usage_repo.get_by_id(entry.id) for entry in created_entries]
 
     async def get_patient_context(self, patient_id: UUID) -> tuple[Patient, Visit | None]:
         """Backs the usage-entry screen's read-only "MR number +

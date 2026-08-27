@@ -1,16 +1,17 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { ArrowRightLeft } from 'lucide-react';
+import { inventoryService } from '@/features/inventory/api/inventoryService';
 import { useInventoryItems, useTransferStock } from '@/features/inventory/hooks/useInventory';
 import { transferStockFormSchema } from '@/features/inventory/schemas/inventorySchemas';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
 import { Label } from '@/shared/components/ui/Label';
-import { Select } from '@/shared/components/ui/Select';
+import { SearchSelect } from '@/shared/components/SearchSelect';
 import { PageLoader } from '@/shared/components/PageLoader';
 import { PageError } from '@/shared/components/PageError';
 import { todayDisplayDayKey } from '@/utils/timezone';
@@ -24,21 +25,21 @@ import { todayDisplayDayKey } from '@/utils/timezone';
 export function InventoryTransferPanel() {
   const { data: items, isLoading, isError, error, refetch } = useInventoryItems();
   const transferStock = useTransferStock();
+  const [selectedItem, setSelectedItem] = useState(null);
   const [submitError, setSubmitError] = useState(null);
   const [successItemName, setSuccessItemName] = useState(null);
   const {
     register,
     handleSubmit,
     reset,
-    watch,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(transferStockFormSchema),
     defaultValues: { item_id: '', quantity: '', transferred_on: todayDisplayDayKey() },
   });
 
-  const activeItems = useMemo(() => (items ?? []).filter((item) => item.is_active), [items]);
-  const selectedItem = activeItems.find((item) => item.id === watch('item_id'));
+  const activeItems = (items ?? []).filter((item) => item.is_active);
 
   async function onSubmit(values) {
     setSubmitError(null);
@@ -49,6 +50,7 @@ export function InventoryTransferPanel() {
         payload: { quantity: values.quantity, transferred_on: values.transferred_on },
       });
       setSuccessItemName(updatedItem.data.name);
+      setSelectedItem(null);
       reset({ item_id: '', quantity: '', transferred_on: values.transferred_on });
     } catch (submitErr) {
       setSubmitError(submitErr.message || 'Unable to record this transfer.');
@@ -76,15 +78,19 @@ export function InventoryTransferPanel() {
             className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end"
           >
             <div className="flex min-w-[220px] flex-1 flex-col gap-1.5">
-              <Label htmlFor="item_id">Item</Label>
-              <Select id="item_id" {...register('item_id')}>
-                <option value="">Select an item…</option>
-                {activeItems.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name} ({item.unit})
-                  </option>
-                ))}
-              </Select>
+              <Label>Item</Label>
+              <SearchSelect
+                queryKey={['inventory', 'items', 'search']}
+                queryFn={(term) => inventoryService.searchItems(term).then((res) => res.data)}
+                getLabel={(item) => item.name}
+                getDescription={(item) => `${item.unit} — ${item.main_stock_level} in Main Stock`}
+                placeholder="Search item by name"
+                selectedLabel={selectedItem ? selectedItem.name : ''}
+                onSelect={(item) => {
+                  setSelectedItem(item);
+                  setValue('item_id', item.id, { shouldValidate: true });
+                }}
+              />
               {errors.item_id ? (
                 <p className="text-xs text-destructive">{errors.item_id.message}</p>
               ) : null}
