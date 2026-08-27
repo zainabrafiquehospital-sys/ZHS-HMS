@@ -167,7 +167,11 @@ async def test_fulfill_request_requires_manage_permission(
 
     resp = await api_client.post(
         f"/api/v1/inventory/requests/{request_id}/fulfill",
-        json={"transfer_quantity": "5", "transferred_on": _TODAY},
+        json={
+            "transfer_quantity": "5",
+            "transferred_on": _TODAY,
+            "carried_by_name": "Test Porter",
+        },
         headers=_auth_header(vitals_token),
     )
 
@@ -238,6 +242,7 @@ async def test_receive_then_transfer_moves_stock_between_tiers(
 ):
     actor, access_token = await _create_and_login(api_client, real_session, "receive-transfer")
     await grant_permission(actor, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
     item_id = await _create_item(
         api_client, access_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}ReceiveTransfer"
     )
@@ -252,13 +257,121 @@ async def test_receive_then_transfer_moves_stock_between_tiers(
     assert receive_resp.json()["data"]["emergency_stock_level"] == "0.00"
 
     transfer_resp = await api_client.post(
-        f"/api/v1/inventory/items/{item_id}/transfer",
-        json={"quantity": "30", "transferred_on": _TODAY},
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": item_id, "quantity": "30"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Test Porter",
+        },
         headers=_auth_header(access_token),
     )
     assert transfer_resp.status_code == 200, transfer_resp.text
-    assert transfer_resp.json()["data"]["main_stock_level"] == "70.00"
-    assert transfer_resp.json()["data"]["emergency_stock_level"] == "30.00"
+    assert len(transfer_resp.json()["data"]) == 1
+    assert transfer_resp.json()["data"][0]["main_stock_level"] == "70.00"
+    assert transfer_resp.json()["data"][0]["emergency_stock_level"] == "30.00"
+
+    list_resp = await api_client.get(
+        "/api/v1/inventory/transfers", params={"item_id": item_id}, headers=_auth_header(access_token)
+    )
+    assert list_resp.json()["data"][0]["carried_by_name"] == "Test Porter"
+
+
+async def test_transfer_batch_creates_one_row_per_item_and_updates_both(
+    api_client, real_session, grant_permission
+):
+    """The 2026-08-28 batch addition: multiple items in one `items` list
+    transferred together must move stock for *each* item and land as N
+    separate transfer rows, all sharing the one `carried_by_name` for
+    the whole batch — matching `record_usage`'s own batch shape."""
+    actor, access_token = await _create_and_login(api_client, real_session, "transfer-batch")
+    await grant_permission(actor, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
+    item_a = await _create_item(
+        api_client, access_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}TransferBatchA"
+    )
+    item_b = await _create_item(
+        api_client, access_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}TransferBatchB"
+    )
+    for item_id in (item_a, item_b):
+        await api_client.post(
+            f"/api/v1/inventory/items/{item_id}/receive",
+            json={"quantity": "20", "received_on": _TODAY},
+            headers=_auth_header(access_token),
+        )
+
+    resp = await api_client.post(
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [
+                {"item_id": item_a, "quantity": "5"},
+                {"item_id": item_b, "quantity": "8"},
+            ],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Batch Porter",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    items_out = {row["id"]: row for row in resp.json()["data"]}
+    assert items_out[item_a]["main_stock_level"] == "15.00"
+    assert items_out[item_a]["emergency_stock_level"] == "5.00"
+    assert items_out[item_b]["main_stock_level"] == "12.00"
+    assert items_out[item_b]["emergency_stock_level"] == "8.00"
+
+    for item_id, expected_qty in ((item_a, "5.00"), (item_b, "8.00")):
+        list_resp = await api_client.get(
+            "/api/v1/inventory/transfers",
+            params={"item_id": item_id},
+            headers=_auth_header(access_token),
+        )
+        transfer_row = list_resp.json()["data"][0]
+        assert transfer_row["quantity"] == expected_qty
+        assert transfer_row["carried_by_name"] == "Batch Porter"
+
+
+async def test_transfer_batch_is_all_or_nothing(api_client, real_session, grant_permission):
+    """If any line in the batch exceeds its item's Main Stock, none of
+    the batch's stock movements may land — same all-or-nothing guarantee
+    `record_usage`'s own batch gives."""
+    actor, access_token = await _create_and_login(api_client, real_session, "transfer-atomic")
+    await grant_permission(actor, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
+    ok_item = await _create_item(
+        api_client, access_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}TransferAtomicOk"
+    )
+    short_item = await _create_item(
+        api_client, access_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}TransferAtomicShort"
+    )
+    await api_client.post(
+        f"/api/v1/inventory/items/{ok_item}/receive",
+        json={"quantity": "20", "received_on": _TODAY},
+        headers=_auth_header(access_token),
+    )
+    # short_item is never received — main_stock_level stays 0.
+
+    resp = await api_client.post(
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [
+                {"item_id": ok_item, "quantity": "5"},
+                {"item_id": short_item, "quantity": "1"},
+            ],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Atomic Porter",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "INSUFFICIENT_MAIN_STOCK"
+
+    ok_item_resp = await api_client.get(
+        f"/api/v1/inventory/items/{ok_item}", headers=_auth_header(access_token)
+    )
+    # Unchanged — the first line's decrement must not have survived the
+    # second line's failure.
+    assert ok_item_resp.json()["data"]["main_stock_level"] == "20.00"
 
 
 async def test_transfer_exceeding_main_stock_is_rejected(
@@ -277,8 +390,12 @@ async def test_transfer_exceeding_main_stock_is_rejected(
     )
 
     resp = await api_client.post(
-        f"/api/v1/inventory/items/{item_id}/transfer",
-        json={"quantity": "11", "transferred_on": _TODAY},
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": item_id, "quantity": "11"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Test Porter",
+        },
         headers=_auth_header(access_token),
     )
 
@@ -307,8 +424,12 @@ async def test_record_usage_decrements_emergency_stock(api_client, real_session,
         headers=_auth_header(manager_token),
     )
     await api_client.post(
-        f"/api/v1/inventory/items/{item_id}/transfer",
-        json={"quantity": "20", "transferred_on": _TODAY},
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": item_id, "quantity": "20"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Test Porter",
+        },
         headers=_auth_header(manager_token),
     )
 
@@ -339,6 +460,88 @@ async def test_record_usage_decrements_emergency_stock(api_client, real_session,
     assert item_resp.json()["data"]["emergency_stock_level"] == "14.00"
 
 
+async def test_list_usage_entries_resolves_search_linked_patient_name(
+    api_client, real_session, grant_permission
+):
+    """The 2026-08-28 fix: `GET /usage`'s on-screen list must resolve a
+    search-linked `patient_id` to a real display name — it used to
+    return no such field at all, leaving the frontend to fall back to
+    showing a raw id fragment (InventoryHistoryPanel.jsx, shared by the
+    Inventory Manager's and Admin's own History tabs). A manual-entry
+    entry must keep showing its typed name unchanged."""
+    manager, manager_token = await _create_and_login(api_client, real_session, "usage-name-mgr")
+    await grant_permission(manager, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(manager, PERMISSION_INVENTORY_READ)
+    await grant_permission(manager, PERMISSION_PATIENTS_CREATE)
+    item_id = await _create_item(
+        api_client, manager_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}UsageNameResolve"
+    )
+    await api_client.post(
+        f"/api/v1/inventory/items/{item_id}/receive",
+        json={"quantity": "20", "received_on": _TODAY},
+        headers=_auth_header(manager_token),
+    )
+    await api_client.post(
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": item_id, "quantity": "20"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Test Porter",
+        },
+        headers=_auth_header(manager_token),
+    )
+
+    vitals_actor, vitals_token = await _create_and_login(api_client, real_session, "usage-name-v")
+    await grant_permission(vitals_actor, PERMISSION_INVENTORY_RECORD_USAGE)
+    patient_name = f"{TEST_PATIENT_NAME_PREFIX}UsageNameResolve"
+    patient_id = await _create_patient(api_client, manager_token, patient_name)
+
+    await api_client.post(
+        "/api/v1/inventory/usage",
+        json={
+            "items": [
+                {"item_id": item_id, "quantity": "1"},
+                {"item_id": item_id, "quantity": "1"},
+            ],
+            "used_on": _TODAY,
+            "patient_id": patient_id,
+        },
+        headers=_auth_header(vitals_token),
+    )
+    await api_client.post(
+        "/api/v1/inventory/usage",
+        json={
+            "items": [{"item_id": item_id, "quantity": "1"}],
+            "used_on": _TODAY,
+            "manual_patient_name": "Manual Fallback Patient",
+            "manual_patient_age": 45,
+            "manual_patient_phone": "03001112222",
+        },
+        headers=_auth_header(vitals_token),
+    )
+
+    list_resp = await api_client.get(
+        "/api/v1/inventory/usage",
+        params={"item_id": item_id},
+        headers=_auth_header(manager_token),
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    rows = list_resp.json()["data"]
+    assert len(rows) == 3
+
+    linked_rows = [row for row in rows if row["patient_id"] == patient_id]
+    assert len(linked_rows) == 2
+    for row in linked_rows:
+        # Never the raw id — the actual bug being fixed.
+        assert row["patient_display_name"] != patient_id
+        assert patient_id not in row["patient_display_name"]
+        assert patient_name in row["patient_display_name"]
+        assert "MR:" in row["patient_display_name"]
+
+    manual_row = next(row for row in rows if row["manual_patient_name"] == "Manual Fallback Patient")
+    assert manual_row["patient_display_name"] == "Manual Fallback Patient"
+
+
 async def test_record_usage_batch_creates_one_independent_entry_per_item(
     api_client, real_session, grant_permission
 ):
@@ -364,8 +567,12 @@ async def test_record_usage_batch_creates_one_independent_entry_per_item(
             headers=_auth_header(manager_token),
         )
         await api_client.post(
-            f"/api/v1/inventory/items/{item_id}/transfer",
-            json={"quantity": "20", "transferred_on": _TODAY},
+            "/api/v1/inventory/transfers",
+            json={
+                "items": [{"item_id": item_id, "quantity": "20"}],
+                "transferred_on": _TODAY,
+                "carried_by_name": "Test Porter",
+            },
             headers=_auth_header(manager_token),
         )
 
@@ -428,8 +635,12 @@ async def test_record_usage_batch_is_all_or_nothing(api_client, real_session, gr
         headers=_auth_header(manager_token),
     )
     await api_client.post(
-        f"/api/v1/inventory/items/{ok_item}/transfer",
-        json={"quantity": "20", "transferred_on": _TODAY},
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": ok_item, "quantity": "20"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Test Porter",
+        },
         headers=_auth_header(manager_token),
     )
     # short_item is never received/transferred — emergency_stock_level stays 0.
@@ -508,8 +719,12 @@ async def test_record_usage_rejects_both_patient_and_manual_fields(
         headers=_auth_header(access_token),
     )
     await api_client.post(
-        f"/api/v1/inventory/items/{item_id}/transfer",
-        json={"quantity": "10", "transferred_on": _TODAY},
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": item_id, "quantity": "10"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Test Porter",
+        },
         headers=_auth_header(access_token),
     )
     patient_id = await _create_patient(
@@ -548,8 +763,12 @@ async def test_record_usage_rejects_incomplete_manual_fields(
         headers=_auth_header(access_token),
     )
     await api_client.post(
-        f"/api/v1/inventory/items/{item_id}/transfer",
-        json={"quantity": "10", "transferred_on": _TODAY},
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": item_id, "quantity": "10"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Test Porter",
+        },
         headers=_auth_header(access_token),
     )
 
@@ -602,7 +821,11 @@ async def test_fulfill_restock_request_transfers_stock_and_links_transfer(
 
     fulfill_resp = await api_client.post(
         f"/api/v1/inventory/requests/{request_id}/fulfill",
-        json={"transfer_quantity": "15", "transferred_on": _TODAY},
+        json={
+            "transfer_quantity": "15",
+            "transferred_on": _TODAY,
+            "carried_by_name": "Test Porter",
+        },
         headers=_auth_header(manager_token),
     )
     assert fulfill_resp.status_code == 200, fulfill_resp.text
@@ -680,11 +903,15 @@ async def test_is_low_stock_reflects_emergency_level_against_threshold(
         headers=_auth_header(access_token),
     )
     transfer_resp = await api_client.post(
-        f"/api/v1/inventory/items/{item_id}/transfer",
-        json={"quantity": "10", "transferred_on": _TODAY},
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": item_id, "quantity": "10"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Test Porter",
+        },
         headers=_auth_header(access_token),
     )
-    assert transfer_resp.json()["data"]["is_low_stock"] is False  # 10 > 5
+    assert transfer_resp.json()["data"][0]["is_low_stock"] is False  # 10 > 5
 
 
 # ----------------------------------------------------------------------
@@ -756,8 +983,12 @@ async def test_print_history_log_usage_contains_resolved_names(
         headers=_auth_header(access_token),
     )
     await api_client.post(
-        f"/api/v1/inventory/items/{item_id}/transfer",
-        json={"quantity": "10", "transferred_on": _TODAY},
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": item_id, "quantity": "10"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Test Porter",
+        },
         headers=_auth_header(access_token),
     )
     patient_id = await _create_patient(
@@ -812,6 +1043,42 @@ async def test_print_history_log_receipt_type_uses_correct_title(
     assert "Emergency Stock Usage Log" not in resp.text
 
 
+async def test_print_history_log_transfer_type_contains_carried_by(
+    api_client, real_session, grant_permission
+):
+    """The 2026-08-28 "Carried By" column addition — printed alongside
+    every other already-resolved column this report shows."""
+    actor, access_token = await _create_and_login(api_client, real_session, "print-log-transfer")
+    await grant_permission(actor, PERMISSION_INVENTORY_MANAGE)
+    item_id = await _create_item(
+        api_client, access_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}PrintLogTransfer"
+    )
+    await api_client.post(
+        f"/api/v1/inventory/items/{item_id}/receive",
+        json={"quantity": "10", "received_on": _TODAY},
+        headers=_auth_header(access_token),
+    )
+    await api_client.post(
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": item_id, "quantity": "10"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Print Log Porter",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    resp = await api_client.get(
+        "/api/v1/inventory/history/print",
+        params={"log_type": "transfer", "item_id": item_id},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert "Carried By" in resp.text
+    assert "Print Log Porter" in resp.text
+
+
 async def test_print_daily_usage_slip_requires_record_usage_permission(
     api_client, real_session, grant_permission
 ):
@@ -844,8 +1111,12 @@ async def test_print_daily_usage_slip_is_scoped_to_the_calling_actor(
         headers=_auth_header(manager_token),
     )
     await api_client.post(
-        f"/api/v1/inventory/items/{item_id}/transfer",
-        json={"quantity": "10", "transferred_on": _TODAY},
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": item_id, "quantity": "10"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Test Porter",
+        },
         headers=_auth_header(manager_token),
     )
 

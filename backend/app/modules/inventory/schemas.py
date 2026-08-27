@@ -75,11 +75,35 @@ class ReceiveStockRequest(BaseModel):
     received_on: date_type = Field(strict=False)
 
 
-class TransferStockRequest(BaseModel):
+class TransferLineItemRequest(BaseModel):
+    """One line of a `TransferStockRequest`'s `items` batch — same
+    per-line shape (`item_id`/`quantity`) as `UsageLineItemRequest`
+    below, just with no per-line note (nothing about "who carried it"
+    varies per item within one batch — that's `carried_by_name`,
+    shared across the whole transfer)."""
+
     model_config = ConfigDict(strict=True)
 
+    item_id: LaxUUID
     quantity: LaxDecimal = Field(gt=0)
+
+
+class TransferStockRequest(BaseModel):
+    """Batch transfer (2026-08-28 addition) — one `transferred_on`/
+    `carried_by_name` shared across one-or-more items, submitted
+    together the same shape `RecordUsageRequest` established for its
+    own `items` batch. `carried_by_name` is required for every transfer
+    from this addition onward (free text — the person who physically
+    carried the stock, not necessarily a system user); pre-existing
+    transfer rows predate this field entirely and stay `NULL` forever
+    rather than backfilled with a fabricated value — see the migration
+    that added this column for the full rationale."""
+
+    model_config = ConfigDict(strict=True)
+
+    items: list[TransferLineItemRequest] = Field(min_length=1)
     transferred_on: date_type = Field(strict=False)
+    carried_by_name: str = Field(min_length=1, max_length=150)
 
 
 class UsageLineItemRequest(BaseModel):
@@ -136,10 +160,18 @@ class RaiseRestockRequestRequest(BaseModel):
 
 
 class FulfillRestockRequestRequest(BaseModel):
+    """Fulfilling a request performs a transfer internally (see
+    `InventoryService.fulfill_request`'s own docstring) — `carried_by_name`
+    is required here too, for the same reason it's required on
+    `TransferStockRequest`: the model has no way to tell the two paths
+    apart, and "who physically carried it" applies just as much to a
+    fulfillment-driven transfer as a manually-initiated one."""
+
     model_config = ConfigDict(strict=True)
 
     transfer_quantity: LaxDecimal = Field(gt=0)
     transferred_on: date_type = Field(strict=False)
+    carried_by_name: str = Field(min_length=1, max_length=150)
 
 
 class RejectRestockRequestRequest(BaseModel):
@@ -220,6 +252,10 @@ class InventoryTransferOut(BaseModel):
     item_id: UUID
     quantity: Decimal
     transferred_on: date_type
+    # `None` for every transfer recorded before this field existed —
+    # see TransferStockRequest's own docstring; displayed as "—"
+    # wherever a transfer is shown.
+    carried_by_name: str | None
     created_by: UUID | None
     created_at: datetime
 
@@ -230,6 +266,7 @@ class InventoryTransferOut(BaseModel):
             item_id=transfer.item_id,
             quantity=transfer.quantity,
             transferred_on=transfer.transferred_on,
+            carried_by_name=transfer.carried_by_name,
             created_by=transfer.created_by,
             created_at=transfer.created_at,
         )
@@ -249,9 +286,27 @@ class InventoryUsageEntryOut(BaseModel):
     reason_note: str | None
     created_by: UUID | None
     created_at: datetime
+    # Always the final display string — `manual_patient_name` when
+    # present, else the resolved `"{full_name} (MR: {mr_number})"` for
+    # a search-linked patient, else "—" (2026-08-28 addition; the
+    # on-screen History table used to fall back to a raw patient_id
+    # fragment for search-linked entries instead of resolving it — see
+    # this field's caller in router.py's list_usage_entries for the
+    # actual resolution, the identical PatientService.list_by_ids join
+    # the print log has always used). Callers that can't resolve a
+    # patient (none currently) just pass `patient=None`.
+    patient_display_name: str | None
 
     @classmethod
-    def from_entry(cls, entry: InventoryUsageEntry) -> "InventoryUsageEntryOut":
+    def from_entry(
+        cls, entry: InventoryUsageEntry, patient: Patient | None = None
+    ) -> "InventoryUsageEntryOut":
+        if entry.manual_patient_name:
+            patient_display_name = entry.manual_patient_name
+        elif patient is not None:
+            patient_display_name = f"{patient.full_name} (MR: {patient.mr_number})"
+        else:
+            patient_display_name = None
         return cls(
             id=entry.id,
             item_id=entry.item_id,
@@ -264,6 +319,7 @@ class InventoryUsageEntryOut(BaseModel):
             reason_note=entry.reason_note,
             created_by=entry.created_by,
             created_at=entry.created_at,
+            patient_display_name=patient_display_name,
         )
 
 

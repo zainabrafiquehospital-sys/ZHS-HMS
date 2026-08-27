@@ -18,6 +18,7 @@ import { Textarea } from '@/shared/components/ui/Textarea';
 import { Badge } from '@/shared/components/ui/Badge';
 import { PageLoader } from '@/shared/components/PageLoader';
 import { PageError } from '@/shared/components/PageError';
+import { useToast } from '@/shared/components/toast/ToastProvider';
 
 /** Raises a restock request against a low/out Emergency Stock item —
  * `requested_quantity` is optional (confirmed design: "just flag it
@@ -28,6 +29,7 @@ import { PageError } from '@/shared/components/PageError';
  * worth surfacing to the Inventory Manager, not hidden from this
  * picker. */
 export function RaiseRestockRequestForm() {
+  const { toast } = useToast();
   const { data: items, isLoading, isError, error, refetch } = useInventoryItems();
   const raiseRequest = useRaiseInventoryRestockRequest();
   const [selectedItem, setSelectedItem] = useState(null);
@@ -63,11 +65,15 @@ export function RaiseRestockRequestForm() {
     setSuccessMessage(null);
     try {
       await raiseRequest.mutateAsync(values);
-      setSuccessMessage('Restock request raised — the Inventory Manager has been notified.');
+      const message = 'Restock request raised — the Inventory Manager has been notified.';
+      setSuccessMessage(message);
+      toast.success({ title: 'Restock request raised', description: selectedItem?.name });
       setSelectedItem(null);
       reset({ item_id: '', requested_quantity: '', note: '' });
     } catch (submitErr) {
-      setSubmitError(submitErr.message || 'Unable to raise this restock request.');
+      const message = submitErr.message || 'Unable to raise this restock request.';
+      setSubmitError(message);
+      toast.error({ title: 'Unable to raise restock request', description: message });
     }
   }
 
@@ -105,7 +111,7 @@ export function RaiseRestockRequestForm() {
                 <p className="text-xs text-muted-foreground">
                   Emergency Stock available: {selectedItem.emergency_stock_level} {selectedItem.unit}
                   {selectedItem.is_low_stock ? (
-                    <Badge variant="warning" className="ml-2">
+                    <Badge variant="destructive" className="ml-2">
                       Low
                     </Badge>
                   ) : null}

@@ -110,6 +110,7 @@ function TransfersTable({ items, itemId, startDate, endDate }) {
           <TableHead>Item</TableHead>
           <TableHead className="text-right">Quantity</TableHead>
           <TableHead>Transferred On</TableHead>
+          <TableHead>Carried By</TableHead>
           <TableHead>Entered</TableHead>
         </TableRow>
       </TableHeader>
@@ -121,6 +122,10 @@ function TransfersTable({ items, itemId, startDate, endDate }) {
             </TableCell>
             <TableCell className="text-right tabular-nums">{transfer.quantity}</TableCell>
             <TableCell>{transfer.transferred_on}</TableCell>
+            {/* `null` for every transfer recorded before this field
+                existed — see InventoryTransfer.carried_by_name's own
+                docstring. */}
+            <TableCell>{transfer.carried_by_name ?? '—'}</TableCell>
             <TableCell className="text-muted-foreground">
               {formatDisplayTime(transfer.created_at)}
             </TableCell>
@@ -165,9 +170,7 @@ function UsageTable({ items, itemId, startDate, endDate }) {
               {itemName(items, entry.item_id)}
             </TableCell>
             <TableCell className="text-right tabular-nums">{entry.quantity}</TableCell>
-            <TableCell>
-              {entry.manual_patient_name ?? (entry.patient_id ? entry.patient_id.slice(0, 8) : '—')}
-            </TableCell>
+            <TableCell>{entry.patient_display_name ?? '—'}</TableCell>
             <TableCell className="max-w-[220px] truncate text-muted-foreground">
               {entry.reason_note ?? '—'}
             </TableCell>
@@ -181,11 +184,16 @@ function UsageTable({ items, itemId, startDate, endDate }) {
 
 /** Receipts/Transfers/Usage, each its own sub-tab, sharing one item +
  * date-range filter strip — the confirmed design's "History: receipts/
- * transfers/usage entries, filterable by item/date range." Patient
- * identity on a usage row shows the manual name when present, or a
- * shortened patient id otherwise (a full name lookup is one more join
- * this read-only log doesn't need; the Vitals-side screens already show
- * the full identity at the point of entry). */
+ * transfers/usage entries, filterable by item/date range." Reused
+ * wholesale by Admin's own Inventory History tab (see AdminOverview.jsx).
+ *
+ * Patient identity on a usage row is `entry.patient_display_name` —
+ * already fully resolved server-side (2026-08-28 fix; this table used
+ * to fall back to a shortened raw patient id for every search-linked
+ * patient, the exact "one more join this read-only log doesn't need"
+ * tradeoff this docstring used to defend, overridden by real production
+ * confusion — see backend/app/modules/inventory/router.py's
+ * list_usage_entries docstring for the actual resolution). */
 export function InventoryHistoryPanel() {
   const { data: items } = useInventoryItems();
   const [activeTab, setActiveTab] = useState('receipts');

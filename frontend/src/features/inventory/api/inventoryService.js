@@ -40,8 +40,12 @@ export const inventoryService = {
     return httpClient.post(`/inventory/items/${itemId}/receive`, payload);
   },
 
-  transferStock(itemId, payload) {
-    return httpClient.post(`/inventory/items/${itemId}/transfer`, payload);
+  // Batch (2026-08-28 addition) — top-level route, matches recordUsage's
+  // own shape, since a batch's items can span more than one item id.
+  // `payload` is `{items: [{item_id, quantity}], transferred_on,
+  // carried_by_name}`.
+  transferStock(payload) {
+    return httpClient.post('/inventory/transfers', payload);
   },
 
   listReceipts({ itemId, startDate, endDate, page = 1, pageSize = 50 } = {}) {

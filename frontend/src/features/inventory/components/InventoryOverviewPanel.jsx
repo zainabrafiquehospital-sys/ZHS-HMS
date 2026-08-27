@@ -2,6 +2,7 @@
 
 import { Boxes, Droplet, Pill, Siren, Syringe, Wrench } from 'lucide-react';
 import { useInventoryItems } from '@/features/inventory/hooks/useInventory';
+import { INVENTORY_CATEGORIES } from '@/features/inventory/schemas/inventorySchemas';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Badge } from '@/shared/components/ui/Badge';
 import { PageLoader } from '@/shared/components/PageLoader';
@@ -75,6 +76,22 @@ function OverviewStatTile({ icon: Icon, label, value, breakdown }) {
   );
 }
 
+/** Groups `items` by category, fixed in `INVENTORY_CATEGORIES`'s own
+ * order (Medicine/Injection/Drip/Equipment) rather than whatever order
+ * they happen to arrive in — a category with no active items is simply
+ * omitted, never shown as an empty section. */
+function groupByCategory(items) {
+  const byCategory = new Map(INVENTORY_CATEGORIES.map((category) => [category, []]));
+  for (const item of items) {
+    if (!byCategory.has(item.category)) byCategory.set(item.category, []);
+    byCategory.get(item.category).push(item);
+  }
+  return INVENTORY_CATEGORIES.map((category) => ({
+    category,
+    items: byCategory.get(category) ?? [],
+  })).filter((group) => group.items.length > 0);
+}
+
 function ItemCard({ item }) {
   const Icon = CATEGORY_ICONS[item.category] ?? Boxes;
   return (
@@ -85,7 +102,7 @@ function ItemCard({ item }) {
       <div className="flex flex-1 flex-col gap-1.5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="font-medium text-foreground">{item.name}</span>
-          {item.is_low_stock ? <Badge variant="warning">Low</Badge> : null}
+          {item.is_low_stock ? <Badge variant="destructive">Low</Badge> : null}
         </div>
         <p className="text-xs capitalize text-muted-foreground">{item.category}</p>
         <div className="flex items-center gap-4 text-sm">
@@ -115,7 +132,11 @@ function ItemCard({ item }) {
  * are each an *item count*, not a raw quantity sum (see summarizeByUnit's
  * docstring for why a sum across incompatible units would be
  * meaningless) — a real per-unit quantity breakdown still shows under
- * each tile, so no quantity visibility is lost. */
+ * each tile, so no quantity visibility is lost. Item cards below the two
+ * tiles are grouped into a section per category (2026-08-28 addition,
+ * groupByCategory) — the two headline tiles stay ungrouped totals across
+ * the whole catalog, this grouping is purely about how the cards
+ * themselves are laid out. */
 export function InventoryOverviewPanel() {
   const { data: items, isLoading, isError, error, refetch } = useInventoryItems();
 
@@ -158,17 +179,29 @@ export function InventoryOverviewPanel() {
         <CardHeader>
           <CardTitle>Items</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="flex flex-col gap-6">
           {activeItems.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No active items in the catalog yet — add one under Catalog first.
             </p>
           ) : (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {activeItems.map((item) => (
-                <ItemCard key={item.id} item={item} />
-              ))}
-            </div>
+            groupByCategory(activeItems).map(({ category, items: categoryItems }) => {
+              const Icon = CATEGORY_ICONS[category] ?? Boxes;
+              return (
+                <div key={category} className="flex flex-col gap-3">
+                  <div className="flex items-center gap-2 border-b border-border pb-2">
+                    <Icon className="h-4 w-4 text-primary" />
+                    <h3 className="text-sm font-semibold capitalize text-foreground">{category}</h3>
+                    <span className="text-xs text-muted-foreground">({categoryItems.length})</span>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {categoryItems.map((item) => (
+                      <ItemCard key={item.id} item={item} />
+                    ))}
+                  </div>
+                </div>
+              );
+            })
           )}
         </CardContent>
       </Card>

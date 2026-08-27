@@ -25,6 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/shared/components/ui/Table';
+import { useToast } from '@/shared/components/toast/ToastProvider';
 import { todayDisplayDayKey } from '@/utils/timezone';
 
 let nextLineKey = 0;
@@ -188,6 +189,7 @@ function PatientLinkPanel({
  * SearchSelect against the active-items-only `/inventory/items/search`
  * endpoint, same reuse as Receive Stock/Transfer to Emergency. */
 export function RecordInventoryUsageForm() {
+  const { toast } = useToast();
   const recordUsage = useRecordInventoryUsage();
   const [linkMode, setLinkMode] = useState('search');
   const [selectedPatient, setSelectedPatient] = useState(null);
@@ -281,13 +283,16 @@ export function RecordInventoryUsageForm() {
         patient_id: selectedPatient?.id ?? null,
         ...manualPatientPayload,
       });
-      setSuccessMessage(
-        lines.length === 1 ? 'Usage entry recorded.' : `${lines.length} usage entries recorded.`,
-      );
+      const message =
+        lines.length === 1 ? 'Usage entry recorded.' : `${lines.length} usage entries recorded.`;
+      setSuccessMessage(message);
+      toast.success({ title: 'Usage recorded', description: message });
       setLines([]);
       clearPatientLink();
     } catch (submitErr) {
-      setSubmitError(submitErr.message || 'Unable to record this usage batch.');
+      const message = submitErr.message || 'Unable to record this usage batch.';
+      setSubmitError(message);
+      toast.error({ title: 'Unable to record usage', description: message });
     } finally {
       setIsSubmitting(false);
     }

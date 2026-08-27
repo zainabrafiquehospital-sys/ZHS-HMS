@@ -46,13 +46,13 @@ export function InventoryManagement() {
         {stats ? (
           <div className="flex flex-wrap items-center gap-2">
             {stats.pending_requests > 0 ? (
-              <Badge variant="warning" className="inline-flex items-center gap-1">
+              <Badge variant="destructive" className="inline-flex items-center gap-1">
                 <Bell className="h-3 w-3" />
                 {stats.pending_requests} Pending Request{stats.pending_requests === 1 ? '' : 's'}
               </Badge>
             ) : null}
             {stats.low_stock_items > 0 ? (
-              <Badge variant="warning" className="inline-flex items-center gap-1">
+              <Badge variant="destructive" className="inline-flex items-center gap-1">
                 <AlertTriangle className="h-3 w-3" />
                 {stats.low_stock_items} Low-Stock Item{stats.low_stock_items === 1 ? '' : 's'}
               </Badge>

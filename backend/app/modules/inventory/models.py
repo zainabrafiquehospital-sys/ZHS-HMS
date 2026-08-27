@@ -220,7 +220,21 @@ class InventoryTransfer(BaseEntity):
     `main_stock_level` decreases... in practice the *only* way, since
     there is no other Main Stock debit in this design. `transferred_on`
     mirrors `InventoryMainStockReceipt.received_on`'s identical
-    entered-vs-effective-date rationale."""
+    entered-vs-effective-date rationale.
+
+    `carried_by_name` (2026-08-28 addition) is free text — the person
+    who physically carried/delivered the stock, not necessarily a
+    system user, so this is deliberately not a `created_by`-style user
+    reference. Nullable at the DB level and stays that way forever
+    (same "no honest value to backfill" shape `MedicineBill.queue_token`
+    already established, see migration 86d5b20afa17's own docstring):
+    every transfer recorded before this field existed has no carrier on
+    file and never will. `TransferStockRequest`/
+    `FulfillRestockRequestRequest` both require it for every *new*
+    transfer regardless of which path created it — this column doesn't
+    distinguish a manually-initiated transfer from one performed by
+    `InventoryService.fulfill_request`, both go through the same
+    `_transfer_locked` helper."""
 
     __tablename__ = "inventory_transfer"
     __table_args__ = (
@@ -231,6 +245,7 @@ class InventoryTransfer(BaseEntity):
     item_id: Mapped[UUID] = mapped_column(ForeignKey("inventory_item.id"), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(_QUANTITY, nullable=False)
     transferred_on: Mapped[date_type] = mapped_column(Date, nullable=False)
+    carried_by_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
 
 
 class InventoryUsageEntry(BaseEntity):

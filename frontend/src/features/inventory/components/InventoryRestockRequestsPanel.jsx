@@ -31,6 +31,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/shared/components/ui/Table';
+import { useToast } from '@/shared/components/toast/ToastProvider';
 import { formatDisplayTime, todayDisplayDayKey } from '@/utils/timezone';
 
 const REQUEST_STATUS_BADGE_VARIANT = {
@@ -50,6 +51,7 @@ function itemName(items, itemId) {
  * in a ConfirmDialog" shape as AdminOverview.jsx's
  * RecordBillPaymentDialog. */
 function FulfillRequestDialog({ request, items, onClose }) {
+  const { toast } = useToast();
   const fulfillRequest = useFulfillRequest();
   const [error, setError] = useState(null);
   const {
@@ -61,6 +63,7 @@ function FulfillRequestDialog({ request, items, onClose }) {
     defaultValues: {
       transfer_quantity: request.requested_quantity ?? '',
       transferred_on: todayDisplayDayKey(),
+      carried_by_name: '',
     },
   });
 
@@ -68,9 +71,15 @@ function FulfillRequestDialog({ request, items, onClose }) {
     setError(null);
     try {
       await fulfillRequest.mutateAsync({ requestId: request.id, payload: values });
+      toast.success({
+        title: 'Request fulfilled',
+        description: `${itemName(items, request.item_id)} transferred to Emergency Stock.`,
+      });
       onClose();
     } catch (submitError) {
-      setError(submitError.message || 'Unable to fulfill this request.');
+      const message = submitError.message || 'Unable to fulfill this request.';
+      setError(message);
+      toast.error({ title: 'Unable to fulfill request', description: message });
     }
   }
 
@@ -110,6 +119,17 @@ function FulfillRequestDialog({ request, items, onClose }) {
               <p className="text-xs text-destructive">{errors.transferred_on.message}</p>
             ) : null}
           </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="fulfill-carried-by-name">Carried By</Label>
+            <Input
+              id="fulfill-carried-by-name"
+              placeholder="Name of the person carrying this stock"
+              {...register('carried_by_name')}
+            />
+            {errors.carried_by_name ? (
+              <p className="text-xs text-destructive">{errors.carried_by_name.message}</p>
+            ) : null}
+          </div>
           {error ? <p className="text-xs text-destructive">{error}</p> : null}
         </div>
       }
@@ -118,6 +138,7 @@ function FulfillRequestDialog({ request, items, onClose }) {
 }
 
 function RejectRequestDialog({ request, items, onClose }) {
+  const { toast } = useToast();
   const rejectRequest = useRejectRequest();
   const [error, setError] = useState(null);
   const {
@@ -133,9 +154,15 @@ function RejectRequestDialog({ request, items, onClose }) {
     setError(null);
     try {
       await rejectRequest.mutateAsync({ requestId: request.id, payload: values });
+      toast.success({
+        title: 'Request rejected',
+        description: `${itemName(items, request.item_id)}'s restock request was rejected.`,
+      });
       onClose();
     } catch (submitError) {
-      setError(submitError.message || 'Unable to reject this request.');
+      const message = submitError.message || 'Unable to reject this request.';
+      setError(message);
+      toast.error({ title: 'Unable to reject request', description: message });
     }
   }
 

@@ -268,6 +268,7 @@ class InventoryService:
         item: InventoryItem,
         quantity: Decimal,
         transferred_on: date_type,
+        carried_by_name: str,
     ) -> InventoryTransfer:
         """Assumes `item` was already fetched with `get_for_update` by
         the caller (`transfer_to_emergency` or `fulfill_request`, which
@@ -284,6 +285,7 @@ class InventoryService:
             item_id=item.id,
             quantity=quantity,
             transferred_on=transferred_on,
+            carried_by_name=carried_by_name,
             created_by=actor.id,
             updated_by=actor.id,
         )
@@ -294,28 +296,55 @@ class InventoryService:
             entity_type="inventory_item",
             entity_id=item.id,
             actor_user_id=actor.id,
-            metadata={"quantity": str(quantity), "transferred_on": transferred_on.isoformat()},
+            metadata={
+                "quantity": str(quantity),
+                "transferred_on": transferred_on.isoformat(),
+                "carried_by_name": carried_by_name,
+            },
         )
         return transfer
 
     async def transfer_to_emergency(
-        self, *, actor: User, item_id: UUID, quantity: Decimal, transferred_on: date_type
-    ) -> InventoryItem:
-        if quantity <= 0:
-            raise ValidationError("Quantity must be greater than zero.")
-        quantity = _quantize_quantity(quantity)
+        self,
+        *,
+        actor: User,
+        items: list[tuple[UUID, Decimal]],
+        transferred_on: date_type,
+        carried_by_name: str,
+    ) -> list[InventoryItem]:
+        """`items` is a list of `(item_id, quantity)` pairs, already
+        validated non-empty by `TransferStockRequest` — one
+        `transferred_on`/`carried_by_name` shared across the whole
+        batch, submitted and committed atomically together (2026-08-28
+        addition; a single-item call used to be the only shape, same
+        batch extension `record_usage` got — see that method's own
+        docstring for the identical "sequential lock/decrement/insert,
+        one commit, no partial batch ever lands" rationale, including
+        why two lines naming the same item correctly stack against each
+        other's stock delta)."""
+        updated_items: list[InventoryItem] = []
+        for item_id, quantity in items:
+            if quantity <= 0:
+                raise ValidationError("Quantity must be greater than zero.")
+            quantity = _quantize_quantity(quantity)
 
-        item = await self._item_repo.get_for_update(item_id)
-        if item is None:
-            raise InventoryItemNotFoundError
-        if not item.is_active:
-            raise InventoryItemInactiveError(item.name)
+            item = await self._item_repo.get_for_update(item_id)
+            if item is None:
+                raise InventoryItemNotFoundError
+            if not item.is_active:
+                raise InventoryItemInactiveError(item.name)
 
-        await self._transfer_locked(
-            actor=actor, item=item, quantity=quantity, transferred_on=transferred_on
-        )
+            await self._transfer_locked(
+                actor=actor,
+                item=item,
+                quantity=quantity,
+                transferred_on=transferred_on,
+                carried_by_name=carried_by_name,
+            )
+            updated_items.append(item)
+
         await self._session.commit()
-        return await self._get_item(item.id)
+        return [await self._get_item(item.id) for item in updated_items]
 
     # ------------------------------------------------------------------
     # Usage entries (Vitals only, inventory:record_usage)
@@ -515,6 +544,7 @@ class InventoryService:
         request_id: UUID,
         transfer_quantity: Decimal,
         transferred_on: date_type,
+        carried_by_name: str,
     ) -> InventoryRestockRequest:
         """Fulfilling a request *performs* the transfer (pre-filled from
         the request's own `item_id`, but the Inventory Manager may send
@@ -523,7 +553,10 @@ class InventoryService:
         request row first, then the item row — a consistent lock order
         with `reject_request` (which locks only the request) and every
         other item-locking method (which never also locks a request),
-        so no cross-method lock-ordering cycle can occur."""
+        so no cross-method lock-ordering cycle can occur. `carried_by_name`
+        is required here too — see `InventoryTransfer.carried_by_name`'s
+        own docstring for why this path needs it just as much as a
+        manually-initiated transfer."""
         if transfer_quantity <= 0:
             raise ValidationError("Transfer quantity must be greater than zero.")
         transfer_quantity = _quantize_quantity(transfer_quantity)
@@ -539,7 +572,11 @@ class InventoryService:
             raise InventoryItemInactiveError(item.name)
 
         transfer = await self._transfer_locked(
-            actor=actor, item=item, quantity=transfer_quantity, transferred_on=transferred_on
+            actor=actor,
+            item=item,
+            quantity=transfer_quantity,
+            transferred_on=transferred_on,
+            carried_by_name=carried_by_name,
         )
 
         request.status = InventoryRestockRequestStatus.FULFILLED

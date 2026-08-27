@@ -227,20 +227,27 @@ async def list_receipts(
 # ----------------------------------------------------------------------
 
 
-@router.post("/items/{item_id}/transfer")
+@router.post("/transfers")
 async def transfer_stock(
-    item_id: UUID,
     payload: TransferStockRequest,
     inventory_service: InventoryService = Depends(get_inventory_service),
     actor: User = Depends(require_permission(PERMISSION_INVENTORY_MANAGE)),
 ) -> dict:
-    item = await inventory_service.transfer_to_emergency(
+    """Top-level route (2026-08-28 batch addition; replaces the old
+    single-item `POST /items/{item_id}/transfer`, since a batch's items
+    can span more than one item id, the same reason `POST /usage` was
+    already top-level rather than nested under one item). Returns every
+    item touched by the batch, final post-transfer state — the
+    frontend's cache-patch target, same shape `record_usage` could have
+    used had usage entries carried item-level state to hand back."""
+    items = await inventory_service.transfer_to_emergency(
         actor=actor,
-        item_id=item_id,
-        quantity=payload.quantity,
+        items=[(line.item_id, line.quantity) for line in payload.items],
         transferred_on=payload.transferred_on,
+        carried_by_name=payload.carried_by_name,
     )
-    return success_envelope(InventoryItemOut.from_item(item).model_dump(mode="json"))
+    body = [InventoryItemOut.from_item(item).model_dump(mode="json") for item in items]
+    return success_envelope(body)
 
 
 @router.get("/transfers")
@@ -297,8 +304,18 @@ async def list_usage_entries(
     start_date: date_type | None = Query(default=None),
     end_date: date_type | None = Query(default=None),
     inventory_service: InventoryService = Depends(get_inventory_service),
+    patient_service: PatientService = Depends(get_patient_service),
     _actor: User = Depends(require_permission(PERMISSION_INVENTORY_READ)),
 ) -> dict:
+    """Backs the on-screen History panel's Usage tab — shared wholesale
+    by both the Inventory Manager's own History tab and Admin's Inventory
+    History tab (see `InventoryHistoryPanel.jsx`). Resolves `patient_id`
+    to a real display name here (2026-08-28 fix), the identical
+    `PatientService.list_by_ids` batch-join `print_history_log` below has
+    always used for its own printed version of this same log — this
+    endpoint used to leave that resolution to the frontend, which had no
+    join to do it with and fell back to showing a raw id fragment for
+    every search-linked patient."""
     entries, total = await inventory_service.list_usage_entries(
         item_id=item_id,
         created_by=created_by,
@@ -307,7 +324,16 @@ async def list_usage_entries(
         page=page,
         page_size=page_size,
     )
-    body = [InventoryUsageEntryOut.from_entry(entry).model_dump(mode="json") for entry in entries]
+    patient_ids = list({entry.patient_id for entry in entries if entry.patient_id is not None})
+    patients_by_id = {
+        patient.id: patient for patient in await patient_service.list_by_ids(patient_ids)
+    }
+    body = [
+        InventoryUsageEntryOut.from_entry(
+            entry, patients_by_id.get(entry.patient_id) if entry.patient_id else None
+        ).model_dump(mode="json")
+        for entry in entries
+    ]
     meta = PaginationMeta(page=page, page_size=page_size, total=total).model_dump(mode="json")
     return success_envelope(body, meta)
 
@@ -401,6 +427,7 @@ async def fulfill_request(
         request_id=request_id,
         transfer_quantity=payload.transfer_quantity,
         transferred_on=payload.transferred_on,
+        carried_by_name=payload.carried_by_name,
     )
     return success_envelope(
         InventoryRestockRequestOut.from_request(request).model_dump(mode="json")
@@ -517,21 +544,33 @@ async def print_history_log(
 
     total_quantity = sum((row.quantity for row in rows_data), Decimal("0")) if rows_data else None
 
-    if log_type in ("receipt", "transfer"):
-        date_attr = "received_on" if log_type == "receipt" else "transferred_on"
-        column_headers = [
-            "Item",
-            "Quantity",
-            "Received On" if log_type == "receipt" else "Transferred On",
-            "Recorded By",
-            "Entered",
-        ]
+    if log_type == "receipt":
+        column_headers = ["Item", "Quantity", "Received On", "Recorded By", "Entered"]
         numeric_columns = {1}
         rows = [
             [
                 item_name(row.item_id),
                 str(row.quantity),
-                getattr(row, date_attr).isoformat(),
+                row.received_on.isoformat(),
+                recorded_by(row.created_by),
+                format_local_timestamp(row.created_at, settings.display_timezone),
+            ]
+            for row in rows_data
+        ]
+    elif log_type == "transfer":
+        # "Carried By" (2026-08-28 addition) — the person who physically
+        # carried the stock, `None` for every transfer recorded before
+        # this field existed (see InventoryTransfer.carried_by_name's own
+        # docstring); shown as "—" the same as any other unresolved cell
+        # in this report.
+        column_headers = ["Item", "Quantity", "Transferred On", "Carried By", "Recorded By", "Entered"]
+        numeric_columns = {1}
+        rows = [
+            [
+                item_name(row.item_id),
+                str(row.quantity),
+                row.transferred_on.isoformat(),
+                row.carried_by_name or "—",
                 recorded_by(row.created_by),
                 format_local_timestamp(row.created_at, settings.display_timezone),
             ]

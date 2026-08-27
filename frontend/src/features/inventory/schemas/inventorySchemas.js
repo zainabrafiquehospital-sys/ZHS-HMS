@@ -53,15 +53,27 @@ export const receiveStockFormSchema = z.object({
   received_on: z.string().min(1, 'Select a date'),
 });
 
-export const transferStockFormSchema = z.object({
-  item_id: z.string().min(1, 'Select an item'),
+// One line being added to Transfer to Emergency's running list
+// (2026-08-28 batch redesign) — same shape as usageLineItemSchema
+// below, no per-line note (see TransferLineItemRequest's own backend
+// docstring for why "carried by" is batch-wide, not per-line).
+export const transferLineItemSchema = z.object({
   quantity: positiveQuantity('Quantity must be greater than 0'),
-  transferred_on: z.string().min(1, 'Select a date'),
 });
+
+// carried_by_name (2026-08-28 addition) is required — free text, the
+// person who physically carried the stock — shared by the whole batch,
+// validated alongside `transferred_on` the same "plain local state"
+// way `used_on` is for Record Usage's own batch.
+export const carriedByNameSchema = z
+  .string()
+  .min(1, 'Enter who carried this stock')
+  .max(150);
 
 export const fulfillRequestFormSchema = z.object({
   transfer_quantity: positiveQuantity('Transfer quantity must be greater than 0'),
   transferred_on: z.string().min(1, 'Select a date'),
+  carried_by_name: carriedByNameSchema,
 });
 
 // rejection_reason is always optional (confirmed design — see

@@ -30,6 +30,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/shared/components/ui/Table';
+import { useToast } from '@/shared/components/toast/ToastProvider';
 
 const EMPTY_VALUES = { name: '', category: '', unit: '', low_stock_threshold: '' };
 
@@ -42,6 +43,7 @@ const EMPTY_VALUES = { name: '', category: '', unit: '', low_stock_threshold: ''
  * unit, matching the confirmed design's "standardized per category, not
  * free text" requirement. */
 function ItemFormPanel({ editing, onDoneEditing }) {
+  const { toast } = useToast();
   const createItem = useCreateInventoryItem();
   const updateItem = useUpdateInventoryItem();
   const [submitError, setSubmitError] = useState(null);
@@ -90,13 +92,20 @@ function ItemFormPanel({ editing, onDoneEditing }) {
     try {
       if (editing) {
         await updateItem.mutateAsync({ itemId: editing.id, payload: values });
+        toast.success({ title: 'Item updated', description: values.name });
         onDoneEditing?.();
       } else {
         await createItem.mutateAsync(values);
+        toast.success({ title: 'Item added', description: values.name });
         reset(EMPTY_VALUES);
       }
     } catch (error) {
-      setSubmitError(error.message || 'Unable to save this item.');
+      const message = error.message || 'Unable to save this item.';
+      setSubmitError(message);
+      toast.error({
+        title: editing ? 'Unable to update item' : 'Unable to add item',
+        description: message,
+      });
     }
   }
 
@@ -178,15 +187,23 @@ function ItemFormPanel({ editing, onDoneEditing }) {
 }
 
 function ItemsListPanel({ items, onEdit }) {
+  const { toast } = useToast();
   const updateItem = useUpdateInventoryItem();
   const [toggleError, setToggleError] = useState(null);
 
   async function handleToggleActive(item) {
     setToggleError(null);
     try {
-      await updateItem.mutateAsync({ itemId: item.id, payload: { is_active: !item.is_active } });
+      const nextActive = !item.is_active;
+      await updateItem.mutateAsync({ itemId: item.id, payload: { is_active: nextActive } });
+      toast.success({
+        title: nextActive ? 'Item activated' : 'Item deactivated',
+        description: item.name,
+      });
     } catch (error) {
-      setToggleError(error.message || 'Unable to update this item.');
+      const message = error.message || 'Unable to update this item.';
+      setToggleError(message);
+      toast.error({ title: 'Unable to update item', description: message });
     }
   }
 
@@ -221,7 +238,7 @@ function ItemsListPanel({ items, onEdit }) {
                   <TableCell className="text-right tabular-nums">
                     <span className="inline-flex items-center gap-1.5">
                       {item.emergency_stock_level}
-                      {item.is_low_stock ? <Badge variant="warning">Low</Badge> : null}
+                      {item.is_low_stock ? <Badge variant="destructive">Low</Badge> : null}
                     </span>
                   </TableCell>
                   <TableCell>

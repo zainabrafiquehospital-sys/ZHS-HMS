@@ -38,10 +38,16 @@ function invalidateItems(queryClient) {
  * never needed to happen. `invalidateItems` stays as a safety net for
  * eventual consistency (e.g. a second browser tab watching the same
  * data), not the primary mechanism for this tab's own read-after-write. */
-function patchItemInCache(queryClient, item) {
-  if (!item?.id) return;
+function patchItemInCache(queryClient, itemOrItems) {
+  // Accepts either one item (receive/update's own response shape) or an
+  // array (transfer's batch response, 2026-08-28 — a batch can touch
+  // more than one item at once) — same synchronous-write-into-cache
+  // fix either way.
+  const items = (Array.isArray(itemOrItems) ? itemOrItems : [itemOrItems]).filter((item) => item?.id);
+  if (items.length === 0) return;
+  const byId = new Map(items.map((item) => [item.id, item]));
   queryClient.setQueriesData({ queryKey: ['inventory', 'items'] }, (old) =>
-    Array.isArray(old) ? old.map((existing) => (existing.id === item.id ? item : existing)) : old,
+    Array.isArray(old) ? old.map((existing) => byId.get(existing.id) ?? existing) : old,
   );
 }
 
@@ -94,7 +100,7 @@ export function useReceiveStock() {
 export function useTransferStock() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ itemId, payload }) => inventoryService.transferStock(itemId, payload),
+    mutationFn: (payload) => inventoryService.transferStock(payload),
     onSuccess: (response) => {
       patchItemInCache(queryClient, response.data);
       invalidateItems(queryClient);

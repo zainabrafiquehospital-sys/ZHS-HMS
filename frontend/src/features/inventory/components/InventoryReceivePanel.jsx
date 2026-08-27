@@ -14,6 +14,7 @@ import { Label } from '@/shared/components/ui/Label';
 import { SearchSelect } from '@/shared/components/SearchSelect';
 import { PageLoader } from '@/shared/components/PageLoader';
 import { PageError } from '@/shared/components/PageError';
+import { useToast } from '@/shared/components/toast/ToastProvider';
 import { todayDisplayDayKey } from '@/utils/timezone';
 
 /** Records a Main Stock receipt against an item — the only way
@@ -23,6 +24,7 @@ import { todayDisplayDayKey } from '@/utils/timezone';
  * item nobody can dispense makes no sense, and the backend rejects it
  * outright regardless (InventoryItemInactiveError). */
 export function InventoryReceivePanel() {
+  const { toast } = useToast();
   const { data: items, isLoading, isError, error, refetch } = useInventoryItems();
   const receiveStock = useReceiveStock();
   const [selectedItem, setSelectedItem] = useState(null);
@@ -50,10 +52,16 @@ export function InventoryReceivePanel() {
         payload: { quantity: values.quantity, received_on: values.received_on },
       });
       setSuccessItemName(updatedItem.data.name);
+      toast.success({
+        title: 'Receipt recorded',
+        description: `${updatedItem.data.name} · +${values.quantity} to Main Stock`,
+      });
       setSelectedItem(null);
       reset({ item_id: '', quantity: '', received_on: values.received_on });
     } catch (submitErr) {
-      setSubmitError(submitErr.message || 'Unable to record this receipt.');
+      const message = submitErr.message || 'Unable to record this receipt.';
+      setSubmitError(message);
+      toast.error({ title: 'Unable to record receipt', description: message });
     }
   }
 
