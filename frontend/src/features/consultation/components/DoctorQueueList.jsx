@@ -69,7 +69,10 @@ function QueueCard({
         <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
           <div className="flex flex-col">
             <span className="font-medium text-foreground">
-              {patient ? `${patient.full_name} (${patient.mr_number})` : '…'}
+              {patient ? patient.full_name : '…'}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {patient ? `MR: ${patient.mr_number}` : ''}
             </span>
           </div>
           <span className="whitespace-nowrap font-mono text-xs text-muted-foreground">
@@ -158,7 +161,10 @@ function VitalsPendingCard({ visit, reason, patient }) {
         <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
           <div className="flex flex-col">
             <span className="font-medium text-foreground">
-              {patient ? `${patient.full_name} (${patient.mr_number})` : '…'}
+              {patient ? patient.full_name : '…'}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {patient ? `MR: ${patient.mr_number}` : ''}
             </span>
           </div>
           <span className="whitespace-nowrap font-mono text-xs text-muted-foreground">
