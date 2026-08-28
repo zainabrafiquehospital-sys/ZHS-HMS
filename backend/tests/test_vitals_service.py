@@ -16,6 +16,7 @@ from app.modules.consultation.models import ConsultationStatus
 from app.modules.patients.models import PatientGender
 from app.modules.queue.models import QueueDestination
 from app.modules.visits.models import VisitStatus
+from app.modules.vitals.models import TemperatureUnit
 from app.shared.payment_method import PaymentMethod
 from tests.conftest import TEST_PATIENT_NAME_PREFIX, TEST_ROLE_PREFIX, make_test_email
 
@@ -98,7 +99,7 @@ async def test_record_vitals_workflow_a_intake_routes_to_doctor(
         systolic_bp=120,
         diastolic_bp=80,
         pulse_rate=72,
-        temperature_celsius=36.8,
+        temperature=98.2,
         weight_kg=65.0,
         height_cm=165.0,
         spo2_percent=98,
@@ -137,7 +138,7 @@ async def test_record_vitals_doctor_detour_resumes_consultation(
         systolic_bp=130,
         diastolic_bp=85,
         pulse_rate=None,
-        temperature_celsius=None,
+        temperature=None,
         weight_kg=None,
         height_cm=None,
         spo2_percent=None,
@@ -165,7 +166,7 @@ async def test_list_for_visit_returns_recorded_vitals(
         systolic_bp=110,
         diastolic_bp=70,
         pulse_rate=68,
-        temperature_celsius=36.5,
+        temperature=97.7,
         weight_kg=60.0,
         height_cm=160.0,
         spo2_percent=99,
@@ -176,3 +177,56 @@ async def test_list_for_visit_returns_recorded_vitals(
 
     assert len(records) == 1
     assert records[0].systolic_bp == 110
+
+
+async def test_record_vitals_stamps_temperature_unit_fahrenheit(
+    real_session, reception_service, vitals_service
+):
+    """2026-08-28 change, going-forward only (see VitalsService.
+    record_vitals's own docstring): every new record is unambiguously
+    Fahrenheit — `temperature_unit` is always server-stamped, never a
+    caller-suppliable value at all."""
+    doctor = await _make_doctor(real_session, "temp-unit-stamp")
+    visit, _entry = await _register(reception_service, doctor, "TempUnit", vitals_required=True)
+
+    record = await vitals_service.record_vitals(
+        actor=doctor,
+        visit_id=visit.id,
+        systolic_bp=None,
+        diastolic_bp=None,
+        pulse_rate=None,
+        temperature=100.4,
+        weight_kg=None,
+        height_cm=None,
+        spo2_percent=None,
+        notes=None,
+    )
+
+    assert record.temperature == 100.4
+    assert record.temperature_unit == TemperatureUnit.FAHRENHEIT
+
+
+async def test_record_vitals_no_temperature_leaves_unit_null(
+    real_session, reception_service, vitals_service
+):
+    """The CHECK constraint (`ck_vitals_record_temperature_unit_paired`)
+    requires `temperature`/`temperature_unit` to be NULL together — a
+    reading that wasn't taken must never get a fabricated unit."""
+    doctor = await _make_doctor(real_session, "temp-unit-null")
+    visit, _entry = await _register(reception_service, doctor, "TempUnitNull", vitals_required=True)
+
+    record = await vitals_service.record_vitals(
+        actor=doctor,
+        visit_id=visit.id,
+        systolic_bp=118,
+        diastolic_bp=76,
+        pulse_rate=70,
+        temperature=None,
+        weight_kg=None,
+        height_cm=None,
+        spo2_percent=None,
+        notes=None,
+    )
+
+    assert record.temperature is None
+    assert record.temperature_unit is None

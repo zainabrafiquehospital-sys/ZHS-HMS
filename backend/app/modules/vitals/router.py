@@ -27,7 +27,7 @@ async def record_vitals(
         systolic_bp=payload.systolic_bp,
         diastolic_bp=payload.diastolic_bp,
         pulse_rate=payload.pulse_rate,
-        temperature_celsius=payload.temperature_celsius,
+        temperature=payload.temperature,
         weight_kg=payload.weight_kg,
         height_cm=payload.height_cm,
         spo2_percent=payload.spo2_percent,

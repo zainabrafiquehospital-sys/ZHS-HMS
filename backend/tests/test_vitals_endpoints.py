@@ -138,7 +138,7 @@ async def test_record_vitals_success_routes_to_doctor(
             "systolic_bp": 118,
             "diastolic_bp": 76,
             "pulse_rate": 70,
-            "temperature_celsius": 36.9,
+            "temperature": 98.6,
             "spo2_percent": 99,
         },
         headers=_auth_header(access_token),
@@ -148,6 +148,10 @@ async def test_record_vitals_success_routes_to_doctor(
     body = resp.json()["data"]
     assert body["systolic_bp"] == 118
     assert body["consultation_id"] is None
+    # 2026-08-28 change, going-forward only — every new record is
+    # unambiguously Fahrenheit, server-stamped.
+    assert body["temperature"] == 98.6
+    assert body["temperature_unit"] == "fahrenheit"
 
     visit_resp = await api_client.get(
         f"/api/v1/visits/{visit.id}", headers=_auth_header(access_token)
@@ -165,6 +169,27 @@ async def test_record_vitals_out_of_range_returns_422(
     resp = await api_client.post(
         "/api/v1/vitals",
         json={"visit_id": str(visit.id), "spo2_percent": 150},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 422
+
+
+async def test_record_vitals_temperature_out_of_fahrenheit_range_returns_422(
+    api_client, real_session, grant_permission, reception_service
+):
+    """`68.0-113.0` is the going-forward Fahrenheit sanity range (2026-
+    08-28 change) — a value that would have been a perfectly plausible
+    Celsius reading under the old `20.0-45.0` range (e.g. 37.0, a normal
+    body temperature) must now be rejected, since every new record is
+    unambiguously Fahrenheit."""
+    doctor, access_token = await _create_and_login(api_client, real_session, "temp-range")
+    await grant_permission(doctor, PERMISSION_VITALS_RECORD)
+    visit = await _make_visit(reception_service, doctor, "TempRange", vitals_required=True)
+
+    resp = await api_client.post(
+        "/api/v1/vitals",
+        json={"visit_id": str(visit.id), "temperature": 37.0},
         headers=_auth_header(access_token),
     )
 

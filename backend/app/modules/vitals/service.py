@@ -27,7 +27,7 @@ from app.modules.queue.models import QueueDestination
 from app.modules.queue.service import QueueService
 from app.modules.visits.service import VisitService
 from app.modules.vitals.exceptions import VitalsRecordNotFoundError
-from app.modules.vitals.models import VitalsRecord
+from app.modules.vitals.models import TemperatureUnit, VitalsRecord
 from app.modules.vitals.repository import VitalsRecordRepository
 from app.shared.audit.repository import AuditLogRepository
 
@@ -57,12 +57,21 @@ class VitalsService:
         systolic_bp: int | None,
         diastolic_bp: int | None,
         pulse_rate: int | None,
-        temperature_celsius: float | None,
+        temperature: float | None,
         weight_kg: float | None,
         height_cm: float | None,
         spo2_percent: int | None,
         notes: str | None,
     ) -> VitalsRecord:
+        """`temperature` (2026-08-28 change — was `temperature_celsius`)
+        is always Fahrenheit for a record created through this method —
+        `temperature_unit` is stamped `FAHRENHEIT` here whenever a value
+        is given, never left to the caller to choose (there is no
+        `temperature_unit` parameter at all). This is what makes "going
+        forward only" actually true: every new row this method ever
+        writes is unambiguously Fahrenheit; only rows already in the
+        table before this change carry `CELSIUS` (via the one-time
+        migration backfill — see models.py's `VitalsRecord` docstring)."""
         active_consultation = await self._consultation_service.get_active_for_visit(visit_id)
 
         record = VitalsRecord(
@@ -71,7 +80,8 @@ class VitalsService:
             systolic_bp=systolic_bp,
             diastolic_bp=diastolic_bp,
             pulse_rate=pulse_rate,
-            temperature_celsius=temperature_celsius,
+            temperature=temperature,
+            temperature_unit=TemperatureUnit.FAHRENHEIT if temperature is not None else None,
             weight_kg=weight_kg,
             height_cm=height_cm,
             spo2_percent=spo2_percent,

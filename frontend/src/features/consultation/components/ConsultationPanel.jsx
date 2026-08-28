@@ -16,7 +16,7 @@ import { useVisitsByIds, useVitalsForVisit } from '@/features/vitals/hooks/useVi
 import {
   ALL_VITALS_FIELDS,
   VITAL_FIELD_LABELS,
-  VITAL_FIELD_UNITS,
+  vitalFieldUnit,
   VITALS_FIELDS_WITH_SEVERITY,
   SEVERITY_BADGE_VARIANT,
   SEVERITY_LABEL,
@@ -62,14 +62,21 @@ function RecordedVitals({ visitId, ageYears }) {
             {ALL_VITALS_FIELDS.filter(
               (field) => record[field] !== null && record[field] !== undefined,
             ).map((field) => {
+              // This record's temperature may be a historical
+              // Celsius-tagged reading — always classify/label it
+              // against its own stored unit, never a global assumption
+              // (a consultation's own vitals list can span both eras).
               const severity = VITALS_FIELDS_WITH_SEVERITY.includes(field)
-                ? getVitalSeverity(field, record[field], { ageYears })
+                ? getVitalSeverity(field, record[field], {
+                    ageYears,
+                    temperatureUnit: record.temperature_unit,
+                  })
                 : { level: null };
               return (
                 <div key={field} className="flex items-center gap-1.5 text-sm">
                   <span className="text-muted-foreground">{VITAL_FIELD_LABELS[field]}:</span>
                   <span className="font-medium text-foreground">
-                    {record[field]} {VITAL_FIELD_UNITS[field]}
+                    {record[field]} {vitalFieldUnit(field, record.temperature_unit)}
                   </span>
                   {severity.level && severity.level !== 'normal' ? (
                     <Badge variant={SEVERITY_BADGE_VARIANT[severity.level]} className="text-[10px]">

@@ -17,6 +17,7 @@ import {
   VITALS_FIELDS_WITH_SEVERITY,
   VITAL_FIELD_LABELS,
   VITAL_FIELD_UNITS,
+  vitalFieldUnit,
   SEVERITY_BADGE_VARIANT,
   SEVERITY_LABEL,
   getVitalSeverity,
@@ -39,7 +40,7 @@ const FIELD_STEP = {
   systolic_bp: '1',
   diastolic_bp: '1',
   pulse_rate: '1',
-  temperature_celsius: '0.1',
+  temperature: '0.1',
   weight_kg: '0.1',
   height_cm: '0.1',
   spo2_percent: '1',
@@ -49,7 +50,7 @@ const DEFAULT_VALUES = {
   systolic_bp: '',
   diastolic_bp: '',
   pulse_rate: '',
-  temperature_celsius: '',
+  temperature: '',
   weight_kg: '',
   height_cm: '',
   spo2_percent: '',
@@ -62,8 +63,9 @@ function toPayload(visitId, values) {
     systolic_bp: values.systolic_bp === undefined ? null : values.systolic_bp,
     diastolic_bp: values.diastolic_bp === undefined ? null : values.diastolic_bp,
     pulse_rate: values.pulse_rate === undefined ? null : values.pulse_rate,
-    temperature_celsius:
-      values.temperature_celsius === undefined ? null : values.temperature_celsius,
+    // Always Fahrenheit — see recordVitalsSchema.js's own comment; the
+    // backend stamps temperature_unit itself, never sent from here.
+    temperature: values.temperature === undefined ? null : values.temperature,
     weight_kg: values.weight_kg === undefined ? null : values.weight_kg,
     height_cm: values.height_cm === undefined ? null : values.height_cm,
     spo2_percent: values.spo2_percent === undefined ? null : values.spo2_percent,
@@ -91,14 +93,32 @@ function TrendIndicator({ trend }) {
  * shared Input's default `h-9`/`text-sm`, a large-enough tap target
  * for a nurse using a tablet standing at the patient, without changing
  * the shared Input component's default everywhere else it's used. */
-function VitalField({ field, register, errors, watchedValue, ageYears, previousValue }) {
+function VitalField({
+  field,
+  register,
+  errors,
+  watchedValue,
+  ageYears,
+  previousValue,
+  previousTemperatureUnit,
+}) {
   const label = VITAL_FIELD_LABELS[field];
+  // The live input itself is always Fahrenheit for temperature (every
+  // new entry is, going forward) — VITAL_FIELD_UNITS.temperature is
+  // already that default, correct here without consulting any record.
   const unit = VITAL_FIELD_UNITS[field];
   const hasSeverity = VITALS_FIELDS_WITH_SEVERITY.includes(field);
   const numericValue = watchedValue === '' || watchedValue === undefined ? null : Number(watchedValue);
   const severity = hasSeverity ? getVitalSeverity(field, numericValue, { ageYears }) : { level: null };
-  const trend = getTrend(field, watchedValue, previousValue);
+  // Suppresses the trend arrow outright when comparing a live
+  // Fahrenheit entry against a Celsius-tagged previous record (see
+  // getTrend's own docstring) — never a fabricated up/down across
+  // mismatched units.
+  const trend = getTrend(field, watchedValue, previousValue, { previousTemperatureUnit });
   const fieldError = errors[field];
+  // The *previous* reading may be a historical Celsius-tagged record —
+  // its own unit, never assumed to match the live field's.
+  const previousUnit = field === 'temperature' ? vitalFieldUnit(field, previousTemperatureUnit) : unit;
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -124,7 +144,7 @@ function VitalField({ field, register, errors, watchedValue, ageYears, previousV
       />
       {previousValue !== null && previousValue !== undefined ? (
         <p className="text-xs text-muted-foreground">
-          Previous: {previousValue} {unit}
+          Previous: {previousValue} {previousUnit}
         </p>
       ) : null}
       {fieldError ? <p className="text-xs text-destructive">{fieldError.message}</p> : null}
@@ -159,14 +179,20 @@ function PreviousVitalsCard({ isLoading, record, ageYears }) {
             <div className="flex flex-wrap gap-x-5 gap-y-2">
               {ALL_VITALS_FIELDS.filter((field) => record[field] !== null && record[field] !== undefined).map(
                 (field) => {
+                  // This record may predate the Fahrenheit change —
+                  // always classify/label its own temperature against
+                  // its own stored unit, never a global assumption.
                   const severity = VITALS_FIELDS_WITH_SEVERITY.includes(field)
-                    ? getVitalSeverity(field, record[field], { ageYears })
+                    ? getVitalSeverity(field, record[field], {
+                        ageYears,
+                        temperatureUnit: record.temperature_unit,
+                      })
                     : { level: null };
                   return (
                     <div key={field} className="flex items-center gap-1.5 text-sm">
                       <span className="text-muted-foreground">{VITAL_FIELD_LABELS[field]}:</span>
                       <span className="font-medium text-foreground">
-                        {record[field]} {VITAL_FIELD_UNITS[field]}
+                        {record[field]} {vitalFieldUnit(field, record.temperature_unit)}
                       </span>
                       {severity.level && severity.level !== 'normal' ? (
                         <Badge variant={SEVERITY_BADGE_VARIANT[severity.level]} className="text-[10px]">
@@ -290,6 +316,7 @@ export function RecordVitalsForm({ visitId }) {
                   watchedValue={watchedValues[field]}
                   ageYears={ageYears}
                   previousValue={previousVitals ? previousVitals[field] : undefined}
+                  previousTemperatureUnit={previousVitals ? previousVitals.temperature_unit : undefined}
                 />
               ))}
             </div>
