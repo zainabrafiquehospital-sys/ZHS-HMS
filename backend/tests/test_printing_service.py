@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from app.shared.printing.service import (
     render_invoice_receipt,
+    render_lab_bill_receipt,
     render_medicine_bill_receipt,
     render_registration_slip,
 )
@@ -60,6 +61,24 @@ def _render_bill(**overrides) -> str:
     )
     defaults.update(overrides)
     return render_medicine_bill_receipt(**defaults)
+
+
+def _render_lab_bill(**overrides) -> str:
+    defaults = dict(
+        hospital_name="ZRH Hospital",
+        display_timezone="Asia/Karachi",
+        bill_id="33333333-3333-3333-3333-333333333333",
+        bill_created_at=datetime(2026, 1, 1, 10, 30, tzinfo=UTC),
+        bill_queue_token=None,
+        patient_full_name=None,
+        patient_age_years=None,
+        patient_phone_number=None,
+        line_items=[("CBC", "pathology", Decimal("600.00"))],
+        total_amount=Decimal("600.00"),
+        amount_paid=Decimal("600.00"),
+    )
+    defaults.update(overrides)
+    return render_lab_bill_receipt(**defaults)
 
 
 def test_render_includes_all_core_fields():
@@ -337,9 +356,7 @@ def test_slip_full_payment_shows_no_payment_strip():
     """`payment_status='paid'` (whether settled in one payment or
     several — printing always reflects current state) renders exactly
     like the plain no-payment-tracking case: no strip at all."""
-    html_document = _render_slip(
-        visit_amount_paid=Decimal("1500.00"), visit_payment_status="paid"
-    )
+    html_document = _render_slip(visit_amount_paid=Decimal("1500.00"), visit_payment_status="paid")
 
     assert '<div class="payment-strip">' not in html_document
 
@@ -395,6 +412,165 @@ def test_slip_fully_settled_after_multiple_payments_shows_no_payment_strip():
 
 
 # ---------------------------------------------------------------------
+# render_lab_bill_receipt (Step 5 addition) — the Laboratory Billing
+# module's own slip, dedicated unit coverage mirroring
+# render_medicine_bill_receipt's own tests above, adjusted for Lab's
+# one real content difference: no quantity/unit-price sub-line at all
+# (a lab test is a service performed, not a countable dispensed unit —
+# see LabBillItem's own docstring), so each item row's meta line is
+# just its category, never a "N × unit price" fragment.
+# ---------------------------------------------------------------------
+
+
+def test_lab_bill_receipt_includes_core_fields():
+    html_document = _render_lab_bill(
+        patient_full_name="Jane Doe",
+        patient_age_years=30,
+        patient_phone_number="03001234567",
+        bill_queue_token="LAB-000001",
+        line_items=[
+            ("CBC", "pathology", Decimal("600.00")),
+            ("Chest X-Ray", "radiology", Decimal("1500.00")),
+        ],
+        total_amount=Decimal("2100.00"),
+        amount_paid=Decimal("2100.00"),
+    )
+
+    assert "ZRH Hospital" in html_document
+    assert "Jane Doe" in html_document
+    assert "30 years" in html_document
+    assert "03001234567" in html_document
+    assert "LAB-000001" in html_document
+    assert "CBC" in html_document
+    assert "Chest X-Ray" in html_document
+    assert "600.00" in html_document
+    assert "1,500.00" in html_document
+    assert "2,100.00" in html_document
+
+
+def test_lab_bill_receipt_computes_pending_balance():
+    html_document = _render_lab_bill(total_amount=Decimal("2100.00"), amount_paid=Decimal("500.00"))
+
+    # total 2100.00, paid 500.00 -> pending 1600.00
+    assert "1,600.00" in html_document
+
+
+def test_lab_bill_receipt_escapes_html_in_free_text_fields():
+    html_document = _render_lab_bill(patient_full_name="<script>alert(1)</script>")
+
+    assert "<script>alert(1)</script>" not in html_document
+    assert "&lt;script&gt;" in html_document
+
+
+def test_lab_bill_receipt_is_valid_html_document():
+    html_document = _render_lab_bill()
+
+    assert html_document.strip().startswith("<!doctype html>")
+    assert "</html>" in html_document
+
+
+def test_lab_bill_receipt_with_discount_shows_total_discount_and_net_amount_in_order():
+    html_document = _render_lab_bill(
+        total_amount=Decimal("500.00"),
+        amount_paid=Decimal("500.00"),
+        discount_amount=Decimal("100.00"),
+        discount_reason="Loyalty",
+    )
+
+    assert "Discount (Loyalty)" in html_document
+    assert "Net Amount" in html_document
+    # subtotal (600.00, recovered) -> discount -> net amount (500.00)
+    assert "600.00" in html_document
+    assert "500.00" in html_document
+
+    total_idx = html_document.index("Total Amount")
+    discount_idx = html_document.index("Discount (Loyalty)")
+    net_idx = html_document.index("Net Amount")
+    assert total_idx < discount_idx < net_idx
+
+
+def test_lab_bill_receipt_without_discount_omits_discount_row_but_keeps_net_amount():
+    html_document = _render_lab_bill()
+
+    assert "Discount" not in html_document
+    assert "Net Amount" in html_document
+    total_idx = html_document.index("Total Amount")
+    net_idx = html_document.index("Net Amount")
+    assert total_idx < net_idx
+
+
+def test_lab_bill_receipt_shows_payment_method():
+    html_document = _render_lab_bill(payment_methods=["easypaisa"])
+
+    assert "Paid via: EasyPaisa" in html_document
+
+
+def test_lab_bill_receipt_omits_paid_via_line_when_nothing_paid():
+    html_document = _render_lab_bill(amount_paid=Decimal("0.00"), payment_methods=[])
+
+    assert "Paid via" not in html_document
+
+
+def test_lab_bill_receipt_items_show_category_but_never_quantity_or_unit_price():
+    """The one real content difference from render_medicine_bill_receipt's
+    own item rows — see this function's own docstring: a lab test has
+    no quantity at all, so its meta line is just the category, never a
+    "N × unit price" fragment."""
+    html_document = _render_lab_bill(
+        line_items=[("CBC", "pathology", Decimal("600.00"))],
+        total_amount=Decimal("600.00"),
+        amount_paid=Decimal("600.00"),
+    )
+
+    assert 'class="item-row"' in html_document
+    assert 'class="item-meta"' in html_document
+    assert "CBC" in html_document
+    assert "Pathology" in html_document  # category, title-cased like Medicine's own
+    assert "&times;" not in html_document  # the "N ×" multiplication sign never appears
+    assert "<table>" not in html_document
+
+
+def test_lab_bill_receipt_reference_section_omitted_for_anonymous_walkin():
+    """`patient_full_name=None` (this helper's own default) covers both
+    of Lab's non-identified cases in one code path — no linked Patient
+    and no manually-typed name — mirroring render_medicine_bill_receipt's
+    identical walk-in convention (see that function's own docstring)."""
+    html_document = _render_lab_bill()
+
+    assert "Sale Reference" in html_document
+    assert "Walk-in (no patient on file)" in html_document
+    assert "Patient Reference" not in html_document
+
+
+def test_lab_bill_receipt_reference_section_shown_for_a_named_patient():
+    """A single code path renders whenever `patient_full_name` is not
+    `None` — this exercises it with a name, standing in for both of
+    Lab's two identified sources (a directly-linked Patient record or
+    the manually-typed name/age/phone — see LabBill's own docstring for
+    why both resolve to the identical three fields before reaching this
+    function, the same collapsing app/modules/lab/router.py's
+    `print_bill` already does)."""
+    html_document = _render_lab_bill(
+        patient_full_name="Amina Raza", patient_age_years=42, patient_phone_number="03009998888"
+    )
+
+    assert "Patient Reference" in html_document
+    assert "Amina Raza" in html_document
+    assert "42 years" in html_document
+    assert "03009998888" in html_document
+    assert "Sale Reference" not in html_document
+
+
+def test_lab_bill_receipt_shares_the_header_and_title_box():
+    html_document = _render_lab_bill(bill_queue_token="LAB-000042")
+
+    assert 'class="header"' in html_document
+    assert 'class="title-box"' in html_document
+    assert "LAB-000042" in html_document
+    assert "Lab Slip" in html_document
+
+
+# ---------------------------------------------------------------------
 # 80mm thermal-receipt redesign (2026-08-24) — replaces the previous
 # A4/half-A4 layout entirely. `@page { size: 80mm auto; margin: 0 2mm; }`
 # is the actual fix for the reported bug (a fixed A4 page length left a
@@ -422,6 +598,13 @@ def test_registration_slip_uses_80mm_auto_height_page_size():
 
 def test_medicine_bill_receipt_uses_80mm_auto_height_page_size():
     html_document = _render_bill()
+
+    assert "size: 80mm auto" in html_document
+    assert "size: A4" not in html_document
+
+
+def test_lab_bill_receipt_uses_80mm_auto_height_page_size():
+    html_document = _render_lab_bill()
 
     assert "size: 80mm auto" in html_document
     assert "size: A4" not in html_document
@@ -492,6 +675,14 @@ def test_registration_slip_reference_sections_are_stacked_not_a_column_grid():
 
 def test_medicine_bill_receipt_reference_rows_are_stacked_not_a_column_grid():
     html_document = _render_bill(
+        patient_full_name="Jane Doe", patient_age_years=30, patient_phone_number="03001234567"
+    )
+
+    assert 'class="body-grid"' not in html_document
+
+
+def test_lab_bill_receipt_reference_rows_are_stacked_not_a_column_grid():
+    html_document = _render_lab_bill(
         patient_full_name="Jane Doe", patient_age_years=30, patient_phone_number="03001234567"
     )
 
