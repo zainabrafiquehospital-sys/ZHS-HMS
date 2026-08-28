@@ -44,7 +44,10 @@ differences from that direct precedent, called out below.
   quantity to multiply against, this table also has no separate
   `line_total` column — it would always be identical to
   `unit_price_snapshot`, a pointless duplicate; a bill's subtotal is
-  the plain sum of every item's `unit_price_snapshot`.
+  the plain sum of every item's `unit_price_snapshot`. **2026-08-28
+  addition**: a line may also be manual/free-typed (no catalog test
+  linked) — see this class's own docstring for the full shape, mirrored
+  from `VisitProcedureItem`'s identical manual-procedure support.
 - `LabBillPayment` — one payment against a LabBill, identical shape and
   rationale to `MedicineBillPayment`.
 
@@ -198,13 +201,30 @@ class LabBill(BaseEntity):
 
 
 class LabBillItem(BaseEntity):
+    """A manual/free-typed line (2026-08-28 addition) coexists with a
+    catalog-linked one, per-item rather than per-bill — the exact same
+    shape app/modules/visits/models.py's `VisitProcedureItem` already
+    established for a Visit's own procedure lines, mirrored here as
+    closely as the two modules' otherwise-different shapes allow.
+    `lab_test_id`/`category_snapshot` are both `None` for a manual line
+    (no catalog entry, so no category exists to snapshot);
+    `lab_test_name_snapshot`/`unit_price_snapshot` are always populated
+    either way — the catalog's own name/price at add-time when linked,
+    or the receptionist's own free-typed name/price when not. Like
+    `VisitProcedureItem`, the "exactly one shape" rule (a category
+    snapshot if and only if a catalog test is linked) is enforced at
+    the request-schema/service layer only, never a DB-level CHECK —
+    the identical boundary that table leaves this same invariant at."""
+
     __tablename__ = "lab_bill_item"
     __table_args__ = (Index("ix_lab_bill_item_lab_bill_id", "lab_bill_id"),)
 
     lab_bill_id: Mapped[UUID] = mapped_column(ForeignKey("lab_bill.id"), nullable=False)
-    lab_test_id: Mapped[UUID] = mapped_column(ForeignKey("lab_test.id"), nullable=False)
+    # Nullable (2026-08-28) — see this class's own docstring.
+    lab_test_id: Mapped[UUID | None] = mapped_column(ForeignKey("lab_test.id"))
     lab_test_name_snapshot: Mapped[str] = mapped_column(String(150), nullable=False)
-    category_snapshot: Mapped[LabTestCategory] = mapped_column(
+    # Nullable (2026-08-28) — see this class's own docstring.
+    category_snapshot: Mapped[LabTestCategory | None] = mapped_column(
         Enum(
             LabTestCategory,
             name="lab_bill_item_category_snapshot",
@@ -213,7 +233,6 @@ class LabBillItem(BaseEntity):
             values_callable=lambda enum_cls: [member.value for member in enum_cls],
             create_constraint=True,
         ),
-        nullable=False,
     )
     # No `quantity`/`line_total` — see this module's own docstring
     # ("Deliberate difference #2") for why: this *is* the line total,

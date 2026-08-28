@@ -1121,7 +1121,7 @@ def render_lab_bill_receipt(
     patient_full_name: str | None,
     patient_age_years: int | None,
     patient_phone_number: str | None,
-    line_items: list[tuple[str, str, Decimal]],
+    line_items: list[tuple[str, str | None, Decimal]],
     total_amount: Decimal,
     amount_paid: Decimal,
     discount_amount: Decimal = Decimal("0.00"),
@@ -1158,6 +1158,13 @@ def render_lab_bill_receipt(
     is just the test's name (with its category as a small muted second
     line) and its price, right-aligned. Two rows for the same test
     (ordered twice) render as two independent rows, exactly as billed.
+
+    `category` is `None` for a manual/free-typed line (2026-08-28
+    addition — no catalog test linked, so no category exists to show,
+    see `LabBillItem`'s own docstring) — that row's meta line is
+    omitted entirely rather than rendered blank, the same "nothing to
+    show, show nothing" convention this receipt already follows for
+    e.g. an absent `Discount` row.
 
     Discount/Total/Net/Received/Pending footer, `payment_methods`
     handling, and the `discount_amount == 0` "row fully absent" rule
@@ -1202,7 +1209,7 @@ def render_lab_bill_receipt(
       <div class="item-row">
         <div class="item-main">
           <div class="item-name">{_escape(name)}</div>
-          <div class="item-meta">{_escape(category.title())}</div>
+          {f'<div class="item-meta">{_escape(category.title())}</div>' if category else ""}
         </div>
         <div class="item-amount">{_money(price)}</div>
       </div>"""

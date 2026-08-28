@@ -39,6 +39,19 @@ let nextItemKey = (() => {
   return () => value++;
 })();
 
+/** Converts one running-list row into the `{lab_test_id} | {name,
+ * price}` request shape `POST /lab/bills` expects (2026-08-28
+ * addition) — mirrors ProcedureItemsEditor.jsx's identical
+ * `procedureItemToRequestPayload`: a catalog-linked row sends only
+ * `lab_test_id` (name/price are always server-derived from the
+ * catalog), a manual row sends only `name`/`price`. */
+function labBillItemToRequestPayload(item) {
+  if (item.lab_test_id) {
+    return { lab_test_id: item.lab_test_id };
+  }
+  return { name: item.name, price: Number(item.price) };
+}
+
 /** The "which patient is this for" panel — a direct Patient link
  * (confirmed design), never Visit-mediated the way Pharmacy's own
  * VisitLinkPanel is (search a patient, then pick one of their
@@ -185,6 +198,15 @@ function LabPatientLinkPanel({
  * ProcedureItemsEditor.jsx's own non-merging "Add Another" behavior
  * (not Pharmacy's own quantity-merge).
  *
+ * A test not yet in the catalog can also be typed in directly (2026-
+ * 08-28 addition) — the "Not in the catalog? Type it in" fallback
+ * inside the Add Test card, mirroring ProcedureItemsEditor.jsx's
+ * identical manual-procedure block exactly (name + price fields, "Add
+ * Another Test"). Both kinds of row coexist in the same running list,
+ * each independently either catalog-linked or manual — a manual row's
+ * Category column shows a dash (no catalog category to snapshot; see
+ * models.py's `LabBillItem` docstring).
+ *
  * Recording an *additional* payment later, toward whatever's still
  * Pending on an already-created bill, lives in Admin Overview's Lab
  * Bills tab — this workspace is only ever the point of a new sale.
@@ -203,6 +225,16 @@ export function LabBillingWorkspace() {
   const [manualAge, setManualAge] = useState('');
   const [manualPhone, setManualPhone] = useState('');
   const [applyDiscount, setApplyDiscount] = useState(false);
+  // Manual/free-typed test entry (2026-08-28 addition) — the lab-bill
+  // sibling of ProcedureItemsEditor.jsx's identical "Not in the
+  // catalog? Type it in" fallback, mirrored as closely as this
+  // workspace's own flat local-state shape (not that component's
+  // reusable editor) allows. Own local state, distinct from
+  // `selectedTest` above — the two entry paths coexist rather than
+  // sharing one field.
+  const [manualTestName, setManualTestName] = useState('');
+  const [manualTestPrice, setManualTestPrice] = useState('');
+  const [addTestError, setAddTestError] = useState(null);
 
   const createBill = useCreateLabBill();
   const printBill = usePrintLabBill();
@@ -261,6 +293,32 @@ export function LabBillingWorkspace() {
     setSelectedTest(null);
   }
 
+  // Mirrors ProcedureItemsEditor.jsx's identical handleAddManual —
+  // same inline validation (non-empty name, price > 0), same "append
+  // with no catalog id, then clear the two fields" shape. `category:
+  // null` throughout — a manual line has no catalog category to show
+  // (see LabBillItem's own docstring), the Category column renders a
+  // dash for these rows below.
+  function handleAddManualTest() {
+    setAddTestError(null);
+    const trimmedName = manualTestName.trim();
+    const priceNumber = Number(manualTestPrice);
+    if (!trimmedName) {
+      setAddTestError('Enter a test name.');
+      return;
+    }
+    if (!Number.isFinite(priceNumber) || priceNumber <= 0) {
+      setAddTestError('Enter a price greater than 0.');
+      return;
+    }
+    setItems((current) => [
+      ...current,
+      { key: nextItemKey(), lab_test_id: null, name: trimmedName, category: null, price: priceNumber },
+    ]);
+    setManualTestName('');
+    setManualTestPrice('');
+  }
+
   function handleRemoveLine(key) {
     setItems((current) => current.filter((item) => item.key !== key));
   }
@@ -301,7 +359,7 @@ export function LabBillingWorkspace() {
     try {
       const response = await createBill.mutateAsync({
         patient_id: selectedPatient ? selectedPatient.id : null,
-        items: items.map((item) => item.lab_test_id),
+        items: items.map((item) => labBillItemToRequestPayload(item)),
         initial_payment_amount: values.initial_payment_amount,
         initial_payment_method: values.initial_payment_amount
           ? values.initial_payment_method
@@ -361,23 +419,58 @@ export function LabBillingWorkspace() {
         <CardHeader>
           <CardTitle>Add Test</CardTitle>
         </CardHeader>
-        <CardContent className="flex flex-col gap-4 sm:flex-row sm:items-end">
-          <div className="flex flex-1 flex-col gap-1.5">
-            <Label>Lab Test</Label>
-            <SearchSelect
-              queryKey={['lab', 'tests', 'search']}
-              queryFn={(term) => labService.searchTests(term).then((res) => res.data)}
-              getLabel={(test) => test.name}
-              getDescription={(test) => `${test.category} · ${money(test.price)}`}
-              placeholder="Search lab test by name"
-              selectedLabel={selectedTest ? `${selectedTest.name}` : ''}
-              onSelect={(test) => setSelectedTest(test)}
-            />
+        <CardContent className="flex flex-col gap-4">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
+            <div className="flex flex-1 flex-col gap-1.5">
+              <Label>Lab Test</Label>
+              <SearchSelect
+                queryKey={['lab', 'tests', 'search']}
+                queryFn={(term) => labService.searchTests(term).then((res) => res.data)}
+                getLabel={(test) => test.name}
+                getDescription={(test) => `${test.category} · ${money(test.price)}`}
+                placeholder="Search lab test by name"
+                selectedLabel={selectedTest ? `${selectedTest.name}` : ''}
+                onSelect={(test) => setSelectedTest(test)}
+              />
+            </div>
+            <Button type="button" onClick={handleAddTest} disabled={!selectedTest}>
+              <Plus className="h-4 w-4" />
+              Add Test
+            </Button>
           </div>
-          <Button type="button" onClick={handleAddTest} disabled={!selectedTest}>
-            <Plus className="h-4 w-4" />
-            Add Test
-          </Button>
+
+          {/* Manual/free-typed fallback (2026-08-28 addition, always
+              available, never blocked on the catalog having this test
+              yet) — coexists with catalog-linked rows in the same
+              running list, mirroring ProcedureItemsEditor.jsx's
+              identical dashed-border block exactly. */}
+          <div className="flex flex-col gap-3 rounded-md border border-dashed border-border p-3 sm:flex-row sm:flex-wrap sm:items-end">
+            <div className="flex min-w-[160px] flex-1 flex-col gap-1.5">
+              <Label htmlFor="manual-lab-test-name">Not in the catalog? Type it in</Label>
+              <Input
+                id="manual-lab-test-name"
+                placeholder="e.g. Vitamin D Panel"
+                value={manualTestName}
+                onChange={(event) => setManualTestName(event.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5 sm:w-40">
+              <Label htmlFor="manual-lab-test-price">Price (Rs.)</Label>
+              <Input
+                id="manual-lab-test-price"
+                type="number"
+                step="0.01"
+                min="0"
+                value={manualTestPrice}
+                onChange={(event) => setManualTestPrice(event.target.value)}
+              />
+            </div>
+            <Button type="button" variant="outline" onClick={handleAddManualTest}>
+              <Plus className="h-4 w-4" />
+              Add Another Test
+            </Button>
+          </div>
+          {addTestError ? <p className="text-xs text-destructive">{addTestError}</p> : null}
         </CardContent>
       </Card>
 
@@ -403,7 +496,7 @@ export function LabBillingWorkspace() {
                   {items.map((item) => (
                     <TableRow key={item.key}>
                       <TableCell className="font-medium text-foreground">{item.name}</TableCell>
-                      <TableCell className="capitalize">{item.category}</TableCell>
+                      <TableCell className="capitalize">{item.category ?? '—'}</TableCell>
                       <TableCell className="text-right tabular-nums">{money(item.price)}</TableCell>
                       <TableCell>
                         <Button

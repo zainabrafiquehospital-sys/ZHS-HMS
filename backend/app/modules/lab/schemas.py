@@ -8,7 +8,7 @@ from decimal import Decimal
 from enum import Enum as PyEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.modules.lab.models import (
     LabBill,
@@ -54,15 +54,56 @@ class UpdateLabTestRequest(BaseModel):
     is_active: bool | None = None
 
 
+class CreateLabBillItemRequest(BaseModel):
+    """Exactly one of two shapes, enforced below — the lab-bill sibling
+    of app/modules/visits/schemas.py's identical
+    `VisitProcedureItemRequest`, mirrored as closely as the two
+    modules' shapes allow: a catalog-linked entry (`lab_test_id` set,
+    `name`/`price` both omitted — always server-derived from the
+    catalog, same price-integrity rule as
+    `MedicineBillLineItemRequest`) or a manual/free-typed entry
+    (`lab_test_id` omitted, `name` and `price` both required, no
+    category — a manual line has no catalog category to snapshot).
+    Rejecting `name`/`price` outright for a catalog-linked entry, not
+    silently ignoring them, means a client can never be confused about
+    whether a submitted price actually took effect — it never would
+    have. No per-line quantity either way (confirmed design, see
+    models.py's `LabBillItem` docstring); the same test id (or the same
+    manual name) appearing twice simply becomes two independent
+    lines."""
+
+    model_config = ConfigDict(strict=True)
+
+    lab_test_id: LaxUUID | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=150)
+    price: LaxDecimal | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _exactly_one_shape(self) -> "CreateLabBillItemRequest":
+        if self.lab_test_id is not None:
+            if self.name is not None or self.price is not None:
+                raise ValueError(
+                    "Do not send name/price alongside lab_test_id — a catalog-linked test's "
+                    "name and price are always taken from the catalog."
+                )
+        elif self.name is None or self.price is None:
+            raise ValueError(
+                "A manual test line needs both name and price when lab_test_id is not given."
+            )
+        return self
+
+
 class CreateLabBillRequest(BaseModel):
-    """`items` is a plain list of `lab_test_id`s — no per-line quantity
-    (confirmed design, see models.py's `LabBillItem` docstring); the
-    same test id appearing twice simply becomes two independent lines."""
+    """`items` is a list of catalog-linked and/or manual/free-typed
+    lines (see `CreateLabBillItemRequest`'s own docstring) — no
+    per-line quantity (confirmed design, see models.py's `LabBillItem`
+    docstring); the same test id (or the same manual name) appearing
+    twice simply becomes two independent lines."""
 
     model_config = ConfigDict(strict=True)
 
     patient_id: LaxUUID | None = None
-    items: list[LaxUUID] = Field(min_length=1)
+    items: list[CreateLabBillItemRequest] = Field(min_length=1)
     # Optional payment recorded atomically alongside creation — the
     # same "Advance Received" shape Pharmacy's own merged counter form
     # uses (see LabService.create_bill's docstring). `initial_payment_
@@ -141,12 +182,16 @@ class LabTestOut(BaseModel):
 
 
 class LabBillItemOut(BaseModel):
+    """`lab_test_id`/`category_snapshot` are both `None` for a manual/
+    free-typed line (2026-08-28 addition) — see models.py's
+    `LabBillItem` docstring."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    lab_test_id: UUID
+    lab_test_id: UUID | None
     lab_test_name_snapshot: str
-    category_snapshot: LabTestCategory
+    category_snapshot: LabTestCategory | None
     unit_price_snapshot: Decimal
 
     @classmethod

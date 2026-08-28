@@ -121,7 +121,7 @@ async def test_create_bill_requires_permission(api_client, real_session, grant_p
 
     resp = await api_client.post(
         "/api/v1/lab/bills",
-        json={"patient_id": None, "items": [test_id]},
+        json={"patient_id": None, "items": [{"lab_test_id": test_id}]},
         headers=_auth_header(access_token),
     )
 
@@ -154,7 +154,7 @@ async def test_update_bill_requires_correction_permission(
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id],
+            "items": [{"lab_test_id": test_id}],
             "manual_patient_name": "Walk-in",
             "manual_patient_age": 40,
             "manual_patient_phone": "03001112222",
@@ -183,7 +183,7 @@ async def test_delete_bill_requires_delete_permission(api_client, real_session, 
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id],
+            "items": [{"lab_test_id": test_id}],
             "manual_patient_name": "Walk-in",
             "manual_patient_age": 40,
             "manual_patient_phone": "03001112222",
@@ -231,7 +231,7 @@ async def test_full_lab_lifecycle_via_http(api_client, real_session, grant_permi
         "/api/v1/lab/bills",
         json={
             "patient_id": patient_id,
-            "items": [test_a, test_b],
+            "items": [{"lab_test_id": test_a}, {"lab_test_id": test_b}],
             "initial_payment_amount": "1000.00",
             "initial_payment_method": "cash",
         },
@@ -284,7 +284,7 @@ async def test_create_bill_duplicate_test_ids_create_two_independent_lines(
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id, test_id],
+            "items": [{"lab_test_id": test_id}, {"lab_test_id": test_id}],
             "manual_patient_name": "Repeat Test Patient",
             "manual_patient_age": 33,
             "manual_patient_phone": "03001112222",
@@ -297,6 +297,120 @@ async def test_create_bill_duplicate_test_ids_create_two_independent_lines(
     assert len(bill["items"]) == 2
     assert bill["total_amount"] == "1000.00"
     assert bill["items"][0]["id"] != bill["items"][1]["id"]
+
+
+async def test_create_bill_with_manual_line_creates_item_with_no_catalog_link(
+    api_client, real_session, grant_permission
+):
+    """A manual/free-typed line (2026-08-28 addition) — no `lab_test_id`
+    given, `name`/`price` supplied directly instead — lands as a real
+    LabBillItem row with `lab_test_id`/`category_snapshot` both `None`,
+    the exact same shape a manual VisitProcedureItem already has."""
+    actor, access_token = await _create_and_login(api_client, real_session, "manual-line")
+    await grant_permission(actor, PERMISSION_LAB_BILL)
+
+    resp = await api_client.post(
+        "/api/v1/lab/bills",
+        json={
+            "patient_id": None,
+            "items": [{"name": "Vitamin D Panel", "price": "2500.00"}],
+            "manual_patient_name": "Manual Line Patient",
+            "manual_patient_age": 29,
+            "manual_patient_phone": "03001234567",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 201, resp.text
+    bill = resp.json()["data"]
+    assert bill["total_amount"] == "2500.00"
+    assert len(bill["items"]) == 1
+    item = bill["items"][0]
+    assert item["lab_test_id"] is None
+    assert item["category_snapshot"] is None
+    assert item["lab_test_name_snapshot"] == "Vitamin D Panel"
+    assert item["unit_price_snapshot"] == "2500.00"
+
+
+async def test_create_bill_mixes_catalog_and_manual_lines(
+    api_client, real_session, grant_permission
+):
+    """A single bill may freely mix catalog-linked and manual/free-typed
+    lines — confirmed design, mirroring ProcedureItemsEditor's identical
+    "both kinds of row in the same list" UX exactly."""
+    actor, access_token = await _create_and_login(api_client, real_session, "mixed-lines")
+    await grant_permission(actor, PERMISSION_LAB_MANAGE)
+    await grant_permission(actor, PERMISSION_LAB_BILL)
+    test_id = await _create_test(
+        api_client, access_token, f"{TEST_LAB_TEST_NAME_PREFIX}MixedCatalog", price="600.00"
+    )
+
+    resp = await api_client.post(
+        "/api/v1/lab/bills",
+        json={
+            "patient_id": None,
+            "items": [
+                {"lab_test_id": test_id},
+                {"name": "Custom Genetic Panel", "price": "4000.00"},
+            ],
+            "manual_patient_name": "Mixed Lines Patient",
+            "manual_patient_age": 51,
+            "manual_patient_phone": "03009998888",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 201, resp.text
+    bill = resp.json()["data"]
+    assert bill["total_amount"] == "4600.00"
+    assert len(bill["items"]) == 2
+    catalog_item = next(item for item in bill["items"] if item["lab_test_id"] is not None)
+    manual_item = next(item for item in bill["items"] if item["lab_test_id"] is None)
+    assert catalog_item["lab_test_name_snapshot"] == f"{TEST_LAB_TEST_NAME_PREFIX}MixedCatalog"
+    assert catalog_item["category_snapshot"] == "pathology"
+    assert manual_item["lab_test_name_snapshot"] == "Custom Genetic Panel"
+    assert manual_item["category_snapshot"] is None
+    assert manual_item["unit_price_snapshot"] == "4000.00"
+
+
+async def test_create_bill_manual_line_rejects_missing_price(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "manual-no-price")
+    await grant_permission(actor, PERMISSION_LAB_BILL)
+
+    resp = await api_client.post(
+        "/api/v1/lab/bills",
+        json={"patient_id": None, "items": [{"name": "No Price Test"}]},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 422, resp.text
+
+
+async def test_create_bill_catalog_line_rejects_extra_name_or_price(
+    api_client, real_session, grant_permission
+):
+    """The same "never silently ignore a client-submitted price"
+    rejection VisitProcedureItemRequest already enforces — a
+    catalog-linked line's price is always the catalog's own, so
+    submitting a `price` alongside `lab_test_id` is rejected outright
+    rather than quietly discarded."""
+    actor, access_token = await _create_and_login(api_client, real_session, "catalog-extra-price")
+    await grant_permission(actor, PERMISSION_LAB_MANAGE)
+    await grant_permission(actor, PERMISSION_LAB_BILL)
+    test_id = await _create_test(api_client, access_token, f"{TEST_LAB_TEST_NAME_PREFIX}ExtraPrice")
+
+    resp = await api_client.post(
+        "/api/v1/lab/bills",
+        json={
+            "patient_id": None,
+            "items": [{"lab_test_id": test_id, "price": "1.00"}],
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 422, resp.text
 
 
 async def test_create_bill_rejects_inactive_test(api_client, real_session, grant_permission):
@@ -314,7 +428,7 @@ async def test_create_bill_rejects_inactive_test(api_client, real_session, grant
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id],
+            "items": [{"lab_test_id": test_id}],
             "manual_patient_name": "Walk-in",
             "manual_patient_age": 40,
             "manual_patient_phone": "03001112222",
@@ -334,7 +448,7 @@ async def test_create_bill_rejects_unknown_test(api_client, real_session, grant_
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": ["01911111-1111-7111-8111-111111111111"],
+            "items": [{"lab_test_id": "01911111-1111-7111-8111-111111111111"}],
             "manual_patient_name": "Walk-in",
             "manual_patient_age": 40,
             "manual_patient_phone": "03001112222",
@@ -369,7 +483,7 @@ async def test_create_bill_manual_patient_and_patient_id_together_rejected(
         "/api/v1/lab/bills",
         json={
             "patient_id": patient_id,
-            "items": [test_id],
+            "items": [{"lab_test_id": test_id}],
             "manual_patient_name": "Someone Else",
             "manual_patient_age": 22,
             "manual_patient_phone": "03001112223",
@@ -393,7 +507,11 @@ async def test_create_bill_partial_manual_patient_fields_rejected(
 
     resp = await api_client.post(
         "/api/v1/lab/bills",
-        json={"patient_id": None, "items": [test_id], "manual_patient_name": "Half Filled"},
+        json={
+            "patient_id": None,
+            "items": [{"lab_test_id": test_id}],
+            "manual_patient_name": "Half Filled",
+        },
         headers=_auth_header(access_token),
     )
 
@@ -411,7 +529,7 @@ async def test_create_bill_anonymous_walk_in_has_no_patient_or_manual_fields(
 
     resp = await api_client.post(
         "/api/v1/lab/bills",
-        json={"patient_id": None, "items": [test_id]},
+        json={"patient_id": None, "items": [{"lab_test_id": test_id}]},
         headers=_auth_header(access_token),
     )
 
@@ -440,7 +558,7 @@ async def test_create_bill_with_discount_computes_correct_total(
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id],
+            "items": [{"lab_test_id": test_id}],
             "manual_patient_name": "Walk-in",
             "manual_patient_age": 40,
             "manual_patient_phone": "03001112222",
@@ -471,7 +589,7 @@ async def test_create_bill_discount_exceeding_subtotal_rejected(
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id],
+            "items": [{"lab_test_id": test_id}],
             "manual_patient_name": "Walk-in",
             "manual_patient_age": 40,
             "manual_patient_phone": "03001112222",
@@ -500,7 +618,7 @@ async def test_bill_payment_exceeding_balance_rejected(api_client, real_session,
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id],
+            "items": [{"lab_test_id": test_id}],
             "manual_patient_name": "Walk-in",
             "manual_patient_age": 40,
             "manual_patient_phone": "03001112222",
@@ -532,7 +650,7 @@ async def test_bill_payment_on_already_paid_bill_rejected(
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id],
+            "items": [{"lab_test_id": test_id}],
             "manual_patient_name": "Walk-in",
             "manual_patient_age": 40,
             "manual_patient_phone": "03001112222",
@@ -566,7 +684,7 @@ async def test_create_bill_initial_payment_without_method_rejected(
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id],
+            "items": [{"lab_test_id": test_id}],
             "manual_patient_name": "Walk-in",
             "manual_patient_age": 40,
             "manual_patient_phone": "03001112222",
@@ -594,7 +712,7 @@ async def test_list_bills_for_day_returns_todays_bills(api_client, real_session,
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id],
+            "items": [{"lab_test_id": test_id}],
             "manual_patient_name": "Walk-in",
             "manual_patient_age": 40,
             "manual_patient_phone": "03001112222",
@@ -626,7 +744,7 @@ async def test_list_my_bills_returns_only_own_bills(api_client, real_session, gr
             "/api/v1/lab/bills",
             json={
                 "patient_id": None,
-                "items": [test_id],
+                "items": [{"lab_test_id": test_id}],
                 "manual_patient_name": "Walk-in",
                 "manual_patient_age": 40,
                 "manual_patient_phone": "03001112222",
@@ -655,7 +773,7 @@ async def test_get_bill_stats_by_creator_returns_accurate_counts_and_revenue(
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id, test_id],
+            "items": [{"lab_test_id": test_id}, {"lab_test_id": test_id}],
             "manual_patient_name": "Walk-in",
             "manual_patient_age": 40,
             "manual_patient_phone": "03001112222",
@@ -691,7 +809,7 @@ async def test_update_bill_admin_can_correct_discount(api_client, real_session, 
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id],
+            "items": [{"lab_test_id": test_id}],
             "manual_patient_name": "Wrong Name",
             "manual_patient_age": 40,
             "manual_patient_phone": "03001112222",
@@ -730,7 +848,7 @@ async def test_update_bill_blocked_once_bill_has_any_payment(
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id],
+            "items": [{"lab_test_id": test_id}],
             "manual_patient_name": "Walk-in",
             "manual_patient_age": 40,
             "manual_patient_phone": "03001112222",
@@ -764,7 +882,7 @@ async def test_delete_bill_success_removes_it_from_get(api_client, real_session,
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id],
+            "items": [{"lab_test_id": test_id}],
             "manual_patient_name": "Walk-in",
             "manual_patient_age": 40,
             "manual_patient_phone": "03001112222",
@@ -798,7 +916,7 @@ async def test_delete_bill_blocked_once_bill_has_any_payment(
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id],
+            "items": [{"lab_test_id": test_id}],
             "manual_patient_name": "Walk-in",
             "manual_patient_age": 40,
             "manual_patient_phone": "03001112222",
@@ -887,7 +1005,7 @@ async def test_print_bill_requires_permission(api_client, real_session, grant_pe
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id],
+            "items": [{"lab_test_id": test_id}],
             "manual_patient_name": "Walk-in",
             "manual_patient_age": 40,
             "manual_patient_phone": "03001112222",
@@ -920,7 +1038,7 @@ async def test_print_bill_with_manual_patient_shows_reference_and_totals(
         "/api/v1/lab/bills",
         json={
             "patient_id": None,
-            "items": [test_id],
+            "items": [{"lab_test_id": test_id}],
             "manual_patient_name": "Print Manual Patient",
             "manual_patient_age": 44,
             "manual_patient_phone": "03007778888",
@@ -946,6 +1064,49 @@ async def test_print_bill_with_manual_patient_shows_reference_and_totals(
     assert "Sale Type" not in resp.text
 
 
+async def test_print_bill_with_manual_line_omits_category(
+    api_client, real_session, grant_permission
+):
+    """A manual/free-typed line's meta line is omitted entirely on the
+    printed slip (no catalog category to show), while a catalog line
+    in the same bill still shows its own — see render_lab_bill_receipt's
+    own docstring."""
+    actor, access_token = await _create_and_login(api_client, real_session, "print-manual-line")
+    await grant_permission(actor, PERMISSION_LAB_MANAGE)
+    await grant_permission(actor, PERMISSION_LAB_BILL)
+    await grant_permission(actor, PERMISSION_LAB_READ)
+    test_id = await _create_test(
+        api_client, access_token, f"{TEST_LAB_TEST_NAME_PREFIX}PrintMixedCatalog", price="600.00"
+    )
+    bill_resp = await api_client.post(
+        "/api/v1/lab/bills",
+        json={
+            "patient_id": None,
+            "items": [
+                {"lab_test_id": test_id},
+                {"name": "Print Manual Line Test", "price": "900.00"},
+            ],
+        },
+        headers=_auth_header(access_token),
+    )
+    bill_id = bill_resp.json()["data"]["id"]
+
+    resp = await api_client.get(
+        f"/api/v1/lab/bills/{bill_id}/print", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert f"{TEST_LAB_TEST_NAME_PREFIX}PrintMixedCatalog" in resp.text
+    assert "Pathology" in resp.text  # the catalog line's own category meta line
+    assert "Print Manual Line Test" in resp.text
+    assert "900.00" in resp.text
+    # The manual line's own item-meta div is never rendered at all —
+    # not present as an empty tag either.
+    manual_line_index = resp.text.index("Print Manual Line Test")
+    manual_line_block = resp.text[manual_line_index : manual_line_index + 200]
+    assert "item-meta" not in manual_line_block
+
+
 async def test_print_bill_with_linked_patient_shows_patient_reference(
     api_client, real_session, grant_permission
 ):
@@ -962,7 +1123,7 @@ async def test_print_bill_with_linked_patient_shows_patient_reference(
     )
     bill_resp = await api_client.post(
         "/api/v1/lab/bills",
-        json={"patient_id": patient_id, "items": [test_id]},
+        json={"patient_id": patient_id, "items": [{"lab_test_id": test_id}]},
         headers=_auth_header(access_token),
     )
     bill_id = bill_resp.json()["data"]["id"]
@@ -988,7 +1149,7 @@ async def test_print_bill_anonymous_walk_in_shows_sale_reference(
     )
     bill_resp = await api_client.post(
         "/api/v1/lab/bills",
-        json={"patient_id": None, "items": [test_id]},
+        json={"patient_id": None, "items": [{"lab_test_id": test_id}]},
         headers=_auth_header(access_token),
     )
     bill_id = bill_resp.json()["data"]["id"]

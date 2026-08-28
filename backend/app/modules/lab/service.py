@@ -66,6 +66,14 @@ from app.shared.payment_method import PaymentMethod
 
 _ZERO = Decimal("0.00")
 
+# One (lab_test_id, name, category, price) resolved bill line — `name`/
+# `category`/`price` are the already-resolved-and-locked values
+# (catalog-derived when `lab_test_id` is set, freely-provided/`None`
+# category when it's not), never the raw, not-yet-validated request
+# shape. Mirrors app/modules/visits/service.py's identical
+# `ResolvedProcedure`. See `_resolve_items`.
+ResolvedLabItem = tuple[UUID | None, str, LabTestCategory | None, Decimal]
+
 
 class LabService:
     def __init__(
@@ -177,12 +185,43 @@ class LabService:
     # Lab bills (Receptionist + Admin, lab:bill / lab:read)
     # ------------------------------------------------------------------
 
+    async def _resolve_items(
+        self, items: list[tuple[UUID | None, str | None, Decimal | None]]
+    ) -> list[ResolvedLabItem]:
+        """Turns the caller's raw `(lab_test_id, manual_name,
+        manual_price)` request triples into resolved, trustworthy
+        `(lab_test_id, name, category, price)` lines — the lab-bill
+        sibling of app/modules/visits/service.py's identical
+        `_resolve_procedures`, mirrored as closely as the two modules'
+        shapes allow.
+
+        A catalog-linked entry (`lab_test_id` given) has its `name`/
+        `category`/`price` always re-derived from the LabTest row
+        itself, never trusted from the caller (mirrors this class's own
+        `medicine_name_snapshot`-style price-integrity rule) —
+        `LabTestInactiveError` if it's been deactivated, exactly like a
+        deactivated Medicine can't be billed. A manual entry
+        (`lab_test_id` is `None`) uses the caller's own `manual_name`/
+        `manual_price` directly, stripped/quantized, with `category`
+        always `None` — a manual line has no catalog category to
+        snapshot."""
+        resolved: list[ResolvedLabItem] = []
+        for lab_test_id, manual_name, manual_price in items:
+            if lab_test_id is not None:
+                test = await self._get_test(lab_test_id)
+                if not test.is_active:
+                    raise LabTestInactiveError(test.name)
+                resolved.append((lab_test_id, test.name, test.category, test.price))
+            else:
+                resolved.append((None, manual_name.strip(), None, quantize_money(manual_price)))
+        return resolved
+
     async def create_bill(
         self,
         *,
         actor: User,
         patient_id: UUID | None,
-        items: list[UUID],
+        items: list[tuple[UUID | None, str | None, Decimal | None]],
         initial_payment_amount: Decimal = _ZERO,
         initial_payment_method: PaymentMethod | None = None,
         manual_patient_name: str | None = None,
@@ -191,13 +230,17 @@ class LabService:
         discount_amount: Decimal = _ZERO,
         discount_reason: str | None = None,
     ) -> LabBill:
-        """`items` is a list of `lab_test_id`s, already validated
-        non-empty by `CreateLabBillRequest` — no quantity per line (see
-        models.py's `LabBillItem` docstring): the same test appearing
-        twice in this list simply becomes two independent line rows.
-        Every test referenced must exist and be active — checked up
-        front, before anything is written, so a bad line item never
-        leaves a partially-built bill behind.
+        """`items` is a list of raw `(lab_test_id, manual_name,
+        manual_price)` triples, already validated non-empty by
+        `CreateLabBillRequest` and resolved here via `_resolve_items`
+        (2026-08-28 addition — previously catalog-only, a plain list of
+        `lab_test_id`s) — no quantity per line either way (see
+        models.py's `LabBillItem` docstring): the same test id (or the
+        same manual name) appearing twice in this list simply becomes
+        two independent line rows. Every catalog test referenced must
+        exist and be active — checked up front, before anything is
+        written, so a bad line item never leaves a partially-built bill
+        behind.
 
         Every new bill draws its own `queue_token` from the exact same
         unified Postgres sequence Visit/MedicineBill both use (see
@@ -239,14 +282,9 @@ class LabService:
         if patient_id is not None:
             await self._patient_service.get_patient(patient_id)
 
-        resolved: list[LabTest] = []
-        for lab_test_id in items:
-            test = await self._get_test(lab_test_id)
-            if not test.is_active:
-                raise LabTestInactiveError(test.name)
-            resolved.append(test)
+        resolved = await self._resolve_items(items)
 
-        subtotal = sum((quantize_money(test.price) for test in resolved), _ZERO)
+        subtotal = sum((price for _, _, _, price in resolved), _ZERO)
 
         discount_amount = quantize_money(discount_amount) if discount_amount else _ZERO
         if discount_amount < _ZERO:
@@ -274,14 +312,14 @@ class LabService:
         )
         await self._bill_repo.add(bill)
 
-        for test in resolved:
+        for lab_test_id, name, category, price in resolved:
             await self._item_repo.add(
                 LabBillItem(
                     lab_bill_id=bill.id,
-                    lab_test_id=test.id,
-                    lab_test_name_snapshot=test.name,
-                    category_snapshot=test.category,
-                    unit_price_snapshot=test.price,
+                    lab_test_id=lab_test_id,
+                    lab_test_name_snapshot=name,
+                    category_snapshot=category,
+                    unit_price_snapshot=price,
                     created_by=actor.id,
                     updated_by=actor.id,
                 )

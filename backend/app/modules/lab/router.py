@@ -139,7 +139,7 @@ async def create_bill(
     bill = await lab_service.create_bill(
         actor=actor,
         patient_id=payload.patient_id,
-        items=payload.items,
+        items=[(item.lab_test_id, item.name, item.price) for item in payload.items],
         initial_payment_amount=payload.initial_payment_amount,
         initial_payment_method=payload.initial_payment_method,
         manual_patient_name=payload.manual_patient_name,
@@ -291,7 +291,11 @@ async def print_bill(
         patient_age_years=patient_age_years,
         patient_phone_number=patient_phone_number,
         line_items=[
-            (item.lab_test_name_snapshot, item.category_snapshot.value, item.unit_price_snapshot)
+            (
+                item.lab_test_name_snapshot,
+                item.category_snapshot.value if item.category_snapshot else None,
+                item.unit_price_snapshot,
+            )
             for item in items
         ],
         total_amount=bill.total_amount,
