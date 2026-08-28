@@ -76,8 +76,9 @@ function SummaryTile({ icon: Icon, label, value }) {
  * is never affected by "Clear Revenue" or the 24h auto-window (her
  * full history stays fully visible here regardless — only the summary
  * tiles above it reset/roll over). "My Revenue" breaks out visits vs.
- * medicine bills plus a combined total, always capped to roughly the
- * last 24 hours — reset early by pressing "Clear Revenue", or
+ * medicine bills vs. (Step 4 addition) lab bills plus a combined
+ * total, always capped to roughly the last 24 hours — reset early by
+ * pressing "Clear Revenue", or
  * automatically once a slip turns 24 hours old, whichever is more
  * recent (useMyRevenue, a server-side aggregate hard-scoped to her own
  * id — see that hook's own docstring — never a sum of whatever page
@@ -153,13 +154,14 @@ export function MyRegistrations() {
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
         <div className="flex flex-col gap-3">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <SummaryTile icon={Receipt} label="Visits Revenue" value={formatPkr(revenue.visitsRevenue)} />
             <SummaryTile
               icon={Receipt}
               label="Medicines Revenue"
               value={formatPkr(revenue.medicineRevenue)}
             />
+            <SummaryTile icon={Receipt} label="Lab Revenue" value={formatPkr(revenue.labRevenue)} />
             <SummaryTile icon={Receipt} label="Total Revenue" value={formatPkr(revenue.totalRevenue)} />
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-dashed border-border p-3">
@@ -339,12 +341,12 @@ export function MyRegistrations() {
         description={
           <div className="flex flex-col gap-2">
             <p>
-              Your Visits Revenue, Medicines Revenue, and Total Revenue figures above will reset to
-              PKR 0.00 going forward. This does not delete or change anything — every visit,
-              invoice, and medicine bill you&apos;ve ever created stays exactly as it is, still
-              fully visible in your registrations list below and in Admin&apos;s records. These
-              figures already roll over automatically every 24 hours on their own — use this only
-              if you want to reset them sooner. This cannot be undone from here.
+              Your Visits Revenue, Medicines Revenue, Lab Revenue, and Total Revenue figures above
+              will reset to PKR 0.00 going forward. This does not delete or change anything — every
+              visit, invoice, medicine bill, and lab bill you&apos;ve ever created stays exactly as
+              it is, still fully visible in your registrations list below and in Admin&apos;s
+              records. These figures already roll over automatically every 24 hours on their own —
+              use this only if you want to reset them sooner. This cannot be undone from here.
             </p>
             {clearError ? <p className="text-destructive">{clearError}</p> : null}
           </div>

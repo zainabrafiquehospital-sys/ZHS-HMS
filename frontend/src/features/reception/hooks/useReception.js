@@ -80,12 +80,13 @@ export function useMyRegistrations({ page, pageSize }) {
   };
 }
 
-/** This receptionist's own revenue — visits and medicine bills broken
- * out separately, plus a combined total — always capped to roughly the
- * last 24 hours (2026-08-19 fix; originally "since her last Clear
- * Revenue action, or all-time if she's never cleared", which in
- * practice meant an ever-growing cumulative total for receptionists
- * who never pressed Clear Revenue day to day). `clearedAt` reflects
+/** This receptionist's own revenue — visits, medicine bills, and (Step
+ * 4 addition) lab bills broken out separately, plus a combined total —
+ * always capped to roughly the last 24 hours (2026-08-19 fix;
+ * originally "since her last Clear Revenue action, or all-time if
+ * she's never cleared", which in practice meant an ever-growing
+ * cumulative total for receptionists who never pressed Clear Revenue
+ * day to day). `clearedAt` reflects
  * the effective window start — `max(last manual clear, now - 24h)` —
  * computed server-side on every request, so it is always a real, recent
  * timestamp. `refetchInterval` keeps the tiles live without requiring a
@@ -115,6 +116,8 @@ export function useMyRevenue() {
     visitsRevenue: query.data?.visits_revenue ?? '0.00',
     medicineBillCount: query.data?.medicine_bill_count ?? 0,
     medicineRevenue: query.data?.medicine_revenue ?? '0.00',
+    labBillCount: query.data?.lab_bill_count ?? 0,
+    labRevenue: query.data?.lab_revenue ?? '0.00',
     totalRevenue: query.data?.total_revenue ?? '0.00',
     clearedAt: query.data?.cleared_at ?? null,
   };

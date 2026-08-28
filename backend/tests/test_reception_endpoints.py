@@ -902,6 +902,12 @@ async def test_get_own_revenue_success_via_http(api_client, real_session, grant_
     body = resp.json()["data"]
     assert body["visits_count"] == 1
     assert body["visits_revenue"] == "1500.00"
+    # No medicine/lab bills created in this test — both breakdowns
+    # (Step 4 addition for lab) serialize as real zeroes, never absent.
+    assert body["medicine_bill_count"] == 0
+    assert body["medicine_revenue"] == "0.00"
+    assert body["lab_bill_count"] == 0
+    assert body["lab_revenue"] == "0.00"
     assert body["total_revenue"] == "1500.00"
     # Never cleared, so this is the 24h auto-window's own timestamp — a
     # real, recent value, never null/all-time (2026-08-19 fix).

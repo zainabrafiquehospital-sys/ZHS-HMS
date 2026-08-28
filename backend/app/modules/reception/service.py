@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.auth.models import User
 from app.modules.billing.models import InvoiceStatus
 from app.modules.billing.repository import InvoiceRepository
+from app.modules.lab.repository import LabBillRepository
 from app.modules.patients.models import Patient
 from app.modules.patients.service import PatientService
 from app.modules.pharmacy.repository import MedicineBillRepository
@@ -76,6 +77,7 @@ class ReceptionService:
         reception_repository: ReceptionRepository,
         invoice_repository: InvoiceRepository,
         medicine_bill_repository: MedicineBillRepository,
+        lab_bill_repository: LabBillRepository,
     ) -> None:
         """`session` here must be the exact same `AsyncSession` instance
         `audit_repository` was built with (see dependencies.py) — this
@@ -99,7 +101,13 @@ class ReceptionService:
         `medicine_bill_repository` (2026-08-19 addition, same shape as
         `invoice_repository` above) — narrow, strictly read-only,
         added solely so `get_own_revenue` can include the "Medicines"
-        half of a receptionist's own revenue tile alongside visits."""
+        half of a receptionist's own revenue tile alongside visits.
+
+        `lab_bill_repository` (Step 4 addition, same shape as
+        `medicine_bill_repository` above) — narrow, strictly read-only,
+        added solely so `get_own_revenue` can include the "Lab" third
+        of a receptionist's own revenue tile alongside visits and
+        medicines."""
         self._session = session
         self._patient_service = patient_service
         self._visit_service = visit_service
@@ -108,6 +116,7 @@ class ReceptionService:
         self._reception_repo = reception_repository
         self._invoice_repo = invoice_repository
         self._medicine_bill_repo = medicine_bill_repository
+        self._lab_bill_repo = lab_bill_repository
 
     async def register_visit(
         self,
@@ -388,13 +397,16 @@ class ReceptionService:
     # revenue through either method below.
     # ------------------------------------------------------------------
 
-    async def get_own_revenue(self, *, actor: User) -> tuple[int, Decimal, int, Decimal, datetime]:
-        """This receptionist's own revenue — visits and medicine bills
-        counted separately, always capped to roughly the last 24 hours.
-        Returns `(visits_count, visits_revenue, medicine_bill_count,
-        medicine_revenue, window_since)`; the router adds the two
-        revenue figures together for `total_revenue` rather than this
-        method doing it twice.
+    async def get_own_revenue(
+        self, *, actor: User
+    ) -> tuple[int, Decimal, int, Decimal, int, Decimal, datetime]:
+        """This receptionist's own revenue — visits, medicine bills, and
+        (Step 4 addition) lab bills counted separately, always capped to
+        roughly the last 24 hours. Returns `(visits_count,
+        visits_revenue, medicine_bill_count, medicine_revenue,
+        lab_bill_count, lab_revenue, window_since)`; the router adds the
+        three revenue figures together for `total_revenue` rather than
+        this method doing it itself.
 
         Mechanism (2026-08-19 fix): the effective cutoff is
         `since = max(last_manual_clear_at, now - 24h)`, computed fresh
@@ -441,7 +453,18 @@ class ReceptionService:
         medicine_count, medicine_revenue = await self._medicine_bill_repo.count_and_revenue_for_creator(
             actor.id, since=since
         )
-        return visits_count, visits_revenue, medicine_count, medicine_revenue, since
+        lab_count, lab_revenue = await self._lab_bill_repo.count_and_revenue_for_creator(
+            actor.id, since=since
+        )
+        return (
+            visits_count,
+            visits_revenue,
+            medicine_count,
+            medicine_revenue,
+            lab_count,
+            lab_revenue,
+            since,
+        )
 
     async def clear_own_revenue(self, *, actor: User) -> datetime:
         """Resets this receptionist's own "My Revenue" display to zero

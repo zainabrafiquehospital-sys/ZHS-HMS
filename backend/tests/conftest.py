@@ -46,6 +46,7 @@ from app.modules.billing.service import BillingService
 from app.modules.consultation.repository import ConsultationRepository
 from app.modules.consultation.service import ConsultationService
 from app.modules.dashboard.service import DashboardService
+from app.modules.lab.repository import LabBillRepository
 from app.modules.patients.repository import PatientRepository
 from app.modules.patients.service import PatientService
 from app.modules.pharmacy.repository import (
@@ -808,6 +809,9 @@ def reception_service(
         # Same shape/rationale, added the same day for "My Revenue"'s
         # medicine-bill breakdown.
         medicine_bill_repository=MedicineBillRepository(real_session),
+        # Step 4 addition, same shape/rationale, for "My Revenue"'s
+        # lab-bill breakdown.
+        lab_bill_repository=LabBillRepository(real_session),
     )
 
 

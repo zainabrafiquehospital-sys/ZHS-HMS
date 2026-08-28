@@ -25,6 +25,15 @@ export const adminStatsService = {
     return httpClient.get('/pharmacy/bills/stats/by-creator');
   },
 
+  // { user_id, count, revenue } per receptionist who has created a lab
+  // bill (Step 4 addition) — same shape/rationale as
+  // getMedicineBillStatsByCreator above, `revenue` is billed, not
+  // collected (see backend/app/modules/lab/repository.py's
+  // `count_and_revenue_by_creator` docstring).
+  getLabBillStatsByCreator() {
+    return httpClient.get('/lab/bills/stats/by-creator');
+  },
+
   // { user_id, count } per doctor who has completed a Consultation.
   getConsultationStatsByDoctor() {
     return httpClient.get('/consultations/stats/by-doctor');

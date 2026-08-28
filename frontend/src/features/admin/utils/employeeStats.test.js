@@ -31,16 +31,25 @@ describe('toLookup', () => {
 });
 
 describe('mergeEmployeeStats', () => {
-  it("combines all four modules' counts for a user present in every one", () => {
+  it("combines all five modules' counts for a user present in every one", () => {
     const merged = mergeEmployeeStats({
       userId: 'u1',
       visitsByUser: { u1: { count: 4 } },
       billsByUser: { u1: { count: 2, revenue: '150.00' } },
+      labBillsByUser: { u1: { count: 3, revenue: '900.00' } },
       consultationsByUser: { u1: { count: 1 } },
       vitalsByUser: { u1: { count: 6 } },
     });
 
-    expect(merged).toEqual({ visits: 4, bills: 2, revenue: '150.00', consultations: 1, vitals: 6 });
+    expect(merged).toEqual({
+      visits: 4,
+      bills: 2,
+      revenue: '150.00',
+      labBills: 3,
+      labRevenue: '900.00',
+      consultations: 1,
+      vitals: 6,
+    });
   });
 
   it('defaults every category to 0 (revenue to "0.00") for a user with no rows anywhere', () => {
@@ -48,6 +57,7 @@ describe('mergeEmployeeStats', () => {
       userId: 'ghost',
       visitsByUser: {},
       billsByUser: {},
+      labBillsByUser: {},
       consultationsByUser: {},
       vitalsByUser: {},
     });
@@ -56,6 +66,8 @@ describe('mergeEmployeeStats', () => {
       visits: 0,
       bills: 0,
       revenue: '0.00',
+      labBills: 0,
+      labRevenue: '0.00',
       consultations: 0,
       vitals: 0,
     });
@@ -67,6 +79,7 @@ describe('mergeEmployeeStats', () => {
       userId: 'reception-1',
       visitsByUser: { 'reception-1': { count: 12 } },
       billsByUser: { 'reception-1': { count: 3, revenue: '400.00' } },
+      labBillsByUser: {},
       consultationsByUser: {},
       vitalsByUser: {},
     });
@@ -74,5 +87,25 @@ describe('mergeEmployeeStats', () => {
     expect(merged.consultations).toBe(0);
     expect(merged.vitals).toBe(0);
     expect(merged.visits).toBe(12);
+    expect(merged.labBills).toBe(0);
+    expect(merged.labRevenue).toBe('0.00');
+  });
+
+  it('keeps medicine bills and lab bills as independent, never-summed figures', () => {
+    // A receptionist active in both Pharmacy and Lab — the two must
+    // never bleed into each other's count/revenue.
+    const merged = mergeEmployeeStats({
+      userId: 'reception-2',
+      visitsByUser: {},
+      billsByUser: { 'reception-2': { count: 5, revenue: '500.00' } },
+      labBillsByUser: { 'reception-2': { count: 2, revenue: '1200.00' } },
+      consultationsByUser: {},
+      vitalsByUser: {},
+    });
+
+    expect(merged.bills).toBe(5);
+    expect(merged.revenue).toBe('500.00');
+    expect(merged.labBills).toBe(2);
+    expect(merged.labRevenue).toBe('1200.00');
   });
 });

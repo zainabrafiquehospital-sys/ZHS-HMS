@@ -175,7 +175,7 @@ export function EmployeeAccounts() {
         <h1 className="text-lg font-semibold text-foreground">Employee Accounts &amp; Stats</h1>
         <p className="text-sm text-muted-foreground">
           Every user account, its status, and real activity counts — visits registered, medicine
-          bills billed, consultations completed, vitals recorded.
+          bills billed, lab bills billed, consultations completed, vitals recorded.
         </p>
       </div>
 
@@ -268,6 +268,8 @@ export function EmployeeAccounts() {
                       <TableHead className="text-right">Visits</TableHead>
                       <TableHead className="text-right">Bills</TableHead>
                       <TableHead className="text-right">Revenue Billed</TableHead>
+                      <TableHead className="text-right">Lab Bills</TableHead>
+                      <TableHead className="text-right">Lab Revenue Billed</TableHead>
                       <TableHead className="text-right">Consultations</TableHead>
                       <TableHead className="text-right">Vitals</TableHead>
                       <TableHead />
@@ -318,6 +320,12 @@ export function EmployeeAccounts() {
                           </TableCell>
                           <TableCell className="text-right tabular-nums">
                             {userStats ? money(userStats.revenue) : '…'}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {userStats ? userStats.labBills : '…'}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {userStats ? money(userStats.labRevenue) : '…'}
                           </TableCell>
                           <TableCell className="text-right tabular-nums">
                             {userStats ? userStats.consultations : '…'}

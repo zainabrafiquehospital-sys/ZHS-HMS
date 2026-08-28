@@ -7,6 +7,8 @@ from uuid6 import uuid7
 from app.modules.auth.models import LoginSession, User, UserStatus
 from app.modules.auth.repository import LoginSessionRepository, UserRepository
 from app.modules.consultation.constants import PERMISSION_CONSULTATION_START
+from app.modules.lab.models import LabBill, LabBillStatus
+from app.modules.lab.repository import LabBillRepository
 from app.modules.patients.exceptions import PatientNotFoundError
 from app.modules.patients.models import PatientGender
 from app.modules.pharmacy.models import MedicineCategory
@@ -745,6 +747,23 @@ async def _make_medicine(pharmacy_service, actor, suffix: str, price: str = "50.
     )
 
 
+async def _make_lab_bill(real_session, *, creator_id, amount: Decimal) -> LabBill:
+    """A direct-insert LabBill (no LabService fixture exists in this
+    file, unlike pharmacy_service above) — same "construct the row
+    directly via its repository" shape as `_make_backdated_visit`
+    further below, standing in as a standalone walk-in sale
+    (patient_id/manual_patient_* all None, allowed by LabBill's own
+    mutual-exclusivity CHECK constraints)."""
+    bill = LabBill(
+        queue_token=_unique_token(),
+        total_amount=amount,
+        amount_paid=Decimal("0.00"),
+        status=LabBillStatus.UNPAID,
+        created_by=creator_id,
+    )
+    return await LabBillRepository(real_session).add(bill)
+
+
 async def test_get_own_revenue_is_scoped_to_the_caller_only(
     real_session, reception_service, pharmacy_service
 ):
@@ -780,6 +799,8 @@ async def test_get_own_revenue_is_scoped_to_the_caller_only(
         visits_revenue,
         _med_count,
         _med_revenue,
+        _lab_count,
+        _lab_revenue,
         window_since,
     ) = await reception_service.get_own_revenue(actor=receptionist_a)
 
@@ -814,6 +835,8 @@ async def test_get_own_revenue_includes_medicine_bills_in_breakdown(
         visits_revenue,
         med_count,
         med_revenue,
+        _lab_count,
+        _lab_revenue,
         _cleared_at,
     ) = await reception_service.get_own_revenue(actor=receptionist)
 
@@ -821,6 +844,42 @@ async def test_get_own_revenue_includes_medicine_bills_in_breakdown(
     assert visits_revenue == Decimal("1500.00")
     assert med_count == 1
     assert med_revenue == Decimal("200.00")  # 2 x 100.00
+
+
+async def test_get_own_revenue_includes_lab_bills_in_breakdown(real_session, reception_service):
+    """The lab-bill sibling of
+    test_get_own_revenue_includes_medicine_bills_in_breakdown above —
+    same shape, own-scoped, added alongside visits/medicines rather
+    than replacing either (Step 4 addition)."""
+    receptionist = await _make_actor(real_session, "revenue-lab")
+
+    await reception_service.register_visit(
+        actor=receptionist,
+        patient_id=None,
+        new_patient=_new_patient_payload("RevenueLabVisit"),
+        doctor_user_id=None,
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
+        vitals_required=False,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
+    )
+    await _make_lab_bill(real_session, creator_id=receptionist.id, amount=Decimal("600.00"))
+    await _make_lab_bill(real_session, creator_id=receptionist.id, amount=Decimal("300.00"))
+
+    (
+        visits_count,
+        visits_revenue,
+        _med_count,
+        _med_revenue,
+        lab_count,
+        lab_revenue,
+        _cleared_at,
+    ) = await reception_service.get_own_revenue(actor=receptionist)
+
+    assert visits_count == 1
+    assert visits_revenue == Decimal("1500.00")
+    assert lab_count == 2
+    assert lab_revenue == Decimal("900.00")  # 600.00 + 300.00
 
 
 async def test_clear_own_revenue_resets_display_but_leaves_data_intact(
@@ -838,7 +897,7 @@ async def test_clear_own_revenue_resets_display_but_leaves_data_intact(
         initial_payment_method=PaymentMethod.CASH,
     )
 
-    before_count, before_revenue, _mc, _mr, _ca = await reception_service.get_own_revenue(
+    before_count, before_revenue, _mc, _mr, _lc, _lr, _ca = await reception_service.get_own_revenue(
         actor=receptionist
     )
     assert before_count == 1
@@ -852,6 +911,8 @@ async def test_clear_own_revenue_resets_display_but_leaves_data_intact(
         after_revenue,
         _mc2,
         _mr2,
+        _lc2,
+        _lr2,
         reported_cleared_at,
     ) = await reception_service.get_own_revenue(actor=receptionist)
     assert after_count == 0
@@ -912,9 +973,15 @@ async def test_clear_own_revenue_only_affects_the_caller(real_session, reception
 
     await reception_service.clear_own_revenue(actor=receptionist_b)
 
-    a_count, a_revenue, _mc, _mr, a_window_since = await reception_service.get_own_revenue(
-        actor=receptionist_a
-    )
+    (
+        a_count,
+        a_revenue,
+        _mc,
+        _mr,
+        _lc,
+        _lr,
+        a_window_since,
+    ) = await reception_service.get_own_revenue(actor=receptionist_a)
     assert a_count == 1
     assert a_revenue == Decimal("1500.00")
     # A never cleared, so her window is still just the 24h auto-window —
@@ -1007,9 +1074,15 @@ async def test_get_own_revenue_excludes_visits_older_than_24h_even_without_manua
         hours_ago=1,
     )
 
-    visits_count, visits_revenue, _mc, _mr, window_since = await reception_service.get_own_revenue(
-        actor=receptionist
-    )
+    (
+        visits_count,
+        visits_revenue,
+        _mc,
+        _mr,
+        _lc,
+        _lr,
+        window_since,
+    ) = await reception_service.get_own_revenue(actor=receptionist)
 
     # 100.00 (fresh, from register_visit) + 750.00 (backdated 1h) — the
     # 5000.00 backdated 25h is excluded.
@@ -1051,9 +1124,15 @@ async def test_get_own_revenue_manual_clear_within_24h_still_narrows_the_window(
         initial_payment_method=PaymentMethod.CASH,
     )
 
-    visits_count, visits_revenue, _mc, _mr, _ws = await reception_service.get_own_revenue(
-        actor=receptionist
-    )
+    (
+        visits_count,
+        visits_revenue,
+        _mc,
+        _mr,
+        _lc,
+        _lr,
+        _ws,
+    ) = await reception_service.get_own_revenue(actor=receptionist)
 
     assert visits_count == 1
     assert visits_revenue == Decimal("500.00")
@@ -1089,9 +1168,15 @@ async def test_get_own_revenue_manual_clear_older_than_24h_is_superseded_by_auto
         hours_ago=20,
     )
 
-    visits_count, visits_revenue, _mc, _mr, window_since = await reception_service.get_own_revenue(
-        actor=receptionist
-    )
+    (
+        visits_count,
+        visits_revenue,
+        _mc,
+        _mr,
+        _lc,
+        _lr,
+        window_since,
+    ) = await reception_service.get_own_revenue(actor=receptionist)
 
     # 0.01 (fresh seed visit, unaffected — it postdates the auto window
     # too) + 1200.00 (backdated 20h, inside the 24h auto-window despite
@@ -1128,9 +1213,15 @@ async def test_get_own_revenue_24h_window_does_not_affect_admins_alltime_view(
         hours_ago=48,
     )
 
-    visits_count, visits_revenue, _mc, _mr, _ws = await reception_service.get_own_revenue(
-        actor=receptionist
-    )
+    (
+        visits_count,
+        visits_revenue,
+        _mc,
+        _mr,
+        _lc,
+        _lr,
+        _ws,
+    ) = await reception_service.get_own_revenue(actor=receptionist)
     assert visits_count == 1  # only the fresh 0.01 seed visit
     assert visits_revenue == Decimal("0.01")
 

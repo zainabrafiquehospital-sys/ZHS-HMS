@@ -71,18 +71,20 @@ export function useDeleteUser() {
 }
 
 /** Every user's real, role-appropriate activity counts (visits
- * registered, medicine bills created + revenue billed, consultations
- * completed, vitals recorded) — one `GROUP BY` query per module,
- * server-side (see adminStatsService's four methods), never one request
- * per user on this page's user list. Computed unconditionally for every
- * user rather than gated by role name: this codebase's actual seeded
- * roles (Receptionist/Vitals/admin, plus demo-only roles) don't cleanly
- * map to a fixed "which stat belongs to which role" table, so every
- * user simply gets their real counts — 0 wherever a category doesn't
- * apply to what they actually did. Returns a lookup keyed by user id,
- * each value shaped `{ visits, bills, revenue, consultations, vitals }`
- * — callers default missing entries to 0, the same convention the
- * backend's own aggregate endpoints use for "no rows for this user". */
+ * registered, medicine bills created + revenue billed, lab bills
+ * created + revenue billed [Step 4 addition], consultations completed,
+ * vitals recorded) — one `GROUP BY` query per module, server-side (see
+ * adminStatsService's five methods), never one request per user on
+ * this page's user list. Computed unconditionally for every user
+ * rather than gated by role name: this codebase's actual seeded roles
+ * (Receptionist/Vitals/admin, plus demo-only roles) don't cleanly map
+ * to a fixed "which stat belongs to which role" table, so every user
+ * simply gets their real counts — 0 wherever a category doesn't apply
+ * to what they actually did. Returns a lookup keyed by user id, each
+ * value shaped `{ visits, bills, revenue, labBills, labRevenue,
+ * consultations, vitals }` — callers default missing entries to 0, the
+ * same convention the backend's own aggregate endpoints use for "no
+ * rows for this user". */
 export function useEmployeeActivityStats() {
   const visitStats = useQuery({
     queryKey: ['admin', 'stats', 'visits-by-creator'],
@@ -91,6 +93,10 @@ export function useEmployeeActivityStats() {
   const billStats = useQuery({
     queryKey: ['admin', 'stats', 'bills-by-creator'],
     queryFn: () => adminStatsService.getMedicineBillStatsByCreator().then((res) => res.data),
+  });
+  const labBillStats = useQuery({
+    queryKey: ['admin', 'stats', 'lab-bills-by-creator'],
+    queryFn: () => adminStatsService.getLabBillStatsByCreator().then((res) => res.data),
   });
   const consultationStats = useQuery({
     queryKey: ['admin', 'stats', 'consultations-by-doctor'],
@@ -102,12 +108,23 @@ export function useEmployeeActivityStats() {
   });
 
   const isLoading =
-    visitStats.isLoading || billStats.isLoading || consultationStats.isLoading || vitalsStats.isLoading;
-  const isError = visitStats.isError || billStats.isError || consultationStats.isError || vitalsStats.isError;
-  const error = visitStats.error ?? billStats.error ?? consultationStats.error ?? vitalsStats.error;
+    visitStats.isLoading ||
+    billStats.isLoading ||
+    labBillStats.isLoading ||
+    consultationStats.isLoading ||
+    vitalsStats.isLoading;
+  const isError =
+    visitStats.isError ||
+    billStats.isError ||
+    labBillStats.isError ||
+    consultationStats.isError ||
+    vitalsStats.isError;
+  const error =
+    visitStats.error ?? billStats.error ?? labBillStats.error ?? consultationStats.error ?? vitalsStats.error;
 
   const visitsByUser = toLookup(visitStats.data, ['count']);
   const billsByUser = toLookup(billStats.data, ['count', 'revenue']);
+  const labBillsByUser = toLookup(labBillStats.data, ['count', 'revenue']);
   const consultationsByUser = toLookup(consultationStats.data, ['count']);
   const vitalsByUser = toLookup(vitalsStats.data, ['count']);
 
@@ -116,6 +133,7 @@ export function useEmployeeActivityStats() {
       userId,
       visitsByUser,
       billsByUser,
+      labBillsByUser,
       consultationsByUser,
       vitalsByUser,
     });
