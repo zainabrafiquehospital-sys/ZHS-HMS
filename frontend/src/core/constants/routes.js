@@ -29,6 +29,7 @@ export const ROUTES = {
   LABORATORY: '/laboratory',
   INVENTORY: '/inventory',
   ADMIN_MEDICINES: '/admin/medicines',
+  ADMIN_LAB_TESTS: '/admin/lab-tests',
   ADMIN_PROCEDURES: '/admin/procedures',
   // A top-level route, not nested under /admin — shared by both Admin
   // and Receptionist (both hold `patients:read`). See

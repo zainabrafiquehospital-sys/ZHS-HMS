@@ -87,6 +87,16 @@ const NAV_ITEMS = [
     permission: 'pharmacy:manage',
   },
   // Same "own top-level entry, permission-gated only" shape as Medicines
+  // above — the Lab sibling, gated on lab:manage (admin-only, never
+  // Receptionist's own lab:read/lab:bill — see backend/app/modules/
+  // lab/constants.py's module docstring).
+  {
+    href: ROUTES.ADMIN_LAB_TESTS,
+    label: 'Lab Tests',
+    icon: FlaskConical,
+    permission: 'lab:manage',
+  },
+  // Same "own top-level entry, permission-gated only" shape as Medicines
   // above — an Admin sub-screen, not a landing module (see access.js's
   // MODULE_ACCESS, which deliberately omits it for the same reason,
   // 2026-08-21 addition).

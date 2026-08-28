@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import {
   Bell,
   ClipboardList,
+  FlaskConical,
   Pencil,
   Pill,
   Printer,
@@ -42,6 +43,20 @@ import {
   adminUpdateMedicineBillSchema,
   recordMedicineBillPaymentSchema,
 } from '@/features/pharmacy/schemas/pharmacySchemas';
+import {
+  useDeleteLabBill,
+  useLabBillDetail,
+  useLabBillsForDay,
+  usePatientsForLabBills,
+  usePrintLabBill,
+  useRecordLabBillPayment,
+  useUpdateLabBill,
+  useUsersForLabBills,
+} from '@/features/lab/hooks/useLab';
+import {
+  adminUpdateLabBillSchema,
+  recordLabBillPaymentSchema,
+} from '@/features/lab/schemas/labSchemas';
 import { PendingApprovals } from '@/features/admin/components/PendingApprovals';
 import { DateNavigator } from '@/features/admin/components/DateNavigator';
 import {
@@ -83,6 +98,7 @@ import { PAYMENT_METHOD_LABELS } from '@/shared/constants/paymentMethod';
 const OVERVIEW_TABS = [
   { value: 'visits', label: 'Visits' },
   { value: 'medicine_bills', label: 'Medicine Bills' },
+  { value: 'lab_bills', label: 'Lab Bills' },
   { value: 'inventory', label: 'Inventory' },
 ];
 
@@ -193,6 +209,76 @@ function RecordBillPaymentDialog({ bill, onClose }) {
           </div>
           <PaymentMethodSelect
             id="admin-bill-payment-method"
+            registration={register('payment_method')}
+            error={errors.payment_method}
+          />
+          {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        </div>
+      }
+    />
+  );
+}
+
+/** The lab-bill sibling of `RecordBillPaymentDialog` above — an
+ * additional payment toward a lab bill's remaining balance, same
+ * reuse of the ConfirmDialog primitive, same record-then-reprint
+ * flow. */
+function RecordLabBillPaymentDialog({ bill, onClose }) {
+  const recordPayment = useRecordLabBillPayment();
+  const printBill = usePrintLabBill();
+  const [error, setError] = useState(null);
+  const pending = Number(bill.total_amount) - Number(bill.amount_paid);
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm({
+    resolver: zodResolver(recordLabBillPaymentSchema),
+    defaultValues: { amount: '', payment_method: '' },
+  });
+
+  async function onSubmit(values) {
+    setError(null);
+    try {
+      await recordPayment.mutateAsync({
+        billId: bill.id,
+        amount: values.amount,
+        paymentMethod: values.payment_method,
+      });
+      await printBill.mutateAsync(bill.id);
+      onClose();
+    } catch (submitError) {
+      setError(submitError.message || 'Unable to record payment.');
+    }
+  }
+
+  return (
+    <ConfirmDialog
+      open
+      title={`Record Payment — Lab Bill ${bill.id.slice(0, 8)}`}
+      confirmLabel={isSubmitting ? 'Recording…' : 'Record Payment & Print'}
+      cancelLabel="Cancel"
+      onCancel={onClose}
+      onConfirm={handleSubmit(onSubmit)}
+      description={
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-muted-foreground">
+            An additional payment toward this bill's remaining balance — not the bill's original
+            payment. Total {formatPkr(bill.total_amount)} · Received {formatPkr(bill.amount_paid)}{' '}
+            · Pending {formatPkr(pending)}.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="admin-lab-bill-payment-amount">Amount (Rs.)</Label>
+            <Input
+              id="admin-lab-bill-payment-amount"
+              type="number"
+              step="0.01"
+              {...register('amount')}
+            />
+            {errors.amount ? <p className="text-xs text-destructive">{errors.amount.message}</p> : null}
+          </div>
+          <PaymentMethodSelect
+            id="admin-lab-bill-payment-method"
             registration={register('payment_method')}
             error={errors.payment_method}
           />
@@ -676,6 +762,189 @@ function DeleteMedicineBillDialog({ bill, onClose }) {
   );
 }
 
+/** The lab-bill sibling of `EditMedicineBillDialog`/`EditMedicineBillForm`
+ * above — same fetch-full-detail-then-render-form shape, same
+ * settled-payment rejection surfaced as a plain error message. A lab
+ * bill's "walk-in" concept is `patient_id == null` directly (no Visit
+ * hop — see app/modules/lab/models.py's LabBill docstring), unlike
+ * Medicine's `visit_id == null`. */
+function EditLabBillDialog({ bill, onClose }) {
+  const { data: fullBill, isLoading } = useLabBillDetail(bill.id);
+
+  if (isLoading || !fullBill) {
+    return (
+      <ConfirmDialog
+        open
+        title="Edit Lab Bill"
+        confirmLabel="Loading…"
+        cancelLabel="Cancel"
+        onCancel={onClose}
+        onConfirm={() => {}}
+        description={<p className="text-sm text-muted-foreground">Loading bill details…</p>}
+      />
+    );
+  }
+
+  return <EditLabBillForm bill={fullBill} onClose={onClose} />;
+}
+
+function EditLabBillForm({ bill, onClose }) {
+  const updateBill = useUpdateLabBill();
+  const [error, setError] = useState(null);
+  const isWalkIn = bill.patient_id == null;
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm({
+    resolver: zodResolver(adminUpdateLabBillSchema),
+    defaultValues: {
+      manual_patient_name: bill.manual_patient_name ?? '',
+      manual_patient_age: bill.manual_patient_age ?? '',
+      manual_patient_phone: bill.manual_patient_phone ?? '',
+      discount_amount: bill.discount_amount,
+      discount_reason: bill.discount_reason ?? '',
+    },
+  });
+
+  async function onSubmit(values) {
+    setError(null);
+    const updates = { ...values };
+    // Blank optional fields mean "leave unchanged" (see
+    // adminUpdateLabBillSchema's own docstring) — never send an empty
+    // string for a field the admin didn't actually clear out.
+    for (const key of ['manual_patient_name', 'manual_patient_phone', 'discount_reason']) {
+      if (updates[key] === '') delete updates[key];
+    }
+    // A patient-linked bill has no manual patient fields to submit at
+    // all — sending them (even unchanged) would trip the backend's own
+    // LAB_BILL_MANUAL_PATIENT_CONFLICTS_WITH_PATIENT rejection.
+    if (!isWalkIn) {
+      delete updates.manual_patient_name;
+      delete updates.manual_patient_age;
+      delete updates.manual_patient_phone;
+    }
+    try {
+      await updateBill.mutateAsync({ billId: bill.id, updates });
+      onClose();
+    } catch (submitError) {
+      setError(submitError.message || 'Unable to update this lab bill.');
+    }
+  }
+
+  return (
+    <ConfirmDialog
+      open
+      title={`Edit Lab Bill — ${bill.queue_token ?? bill.id.slice(0, 8)}`}
+      confirmLabel={isSubmitting ? 'Saving…' : 'Save Changes'}
+      cancelLabel="Cancel"
+      onCancel={onClose}
+      onConfirm={handleSubmit(onSubmit)}
+      description={
+        <div className="flex max-h-[60vh] flex-col gap-3 overflow-y-auto pr-1">
+          {isWalkIn ? (
+            <>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="admin-lab-bill-edit-name">Patient Name</Label>
+                <Input id="admin-lab-bill-edit-name" {...register('manual_patient_name')} />
+                {errors.manual_patient_name ? (
+                  <p className="text-xs text-destructive">{errors.manual_patient_name.message}</p>
+                ) : null}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="admin-lab-bill-edit-age">Age</Label>
+                  <Input
+                    id="admin-lab-bill-edit-age"
+                    type="number"
+                    {...register('manual_patient_age')}
+                  />
+                  {errors.manual_patient_age ? (
+                    <p className="text-xs text-destructive">{errors.manual_patient_age.message}</p>
+                  ) : null}
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="admin-lab-bill-edit-phone">Contact Number</Label>
+                  <Input
+                    id="admin-lab-bill-edit-phone"
+                    {...register('manual_patient_phone')}
+                  />
+                  {errors.manual_patient_phone ? (
+                    <p className="text-xs text-destructive">{errors.manual_patient_phone.message}</p>
+                  ) : null}
+                </div>
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              This bill is linked to a patient record — its identity details are corrected through
+              the Patient Directory, not here.
+            </p>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="admin-lab-bill-edit-discount-amount">Discount (Rs.)</Label>
+              <Input
+                id="admin-lab-bill-edit-discount-amount"
+                type="number"
+                step="0.01"
+                {...register('discount_amount')}
+              />
+              {errors.discount_amount ? (
+                <p className="text-xs text-destructive">{errors.discount_amount.message}</p>
+              ) : null}
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="admin-lab-bill-edit-discount-reason">Discount Reason</Label>
+              <Input id="admin-lab-bill-edit-discount-reason" {...register('discount_reason')} />
+            </div>
+          </div>
+          {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        </div>
+      }
+    />
+  );
+}
+
+/** The lab-bill sibling of `DeleteMedicineBillDialog` above — same
+ * full-ConfirmDialog-with-explicit-description discipline. */
+function DeleteLabBillDialog({ bill, onClose }) {
+  const deleteBill = useDeleteLabBill();
+  const [error, setError] = useState(null);
+
+  async function handleConfirm() {
+    setError(null);
+    try {
+      await deleteBill.mutateAsync(bill.id);
+      onClose();
+    } catch (deleteError) {
+      setError(deleteError.message || 'Unable to delete this lab bill.');
+    }
+  }
+
+  return (
+    <ConfirmDialog
+      open
+      variant="destructive"
+      title={`Delete Lab Bill — ${bill.queue_token ?? bill.id.slice(0, 8)}?`}
+      confirmLabel={deleteBill.isPending ? 'Deleting…' : 'Delete Bill'}
+      cancelLabel="Cancel"
+      onCancel={onClose}
+      onConfirm={handleConfirm}
+      description={
+        <div className="flex flex-col gap-2">
+          <p>
+            This permanently removes this lab bill from every list — it will no longer be
+            reachable or reprintable. Any linked patient record is not affected, and this cannot
+            be undone through the app.
+          </p>
+          {error ? <p className="text-destructive">{error}</p> : null}
+        </div>
+      }
+    />
+  );
+}
+
 /** The Medicine Bills tab — mirrors the Visits tab's own day-scoped,
  * read-only shape (same `selectedDate`, same "view/reprint" action
  * pattern as Billing's own `usePrintInvoice`), but reads `GET
@@ -847,6 +1116,164 @@ function MedicineBillsPanel({ selectedDate }) {
       ) : null}
       {deletingBill ? (
         <DeleteMedicineBillDialog bill={deletingBill} onClose={() => setDeletingBill(null)} />
+      ) : null}
+    </div>
+  );
+}
+
+/** The lab-bill sibling of `MedicineBillsPanel` above — same day-scoped,
+ * read-only shape, but a single-hop patient join (`usePatientsForLabBills`)
+ * rather than Medicine's two-hop Visit→Patient join, since `LabBill.
+ * patient_id` links directly (see app/modules/lab/models.py's LabBill
+ * docstring). No "Items" quantity column beyond the item count itself —
+ * `LabBillItem` has no per-line quantity (see LabBillItem's own
+ * docstring). */
+function LabBillsPanel({ selectedDate }) {
+  const { data: bills, isLoading, isError, error, refetch } = useLabBillsForDay(selectedDate);
+  const patientsById = usePatientsForLabBills(bills);
+  const usersById = useUsersForLabBills(bills);
+  const printBill = usePrintLabBill();
+  const [printError, setPrintError] = useState(null);
+  const [payingBill, setPayingBill] = useState(null);
+  const [editingBill, setEditingBill] = useState(null);
+  const [deletingBill, setDeletingBill] = useState(null);
+
+  async function handlePrint(billId) {
+    setPrintError(null);
+    try {
+      await printBill.mutateAsync(billId);
+    } catch (err) {
+      setPrintError(err.message || 'Unable to print this bill.');
+    }
+  }
+
+  if (isLoading) return <PageLoader label="Loading lab bills" />;
+  if (isError) {
+    return <PageError error={error} reset={refetch} message="Couldn't load lab bills." />;
+  }
+
+  const rows = bills ?? [];
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <SummaryTile icon={FlaskConical} label="Total Bills" value={rows.length} />
+      </div>
+
+      {rows.length === 0 ? (
+        <p className="py-10 text-center text-sm text-muted-foreground">
+          No lab bills were created on {formatDisplayDate(selectedDate)}.
+        </p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Time</TableHead>
+              <TableHead>Patient</TableHead>
+              <TableHead>Billed By</TableHead>
+              <TableHead className="text-right">Items</TableHead>
+              <TableHead className="text-right">Total</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Payment Method</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((bill) => {
+              const patient = bill.patient_id ? patientsById[bill.patient_id] : null;
+              const billedBy = bill.created_by ? usersById[bill.created_by] : null;
+              return (
+                <TableRow key={bill.id}>
+                  <TableCell className="whitespace-nowrap">
+                    {formatDisplayTime(bill.created_at)}
+                  </TableCell>
+                  <TableCell className="max-w-[160px] truncate font-medium text-foreground">
+                    {/* Same fallback shape as MedicineBillsPanel's own
+                        Patient column, single-hop instead of via a
+                        Visit: a directly-linked Patient, else the
+                        manually-typed name, else a plain walk-in. */}
+                    {bill.patient_id
+                      ? (patient?.full_name ?? '…')
+                      : (bill.manual_patient_name ?? 'Walk-in')}
+                  </TableCell>
+                  <TableCell className="max-w-[140px] truncate">
+                    {bill.created_by ? billedBy?.full_name || '…' : '—'}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">{bill.item_count}</TableCell>
+                  <TableCell className="whitespace-nowrap text-right font-medium tabular-nums">
+                    {formatPkr(bill.total_amount)}
+                  </TableCell>
+                  <TableCell>
+                    <Badge
+                      variant={
+                        bill.status === 'paid'
+                          ? 'success'
+                          : bill.status === 'partially_paid'
+                            ? 'warning'
+                            : 'outline'
+                      }
+                      className="capitalize"
+                    >
+                      {bill.status.replaceAll('_', ' ')}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="max-w-[160px] truncate text-xs text-muted-foreground">
+                    {bill.payment_methods?.length > 0
+                      ? bill.payment_methods
+                          .map((method) => PAYMENT_METHOD_LABELS[method] ?? method)
+                          .join(', ')
+                      : '—'}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex gap-2">
+                      {bill.status !== 'paid' ? (
+                        <Button size="sm" variant="outline" onClick={() => setPayingBill(bill)}>
+                          <Wallet className="h-4 w-4" />
+                          Record Payment
+                        </Button>
+                      ) : null}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handlePrint(bill.id)}
+                        disabled={printBill.isPending}
+                      >
+                        <Printer className="h-4 w-4" />
+                        Reprint
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setEditingBill(bill)}
+                        title="Correct this bill's details"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setDeletingBill(bill)}
+                        title="Delete this lab bill"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      )}
+      {printError ? <p className="text-sm text-destructive">{printError}</p> : null}
+      {payingBill ? (
+        <RecordLabBillPaymentDialog bill={payingBill} onClose={() => setPayingBill(null)} />
+      ) : null}
+      {editingBill ? (
+        <EditLabBillDialog bill={editingBill} onClose={() => setEditingBill(null)} />
+      ) : null}
+      {deletingBill ? (
+        <DeleteLabBillDialog bill={deletingBill} onClose={() => setDeletingBill(null)} />
       ) : null}
     </div>
   );
@@ -1087,6 +1514,12 @@ export function AdminOverview() {
   // rather than doubling any network request.
   const { data: medicineBills } = useMedicineBillsForDay(selectedDate);
   const medicineBillActorsById = useUsersForMedicineBills(medicineBills);
+  // Same dedupe-via-shared-query-key reasoning as medicineBills above —
+  // fetched here too, not only inside LabBillsPanel, so the
+  // always-visible combined revenue row/chart see Lab revenue
+  // regardless of which tab is active (Step 3 addition).
+  const { data: labBills } = useLabBillsForDay(selectedDate);
+  const labBillActorsById = useUsersForLabBills(labBills);
   // All-time, never day-scoped (2026-08-22 addition) — see
   // usePendingRevenue's own docstring for why this tile deliberately
   // doesn't follow the other three's `selectedDate` scoping.
@@ -1100,23 +1533,32 @@ export function AdminOverview() {
     () => (medicineBills ?? []).reduce((sum, bill) => sum + Number(bill.total_amount), 0),
     [medicineBills],
   );
+  // Step 3 addition — same shape as medicineRevenue above.
+  const labRevenue = useMemo(
+    () => (labBills ?? []).reduce((sum, bill) => sum + Number(bill.total_amount), 0),
+    [labBills],
+  );
   // 2026-08-20 fix: this used to be Visit revenue only (`computeRevenueByActor(visits, 'amount')`),
   // so a receptionist's Medicine Bill revenue never counted toward their
   // slice — under-reporting their true combined contribution (e.g. PKR
   // 6,350 shown when the real combined total was PKR 7,550). Now one
   // combined chart for both entity types, matching the combined revenue
   // tiles above it; the previous separate per-tab charts are gone (see
-  // MedicineBillsPanel's own comment).
+  // MedicineBillsPanel's own comment). Extended (Step 3) to a three-way
+  // combination — Visit + Medicine Bill + Lab Bill revenue — same
+  // reasoning, now covering all three revenue sources this overview
+  // tracks.
   const revenueByActor = useMemo(
     () =>
       resolveActorSlices(
         computeCombinedRevenueByActor([
           { records: visits, amountKey: 'amount' },
           { records: medicineBills, amountKey: 'total_amount' },
+          { records: labBills, amountKey: 'total_amount' },
         ]),
-        { ...receptionistsById, ...medicineBillActorsById },
+        { ...receptionistsById, ...medicineBillActorsById, ...labBillActorsById },
       ),
-    [visits, medicineBills, receptionistsById, medicineBillActorsById],
+    [visits, medicineBills, labBills, receptionistsById, medicineBillActorsById, labBillActorsById],
   );
 
   const statusCounts = useMemo(() => {
@@ -1160,23 +1602,26 @@ export function AdminOverview() {
       <PendingInventoryRequestsCard />
 
       {/* Combined revenue row (2026-08-20 addition) — visible regardless
-          of which tab is active below, same three-way breakdown as the
+          of which tab is active below, same breakdown as the
           receptionist's own "My Revenue" view (MyRegistrations.jsx):
-          Visit Revenue, Medicine Revenue, and their sum. Previously
-          Admin Overview only ever showed Visit revenue (the Visits tab's
-          own "Total Revenue" tile), with Medicine revenue nowhere in
-          view unless the Medicine Bills tab happened to be open.
-          "Pending Revenue" (2026-08-22 addition) is the one tile here
-          that is NOT scoped to `selectedDate` like the other three —
+          Visit Revenue, Medicine Revenue, Lab Revenue, and their sum.
+          Previously Admin Overview only ever showed Visit revenue (the
+          Visits tab's own "Total Revenue" tile), with Medicine revenue
+          nowhere in view unless the Medicine Bills tab happened to be
+          open. "Pending Revenue" (2026-08-22 addition) is the one tile
+          here that is NOT scoped to `selectedDate` like the others —
           see usePendingRevenue's own docstring for why an all-time
-          outstanding balance is the only correct framing. */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          outstanding balance is the only correct framing. "Lab Revenue"
+          (Step 3 addition) follows the same pattern as Medicine
+          Revenue, growing this to 5 tiles. */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <SummaryTile icon={Receipt} label="Visit Revenue" value={formatPkr(totalRevenue)} />
         <SummaryTile icon={Receipt} label="Medicine Revenue" value={formatPkr(medicineRevenue)} />
+        <SummaryTile icon={Receipt} label="Lab Revenue" value={formatPkr(labRevenue)} />
         <SummaryTile
           icon={Receipt}
           label="Total Revenue"
-          value={formatPkr(totalRevenue + medicineRevenue)}
+          value={formatPkr(totalRevenue + medicineRevenue + labRevenue)}
         />
         <SummaryTile icon={Wallet} label="Pending Revenue" value={formatPkr(pendingRevenue)} />
       </div>
@@ -1210,6 +1655,8 @@ export function AdminOverview() {
             <InventoryPanel />
           ) : activeTab === 'medicine_bills' ? (
             <MedicineBillsPanel selectedDate={selectedDate} />
+          ) : activeTab === 'lab_bills' ? (
+            <LabBillsPanel selectedDate={selectedDate} />
           ) : isLoading ? (
             <PageLoader label="Loading visit activity" />
           ) : isError ? (
