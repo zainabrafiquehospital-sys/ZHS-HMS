@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { HeartPulse, Printer } from 'lucide-react';
+import { HeartPulse, Printer, Stethoscope } from 'lucide-react';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import {
   useMyQueue,
@@ -21,7 +21,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { PageLoader } from '@/shared/components/PageLoader';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/components/ui/Table';
 
 /** Worst severity found in a visit's most recently recorded vitals —
  * `null` (rendered as "—") when the visit has no vitals recorded at
@@ -42,7 +41,71 @@ function VitalsBadge({ records, ageYears, isLoading }) {
   );
 }
 
-function QueueTable({
+/** One visit's card in "Waiting for You" / "Unclaimed Visits" (2026-08-28
+ * card-layout redesign — a genuinely separate component/file from
+ * VitalsWorklist.jsx's own `WorklistCard`, per Step 3 of the Vitals
+ * plan, even though it deliberately reuses the exact same shape:
+ * icon circle in `bg-primary/10 text-primary`, `border-border`/
+ * `bg-card`/`rounded-md`, same padding/radius). Every field/action the
+ * old table row carried is still here — queue token, patient, itemized
+ * procedure, vitals severity, visit status, and both actions. */
+function QueueCard({
+  visit,
+  patient,
+  vitalsRecords,
+  isLoadingVitals,
+  actionLabel,
+  onAction,
+  isActionPending,
+  onViewSlip,
+  viewingSlipVisitId,
+}) {
+  return (
+    <div className="flex items-start gap-3 rounded-md border border-border bg-card p-4">
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+        <Stethoscope className="h-5 w-5" />
+      </div>
+      <div className="flex flex-1 flex-col gap-2">
+        <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+          <div className="flex flex-col">
+            <span className="font-medium text-foreground">
+              {patient ? `${patient.full_name} (${patient.mr_number})` : '…'}
+            </span>
+          </div>
+          <span className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+            {visit.queue_token}
+          </span>
+        </div>
+        <VisitProcedureDisplay visit={visit} className="text-xs text-muted-foreground" />
+        <div className="flex flex-wrap items-center gap-3 text-xs">
+          <span className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">Vitals:</span>
+            <VitalsBadge records={vitalsRecords} ageYears={patient?.age_years} isLoading={isLoadingVitals} />
+          </span>
+          <Badge variant="outline" className="capitalize">
+            {visit.status.replaceAll('_', ' ')}
+          </Badge>
+        </div>
+        <div className="mt-1 flex flex-wrap gap-2">
+          <Button size="sm" onClick={() => onAction(visit.id)} disabled={isActionPending}>
+            {actionLabel}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => onViewSlip(visit.id)}
+            disabled={viewingSlipVisitId === visit.id}
+          >
+            <Printer className="h-3.5 w-3.5" />
+            {viewingSlipVisitId === visit.id ? 'Opening…' : 'View Slip'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function QueueCardGrid({
   visits,
   patientsById,
   vitalsByVisitId,
@@ -54,62 +117,22 @@ function QueueTable({
   viewingSlipVisitId,
 }) {
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Queue Token</TableHead>
-          <TableHead>Patient</TableHead>
-          <TableHead>Procedure</TableHead>
-          <TableHead>Vitals</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead />
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {visits.map((visit) => {
-          const patient = patientsById[visit.patient_id];
-          return (
-            <TableRow key={visit.id}>
-              <TableCell className="font-mono">{visit.queue_token}</TableCell>
-              <TableCell>
-                {patient ? `${patient.full_name} (${patient.mr_number})` : '…'}
-              </TableCell>
-              <TableCell>
-                <VisitProcedureDisplay visit={visit} />
-              </TableCell>
-              <TableCell>
-                <VitalsBadge
-                  records={vitalsByVisitId[visit.id]}
-                  ageYears={patient?.age_years}
-                  isLoading={isLoadingVitals}
-                />
-              </TableCell>
-              <TableCell>
-                <Badge variant="outline" className="capitalize">
-                  {visit.status.replaceAll('_', ' ')}
-                </Badge>
-              </TableCell>
-              <TableCell>
-                <div className="flex gap-2">
-                  <Button size="sm" onClick={() => onAction(visit.id)} disabled={isActionPending}>
-                    {actionLabel}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => onViewSlip(visit.id)}
-                    disabled={viewingSlipVisitId === visit.id}
-                  >
-                    <Printer className="h-3.5 w-3.5" />
-                    {viewingSlipVisitId === visit.id ? 'Opening…' : 'View Slip'}
-                  </Button>
-                </div>
-              </TableCell>
-            </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {visits.map((visit) => (
+        <QueueCard
+          key={visit.id}
+          visit={visit}
+          patient={patientsById[visit.patient_id]}
+          vitalsRecords={vitalsByVisitId[visit.id]}
+          isLoadingVitals={isLoadingVitals}
+          actionLabel={actionLabel}
+          onAction={onAction}
+          isActionPending={isActionPending}
+          onViewSlip={onViewSlip}
+          viewingSlipVisitId={viewingSlipVisitId}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -122,47 +145,51 @@ const VITALS_PENDING_REASON_LABEL = {
  * useVitalsPendingForDoctor's own docstring for the two cases this
  * covers. Deliberately no action button: there is nothing for the
  * doctor to do here (they can't start/resume a consultation on a
- * patient who isn't back yet) — this table exists purely so they can
+ * patient who isn't back yet) — this card exists purely so they can
  * see who's coming next and who's still with the nurse, not
  * disappearing from view entirely (Part 3's own framing). */
-function VitalsPendingTable({ entries, patientsById }) {
+function VitalsPendingCard({ visit, reason, patient }) {
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Queue Token</TableHead>
-          <TableHead>Patient</TableHead>
-          <TableHead>Procedure</TableHead>
-          <TableHead>Reason</TableHead>
-          <TableHead>Status</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {entries.map(({ visit, reason }) => {
-          const patient = patientsById[visit.patient_id];
-          return (
-            <TableRow key={visit.id}>
-              <TableCell className="font-mono">{visit.queue_token}</TableCell>
-              <TableCell>
-                {patient ? `${patient.full_name} (${patient.mr_number})` : '…'}
-              </TableCell>
-              <TableCell>
-                <VisitProcedureDisplay visit={visit} />
-              </TableCell>
-              <TableCell className="text-muted-foreground">
-                {VITALS_PENDING_REASON_LABEL[reason]}
-              </TableCell>
-              <TableCell>
-                <Badge variant={VISIT_STATUS_BADGE_VARIANT.waiting_vitals} className="gap-1">
-                  <HeartPulse className="h-3 w-3" />
-                  Vitals Pending
-                </Badge>
-              </TableCell>
-            </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
+    <div className="flex items-start gap-3 rounded-md border border-border bg-card p-4">
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+        <HeartPulse className="h-5 w-5" />
+      </div>
+      <div className="flex flex-1 flex-col gap-2">
+        <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+          <div className="flex flex-col">
+            <span className="font-medium text-foreground">
+              {patient ? `${patient.full_name} (${patient.mr_number})` : '…'}
+            </span>
+          </div>
+          <span className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+            {visit.queue_token}
+          </span>
+        </div>
+        <VisitProcedureDisplay visit={visit} className="text-xs text-muted-foreground" />
+        <p className="text-xs text-muted-foreground">{VITALS_PENDING_REASON_LABEL[reason]}</p>
+        <div>
+          <Badge variant={VISIT_STATUS_BADGE_VARIANT.waiting_vitals} className="gap-1">
+            <HeartPulse className="h-3 w-3" />
+            Vitals Pending
+          </Badge>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VitalsPendingCardGrid({ entries, patientsById }) {
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {entries.map(({ visit, reason }) => (
+        <VitalsPendingCard
+          key={visit.id}
+          visit={visit}
+          reason={reason}
+          patient={patientsById[visit.patient_id]}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -185,9 +212,9 @@ export function DoctorQueueList() {
   const startConsultation = useStartConsultation();
   const viewSlip = useViewRegistrationSlip();
   const { toast } = useToast();
-  // Tracks which single row's slip is currently opening, mirroring
+  // Tracks which single card's slip is currently opening, mirroring
   // MyRegistrations.jsx's identical `printingVisitId` one-in-flight
-  // pattern — disables only that row's button, not every "View Slip"
+  // pattern — disables only that card's button, not every "View Slip"
   // button on the screen.
   const [viewingSlipVisitId, setViewingSlipVisitId] = useState(null);
 
@@ -226,7 +253,7 @@ export function DoctorQueueList() {
               No patients currently waiting.
             </p>
           ) : (
-            <QueueTable
+            <QueueCardGrid
               visits={myQueue}
               patientsById={patientsById}
               vitalsByVisitId={vitalsByVisitId}
@@ -254,7 +281,7 @@ export function DoctorQueueList() {
             {isLoadingVitalsPending ? (
               <PageLoader label="Loading vitals-pending patients" />
             ) : (
-              <VitalsPendingTable entries={vitalsPending} patientsById={patientsById} />
+              <VitalsPendingCardGrid entries={vitalsPending} patientsById={patientsById} />
             )}
           </CardContent>
         </Card>
@@ -273,7 +300,7 @@ export function DoctorQueueList() {
             {isLoadingUnassigned ? (
               <PageLoader label="Loading unclaimed visits" />
             ) : (
-              <QueueTable
+              <QueueCardGrid
                 visits={unassigned}
                 patientsById={patientsById}
                 vitalsByVisitId={vitalsByVisitId}
