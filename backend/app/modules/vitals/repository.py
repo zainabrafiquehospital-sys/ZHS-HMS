@@ -1,6 +1,7 @@
 """Persistence-only repository for the Vitals module — see
 app/modules/patients/repository.py's identical module docstring."""
 
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -58,6 +59,32 @@ class VitalsRecordRepository(BaseRepository[VitalsRecord]):
             select(VitalsRecord)
             .where(VitalsRecord.visit_id.in_(visit_ids))
             .order_by(VitalsRecord.created_at.desc()),
+            include_deleted=False,
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_for_creator_and_day(
+        self, *, created_by: UUID, day: datetime
+    ) -> list[VitalsRecord]:
+        """Every vitals record `created_by` personally recorded on `day`'s
+        UTC calendar date, oldest first — the exact same shape
+        `InventoryUsageEntryRepository.list_for_creator_and_day` already
+        established for the identical "one staff member's one day"
+        scoping (see that method's own docstring), backing this module's
+        half of the Step 5 combined daily summary print (Inventory items
+        used + Vitals recorded, one document — see
+        app/shared/printing/service.py's `render_vitals_daily_summary`)."""
+        start_of_day = datetime(day.year, day.month, day.day, tzinfo=day.tzinfo)
+        end_of_day = start_of_day + timedelta(days=1)
+        stmt = self._exclude_soft_deleted(
+            select(VitalsRecord)
+            .where(
+                VitalsRecord.created_by == created_by,
+                VitalsRecord.created_at >= start_of_day,
+                VitalsRecord.created_at < end_of_day,
+            )
+            .order_by(VitalsRecord.created_at.asc()),
             include_deleted=False,
         )
         result = await self.session.execute(stmt)

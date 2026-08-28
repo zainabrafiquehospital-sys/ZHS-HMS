@@ -17,6 +17,7 @@ Either way, the same doctor gets the Visit back — enforced upstream by
 Visit.doctor_user_id never changing and Consultation's own doctor-
 ownership check (see app/modules/consultation/service.py)."""
 
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -188,3 +189,11 @@ class VitalsService:
         """Read-only aggregate added for the Admin "Employee Accounts &
         Stats" page — see VitalsRecordRepository.count_by_creator."""
         return await self._vitals_repo.count_by_creator()
+
+    async def list_for_creator_and_day(
+        self, *, created_by: UUID, day: datetime
+    ) -> list[VitalsRecord]:
+        """Backs the Step 5 combined daily summary print's "Vitals
+        Recorded" half — see VitalsRecordRepository.
+        list_for_creator_and_day."""
+        return await self._vitals_repo.list_for_creator_and_day(created_by=created_by, day=day)

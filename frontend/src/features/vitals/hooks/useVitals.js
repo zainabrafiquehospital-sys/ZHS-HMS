@@ -3,6 +3,7 @@
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { queueService, vitalsService } from '@/features/vitals/api/vitalsService';
 import { visitsService } from '@/features/visits/api/visitsService';
+import { openAndPrintHtml } from '@/utils/printWindow';
 
 export { usePatientsForVisits } from '@/features/patients/hooks/usePatientsForVisits';
 
@@ -99,6 +100,19 @@ export function usePatientVitalsHistory(patientId) {
     queryKey: ['vitals', 'patients', patientId, 'history'],
     queryFn: () => vitalsService.historyForPatient(patientId).then((res) => res.data),
     enabled: Boolean(patientId),
+  });
+}
+
+// Step 5's combined daily PDF (Inventory Items Used + Vitals Recorded,
+// one document) — same hidden-iframe print pattern
+// usePrintDailyUsageSlip (features/inventory/hooks/useInventory.js)
+// already established, additive alongside it rather than replacing it.
+export function usePrintDailySummary() {
+  return useMutation({
+    mutationFn: async (date) => {
+      const html = await vitalsService.fetchDailySummaryHtml(date);
+      await openAndPrintHtml(html);
+    },
   });
 }
 

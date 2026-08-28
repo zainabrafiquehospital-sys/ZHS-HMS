@@ -5,6 +5,7 @@ import { VitalsWorklist } from '@/features/vitals/components/VitalsWorklist';
 import { RecordInventoryUsageForm } from '@/features/vitals/components/RecordInventoryUsageForm';
 import { RaiseRestockRequestForm } from '@/features/vitals/components/RaiseRestockRequestForm';
 import { PrintDailyUsageSlip } from '@/features/vitals/components/PrintDailyUsageSlip';
+import { PrintDailySummary } from '@/features/vitals/components/PrintDailySummary';
 import { ShiftBadge } from '@/shared/components/ShiftBadge';
 import { Tabs } from '@/shared/components/ui/Tabs';
 
@@ -40,6 +41,7 @@ export default function VitalsPage() {
       ) : activeTab === 'record_usage' ? (
         <div className="flex flex-col gap-6">
           <PrintDailyUsageSlip />
+          <PrintDailySummary />
           <RecordInventoryUsageForm />
         </div>
       ) : (

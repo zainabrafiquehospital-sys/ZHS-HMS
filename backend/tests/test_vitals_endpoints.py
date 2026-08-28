@@ -1,15 +1,22 @@
 """Full end-to-end HTTP tests for the Vitals module — see
 tests/test_patients_endpoints.py's identical module docstring."""
 
+from datetime import date
 from decimal import Decimal
 
 from app.modules.auth.models import User, UserStatus
 from app.modules.auth.password_service import PasswordService
 from app.modules.auth.repository import UserRepository
+from app.modules.inventory.constants import (
+    PERMISSION_INVENTORY_MANAGE,
+    PERMISSION_INVENTORY_RECORD_USAGE,
+)
 from app.modules.patients.models import PatientGender
 from app.modules.vitals.constants import PERMISSION_VITALS_READ, PERMISSION_VITALS_RECORD
 from app.shared.payment_method import PaymentMethod
-from tests.conftest import TEST_PATIENT_NAME_PREFIX, make_test_email
+from tests.conftest import TEST_INVENTORY_ITEM_NAME_PREFIX, TEST_PATIENT_NAME_PREFIX, make_test_email
+
+_TODAY = date.today().isoformat()
 
 _PASSWORD = "Str0ng!Passw0rd#2026"
 
@@ -295,3 +302,118 @@ async def test_get_patient_vitals_history_returns_empty_list_when_none_recorded(
 
     assert resp.status_code == 200
     assert resp.json()["data"] == []
+
+
+async def test_print_daily_summary_requires_permission(api_client, real_session):
+    _actor, access_token = await _create_and_login(api_client, real_session, "daily-summary-no-perm")
+
+    resp = await api_client.get(
+        "/api/v1/vitals/daily-summary/print",
+        params={"date": _TODAY},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_print_daily_summary_shows_both_sections_scoped_to_actor(
+    api_client, real_session, grant_permission, reception_service
+):
+    """Step 5's combined daily PDF — one document, two sections, both
+    scoped to the calling actor's own day only (the same hard
+    actor-scoping `GET /inventory/usage/mine/print` already
+    established). A second staff member's inventory usage on the same
+    item/day must never leak into this actor's printed summary."""
+    manager, manager_token = await _create_and_login(api_client, real_session, "daily-summary-mgr")
+    await grant_permission(manager, PERMISSION_INVENTORY_MANAGE)
+    item_resp = await api_client.post(
+        "/api/v1/inventory/items",
+        json={
+            "name": f"{TEST_INVENTORY_ITEM_NAME_PREFIX}DailySummary",
+            "category": "medicine",
+            "unit": "piece",
+        },
+        headers=_auth_header(manager_token),
+    )
+    assert item_resp.status_code == 201, item_resp.text
+    item_id = item_resp.json()["data"]["id"]
+    # Usage can only be recorded against Emergency Stock, which starts
+    # at zero for a freshly created item — receive into Main Stock, then
+    # transfer to Emergency Stock, same two-step flow
+    # test_print_daily_usage_slip_is_scoped_to_the_calling_actor
+    # (test_inventory_endpoints.py) already establishes.
+    await api_client.post(
+        f"/api/v1/inventory/items/{item_id}/receive",
+        json={"quantity": "20", "received_on": _TODAY},
+        headers=_auth_header(manager_token),
+    )
+    await api_client.post(
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": item_id, "quantity": "20"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Daily Summary Porter",
+        },
+        headers=_auth_header(manager_token),
+    )
+
+    actor, access_token = await _create_and_login(api_client, real_session, "daily-summary-actor")
+    await grant_permission(actor, PERMISSION_INVENTORY_RECORD_USAGE)
+    await grant_permission(actor, PERMISSION_VITALS_RECORD)
+    other_staff, other_token = await _create_and_login(api_client, real_session, "daily-summary-other")
+    await grant_permission(other_staff, PERMISSION_INVENTORY_RECORD_USAGE)
+
+    # This actor's own inventory usage — must appear.
+    usage_resp = await api_client.post(
+        "/api/v1/inventory/usage",
+        json={
+            "items": [{"item_id": item_id, "quantity": "3"}],
+            "used_on": _TODAY,
+            "manual_patient_name": "Daily Summary Usage Patient",
+            "manual_patient_age": 28,
+            "manual_patient_phone": "03001234567",
+        },
+        headers=_auth_header(access_token),
+    )
+    assert usage_resp.status_code == 201, usage_resp.text
+
+    # A DIFFERENT staff member's usage on the same item/day — must NOT
+    # leak into this actor's printed summary.
+    other_usage_resp = await api_client.post(
+        "/api/v1/inventory/usage",
+        json={
+            "items": [{"item_id": item_id, "quantity": "9"}],
+            "used_on": _TODAY,
+            "manual_patient_name": "Other Staff Usage Patient",
+            "manual_patient_age": 40,
+            "manual_patient_phone": "03009998888",
+        },
+        headers=_auth_header(other_token),
+    )
+    assert other_usage_resp.status_code == 201, other_usage_resp.text
+
+    # This actor's own vitals recording — must appear, correctly
+    # labeled Fahrenheit (every new record is, since Step 1).
+    visit = await _make_visit(reception_service, actor, "DailySummary", vitals_required=True)
+    record_resp = await api_client.post(
+        "/api/v1/vitals",
+        json={"visit_id": str(visit.id), "systolic_bp": 118, "diastolic_bp": 76, "temperature": 99.1},
+        headers=_auth_header(access_token),
+    )
+    assert record_resp.status_code == 201, record_resp.text
+
+    resp = await api_client.get(
+        "/api/v1/vitals/daily-summary/print",
+        params={"date": _TODAY},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert "Inventory Items Used" in body
+    assert "Vitals Recorded" in body
+    assert "Daily Summary Usage Patient" in body
+    assert "Other Staff Usage Patient" not in body  # scoped to this actor only
+    assert visit.queue_token in body
+    assert "99.1 °F" in body
+    assert actor.full_name in body  # "Vitals Staff:" header line, both sections

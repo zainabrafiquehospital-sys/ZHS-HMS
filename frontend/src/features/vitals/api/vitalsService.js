@@ -33,4 +33,15 @@ export const vitalsService = {
   historyForPatient(patientId) {
     return httpClient.get(`/vitals/patients/${patientId}/history`);
   },
+
+  // Step 5's combined daily PDF — Inventory Items Used + Vitals
+  // Recorded, one document, always the calling user's own day (same
+  // actor-scoping as fetchDailyUsageSlipHtml's sibling). Distinct from
+  // that endpoint — this one is additive, not a replacement.
+  fetchDailySummaryHtml(date) {
+    return httpClient.get('/vitals/daily-summary/print', {
+      params: { date },
+      responseType: 'text',
+    });
+  },
 };

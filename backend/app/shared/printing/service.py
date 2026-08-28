@@ -52,6 +52,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 from app.shared.payment_method import PAYMENT_METHOD_LABELS
@@ -1428,6 +1429,12 @@ _REPORT_STYLE = """
   }
   .report-summary strong { color: var(--ink); }
 
+  /* ---------- Section divider (2026-08-28 addition) — only rendered
+     between sections in a multi-section report (see
+     _report_shell_html_sections); a single-section report never emits
+     this, so every pre-existing document's spacing is unchanged. ---------- */
+  .report-section + .report-section { margin-top: 22px; padding-top: 18px; border-top: 2px solid var(--rule-strong); }
+
   @page { size: A4; margin: 15mm; }
   @media print {
     * {
@@ -1477,13 +1484,69 @@ def _report_shell_html(
     table_html: str,
     summary_line: str,
 ) -> str:
+    """The single-section case — a thin wrapper over
+    `_report_shell_html_sections` (2026-08-28 addition, Step 5's
+    combined daily summary) rather than its own implementation, so the
+    header/footer letterhead markup exists in exactly one place. Every
+    existing caller (render_inventory_history_log,
+    render_inventory_daily_usage_slip, ...) keeps this exact
+    single-section signature unchanged."""
+    return _report_shell_html_sections(
+        hospital_name=hospital_name,
+        document_title=document_title,
+        sections=[
+            _ReportSection(
+                title_text=title_text,
+                meta_lines=meta_lines,
+                table_html=table_html,
+                summary_line=summary_line,
+            )
+        ],
+    )
+
+
+class _ReportSection(NamedTuple):
+    """One titled table + its own meta lines and summary footer, within
+    a multi-section report shell (see `_report_shell_html_sections`)."""
+
+    title_text: str
+    meta_lines: list[str]
+    table_html: str
+    summary_line: str
+
+
+def _report_shell_html_sections(
+    *,
+    hospital_name: str,
+    document_title: str,
+    sections: list[_ReportSection],
+) -> str:
+    """The letterhead/header/footer shell every report document shares,
+    generalized (2026-08-28 addition) to hold one or more titled
+    sections rather than exactly one — Step 5's combined daily summary
+    (Inventory Items Used + Vitals Recorded, one document) is the first
+    caller that actually needs more than one; every pre-existing caller
+    still gets exactly the same single-section markup via
+    `_report_shell_html` above, unchanged."""
     logo_data_uri = _logo_data_uri()
     logo_html = (
         f'<img class="logo" src="{logo_data_uri}" alt="{_escape(hospital_name)} logo">'
         if logo_data_uri
         else ""
     )
-    meta_html = "".join(f"<div>{line}</div>" for line in meta_lines)
+    sections_html = "".join(
+        f"""
+  <div class="report-section">
+    <div class="report-title">{_escape(section.title_text)}</div>
+    <div class="report-meta">{"".join(f"<div>{line}</div>" for line in section.meta_lines)}</div>
+
+    {section.table_html}
+
+    <div class="report-summary">{section.summary_line}</div>
+  </div>
+"""
+        for section in sections
+    )
     return f"""<!doctype html>
 <html>
 <head>
@@ -1510,12 +1573,7 @@ def _report_shell_html(
     </div>
     <hr class="header-rule">
 
-    <div class="report-title">{_escape(title_text)}</div>
-    <div class="report-meta">{meta_html}</div>
-
-    {table_html}
-
-    <div class="report-summary">{summary_line}</div>
+    {sections_html}
   </div>
 </body>
 </html>
@@ -1619,4 +1677,80 @@ def render_inventory_daily_usage_slip(
         meta_lines=meta_lines,
         table_html=table_html,
         summary_line=summary_line,
+    )
+
+
+def render_vitals_daily_summary(
+    *,
+    hospital_name: str,
+    display_timezone: str,
+    vitals_staff_name: str,
+    day: date,
+    generated_at: datetime,
+    inventory_column_headers: list[str],
+    inventory_numeric_columns: set[int],
+    inventory_rows: list[list[str]],
+    inventory_total_quantity: Decimal | None,
+    vitals_column_headers: list[str],
+    vitals_rows: list[list[str]],
+) -> str:
+    """Step 5's combined end-of-day document for one Vitals staff
+    member: everything they used (Inventory) AND everything they
+    recorded (Vitals) that day, in one printable document — distinct
+    from `render_inventory_daily_usage_slip` above, which covers only
+    the Inventory half alone and stays unchanged/still independently
+    printable (see app/modules/inventory/router.py's own
+    `print_my_daily_usage_slip`; this is a second, additive document,
+    not a replacement).
+
+    Two sections, one shell — the first caller of
+    `_report_shell_html_sections` that actually needs more than one
+    section, rather than two separate HTML documents, since the
+    confirmed design is "one document" (see this function's own
+    Step 5 plan). Both sections share the same staff/date/generated-at
+    meta line rather than repeating slightly-differently-worded
+    versions of it."""
+    generated_line = f"Generated: {format_local_timestamp(generated_at, display_timezone)}"
+    common_meta = [
+        f"<strong>Vitals Staff:</strong> {_escape(vitals_staff_name)}",
+        f"<strong>Date:</strong> {day.isoformat()}",
+        generated_line,
+    ]
+
+    inventory_table_html = _report_table_html(
+        column_headers=inventory_column_headers,
+        rows=inventory_rows,
+        numeric_columns=inventory_numeric_columns,
+    )
+    inventory_summary_parts = [
+        f"<strong>{len(inventory_rows)}</strong> entr{'y' if len(inventory_rows) == 1 else 'ies'}"
+    ]
+    if inventory_total_quantity is not None:
+        inventory_summary_parts.append(f"<strong>Total Quantity:</strong> {inventory_total_quantity}")
+    inventory_summary_line = " &middot; ".join(inventory_summary_parts)
+
+    vitals_table_html = _report_table_html(
+        column_headers=vitals_column_headers, rows=vitals_rows, numeric_columns=set()
+    )
+    vitals_summary_line = (
+        f"<strong>{len(vitals_rows)}</strong> patient{'s' if len(vitals_rows) != 1 else ''} recorded"
+    )
+
+    return _report_shell_html_sections(
+        hospital_name=hospital_name,
+        document_title=f"Daily Summary — {day.isoformat()}",
+        sections=[
+            _ReportSection(
+                title_text="Inventory Items Used",
+                meta_lines=common_meta,
+                table_html=inventory_table_html,
+                summary_line=inventory_summary_line,
+            ),
+            _ReportSection(
+                title_text="Vitals Recorded",
+                meta_lines=common_meta,
+                table_html=vitals_table_html,
+                summary_line=vitals_summary_line,
+            ),
+        ],
     )
