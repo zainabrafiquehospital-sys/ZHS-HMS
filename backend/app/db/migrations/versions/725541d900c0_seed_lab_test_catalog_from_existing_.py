@@ -36,6 +36,12 @@ duplicate rows (there is no natural unique key to conflict against —
 two genuinely different tests could coincidentally share a name), so
 this is guarded to only run once via a marker check against the count
 of rows already in `lab_test`.
+
+`downgrade()` is a best-effort undo, not a guaranteed one (Step 6
+fix, found via a real round-trip test against actually-billed data):
+a seeded test that has since been referenced by a `LabBillItem` is
+left in place rather than the delete failing outright on a foreign-key
+violation — see that function's own docstring.
 """
 
 from collections.abc import Sequence
@@ -105,11 +111,25 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Best-effort cleanup, never a hard failure: a seeded test that has
+    since been billed (a `lab_bill_item.lab_test_id` FK pointing at it)
+    is deliberately left in place rather than raising a
+    ForeignKeyViolation — confirmed via a real round-trip test against
+    real billing data (Step 6 verification) that the naive unconditional
+    DELETE this migration originally shipped with crashes the instant
+    any of these 22 tests has actually been used, which in real usage
+    is virtually guaranteed to be true almost immediately after this
+    module ships. Downgrading a one-time data seed can only ever be a
+    best-effort undo of what's still safe to remove; it must never
+    cascade-delete real billing history to force the removal through."""
     conn = op.get_bind()
     all_names = [name for name, _ in (*_PATHOLOGY_TESTS, *_RADIOLOGY_TESTS)]
     placeholders = ", ".join(f":name{i}" for i in range(len(all_names)))
     params = {f"name{i}": name for i, name in enumerate(all_names)}
     conn.execute(
-        sa.text(f"DELETE FROM lab_test WHERE name IN ({placeholders}) AND created_by IS NULL"),
+        sa.text(
+            f"DELETE FROM lab_test WHERE name IN ({placeholders}) AND created_by IS NULL "
+            "AND id NOT IN (SELECT DISTINCT lab_test_id FROM lab_bill_item)"
+        ),
         params,
     )
