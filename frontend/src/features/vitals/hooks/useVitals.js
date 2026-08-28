@@ -1,8 +1,9 @@
 'use client';
 
-import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { queueService, vitalsService } from '@/features/vitals/api/vitalsService';
 import { visitsService } from '@/features/visits/api/visitsService';
+import { useAuth } from '@/features/auth/hooks/useAuth';
 import { openAndPrintHtml } from '@/utils/printWindow';
 
 export { usePatientsForVisits } from '@/features/patients/hooks/usePatientsForVisits';
@@ -114,6 +115,32 @@ export function usePrintDailySummary() {
       await openAndPrintHtml(html);
     },
   });
+}
+
+/** "My Vitals Records" — every vitals record this staff member has
+ * personally recorded, newest first, real server-side pagination, no
+ * date restriction. The Vitals sibling of Reception's own
+ * useMyRegistrations (features/reception/hooks/useReception.js) — same
+ * shape: `queryKey` scoped to `user.id`, `keepPreviousData` so the
+ * table doesn't flash empty between pages, and a real server-side
+ * `created_by` filter (see vitalsService.listMine), never a client-side
+ * approximation over a capped fetch. */
+export function useMyVitalsRecords({ page, pageSize }) {
+  const { user } = useAuth();
+  const query = useQuery({
+    queryKey: ['vitals', 'records', 'own', user?.id, { page, pageSize }],
+    queryFn: () => vitalsService.listMine({ page, pageSize }).then((res) => ({
+      records: res.data,
+      meta: res.meta,
+    })),
+    enabled: Boolean(user?.id),
+    placeholderData: keepPreviousData,
+  });
+  return {
+    ...query,
+    records: query.data?.records ?? [],
+    meta: query.data?.meta ?? null,
+  };
 }
 
 export function useRecordVitals() {

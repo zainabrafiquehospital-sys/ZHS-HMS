@@ -33,6 +33,7 @@ from app.modules.vitals.dependencies import get_vitals_service
 from app.modules.vitals.schemas import RecordVitalsRequest, VitalsCreatorStatOut, VitalsRecordOut
 from app.modules.vitals.service import VitalsService
 from app.shared.envelope import success_envelope
+from app.shared.pagination import PaginationMeta
 from app.shared.printing.service import format_local_timestamp, render_vitals_daily_summary
 
 router = APIRouter(prefix="/vitals", tags=["vitals"])
@@ -125,6 +126,38 @@ async def list_for_patient(
     records = await vitals_service.list_for_patient(patient_id=patient_id)
     body = [VitalsRecordOut.from_record(record).model_dump(mode="json") for record in records]
     return success_envelope(body)
+
+
+@router.get("/records/mine")
+async def list_my_records(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    vitals_service: VitalsService = Depends(get_vitals_service),
+    actor: User = Depends(require_permission(PERMISSION_VITALS_RECORD)),
+) -> dict:
+    """The calling Vitals staff member's own "My Vitals Records" —
+    every vitals record they have personally recorded, newest first,
+    real server-side pagination, no date restriction (2026-08-28
+    addition — the Vitals sibling of Reception's "My Registrations"
+    and `GET /pharmacy/bills/mine`). Declared before nothing
+    conflicting (no bare `/vitals/{id}` GET route exists in this
+    router), but named the same "mine" convention those endpoints
+    established.
+
+    Always `actor.id`, never a request-suppliable user id — the same
+    hard server-side scoping `print_daily_summary` above and every
+    other "mine" endpoint in this app already establishes; there is
+    structurally no way to ask for someone else's records through
+    this endpoint. Gated on `vitals:record` (matching this module's
+    own `print_daily_summary` precedent for an actor-scoped "my own
+    work" endpoint) rather than `vitals:read` — in practice every
+    Vitals staff member holds both."""
+    records, total = await vitals_service.list_for_creator(
+        actor.id, page=page, page_size=page_size
+    )
+    body = [VitalsRecordOut.from_record(record).model_dump(mode="json") for record in records]
+    meta = PaginationMeta(page=page, page_size=page_size, total=total).model_dump(mode="json")
+    return success_envelope(body, meta)
 
 
 @router.get("/daily-summary/print", response_class=HTMLResponse)

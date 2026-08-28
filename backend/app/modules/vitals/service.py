@@ -197,3 +197,10 @@ class VitalsService:
         Recorded" half — see VitalsRecordRepository.
         list_for_creator_and_day."""
         return await self._vitals_repo.list_for_creator_and_day(created_by=created_by, day=day)
+
+    async def list_for_creator(
+        self, user_id: UUID, *, page: int, page_size: int
+    ) -> tuple[list[VitalsRecord], int]:
+        """Backs the "My Vitals Records" screen — see
+        VitalsRecordRepository.list_for_creator."""
+        return await self._vitals_repo.list_for_creator(user_id, page=page, page_size=page_size)

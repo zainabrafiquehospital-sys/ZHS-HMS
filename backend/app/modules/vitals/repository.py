@@ -90,6 +90,33 @@ class VitalsRecordRepository(BaseRepository[VitalsRecord]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_for_creator(
+        self, user_id: UUID, *, page: int, page_size: int
+    ) -> tuple[list[VitalsRecord], int]:
+        """Real, paginated server-side "every vitals record this staff
+        member has ever recorded" (2026-08-28 addition) — the Vitals
+        sibling of `MedicineBillRepository.list_for_creator`/
+        `MedicineBillRepository`'s own "My Medicine Bills" list, backing
+        Vitals' own "My Vitals Records" screen the same way that method
+        backs Pharmacy's. Newest first, no date restriction — unlike
+        `list_for_creator_and_day` above (deliberately day-scoped for
+        the daily summary print), this is the full, real, unbounded
+        history, same rationale as `MedicineBillRepository.
+        list_for_creator`'s own docstring: a real server-side filter,
+        never a client-side "fetch N most recent" approximation."""
+        stmt = self._exclude_soft_deleted(
+            select(VitalsRecord).where(VitalsRecord.created_by == user_id), include_deleted=False
+        )
+        total = (
+            await self.session.execute(select(func.count()).select_from(stmt.subquery()))
+        ).scalar_one()
+
+        stmt = stmt.order_by(VitalsRecord.created_at.desc()).limit(page_size).offset(
+            (page - 1) * page_size
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all()), total
+
     async def count_by_creator(self) -> dict[UUID, int]:
         """Backs the Admin "Employee Accounts & Stats" page's per-
         vitals-staff "vitals recorded" figure — one `GROUP BY` query for

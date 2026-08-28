@@ -44,4 +44,16 @@ export const vitalsService = {
       responseType: 'text',
     });
   },
+
+  // "My Vitals Records" — every vitals record this staff member has
+  // personally recorded, newest first, real server-side pagination, no
+  // date restriction. The Vitals sibling of visitsService.listForCreator
+  // (Reception's "My Registrations"), always the calling user's own
+  // records — see backend/app/modules/vitals/router.py's
+  // `list_my_records` docstring.
+  listMine({ page = 1, pageSize = 20 }) {
+    return httpClient.get('/vitals/records/mine', {
+      params: { page, page_size: pageSize },
+    });
+  },
 };

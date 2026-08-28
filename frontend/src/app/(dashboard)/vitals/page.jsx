@@ -6,6 +6,7 @@ import { RecordInventoryUsageForm } from '@/features/vitals/components/RecordInv
 import { RaiseRestockRequestForm } from '@/features/vitals/components/RaiseRestockRequestForm';
 import { PrintDailyUsageSlip } from '@/features/vitals/components/PrintDailyUsageSlip';
 import { PrintDailySummary } from '@/features/vitals/components/PrintDailySummary';
+import { MyVitalsRecords } from '@/features/vitals/components/MyVitalsRecords';
 import { ShiftBadge } from '@/shared/components/ShiftBadge';
 import { Tabs } from '@/shared/components/ui/Tabs';
 
@@ -13,14 +14,19 @@ const VITALS_TABS = [
   { value: 'worklist', label: 'Worklist' },
   { value: 'record_usage', label: 'Record Usage' },
   { value: 'raise_restock_request', label: 'Raise Restock Request' },
+  { value: 'my_records', label: 'My Records' },
 ];
 
 /** Vitals' existing worklist screen, extended (step 4) with two new
  * tabs for its own two Ward/Emergency Inventory actions — recording a
- * usage entry against Emergency Stock and raising a restock request.
- * "Worklist" stays the default/first tab so nothing about the existing
- * vitals-recording flow changes for anyone who never touches the new
- * tabs. */
+ * usage entry against Emergency Stock and raising a restock request —
+ * and (2026-08-28 addition) a fourth "My Records" tab, the Vitals
+ * sibling of Reception's own "My Registrations": every vitals record
+ * this staff member has personally recorded, in one place, separate
+ * from the time-sensitive Worklist tab since it's a historical browse
+ * view rather than an action queue. "Worklist" stays the default/first
+ * tab so nothing about the existing vitals-recording flow changes for
+ * anyone who never touches the new tabs. */
 export default function VitalsPage() {
   const [activeTab, setActiveTab] = useState('worklist');
 
@@ -44,8 +50,10 @@ export default function VitalsPage() {
           <PrintDailySummary />
           <RecordInventoryUsageForm />
         </div>
-      ) : (
+      ) : activeTab === 'raise_restock_request' ? (
         <RaiseRestockRequestForm />
+      ) : (
+        <MyVitalsRecords />
       )}
     </div>
   );

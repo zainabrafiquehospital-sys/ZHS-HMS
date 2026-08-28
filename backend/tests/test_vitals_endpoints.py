@@ -417,3 +417,95 @@ async def test_print_daily_summary_shows_both_sections_scoped_to_actor(
     assert visit.queue_token in body
     assert "99.1 °F" in body
     assert actor.full_name in body  # "Vitals Staff:" header line, both sections
+
+
+async def test_list_my_vitals_records_requires_permission(api_client, real_session):
+    _actor, access_token = await _create_and_login(api_client, real_session, "my-records-no-perm")
+
+    resp = await api_client.get("/api/v1/vitals/records/mine", headers=_auth_header(access_token))
+
+    assert resp.status_code == 403
+
+
+async def test_list_my_vitals_records_returns_only_own_records(
+    api_client, real_session, grant_permission, reception_service
+):
+    """The core requirement: staff member A's "My Vitals Records" must
+    never include staff member B's records, even though both recorded
+    vitals in the same database at the same time — the Vitals sibling
+    of test_list_my_bills_returns_only_own_bills
+    (test_pharmacy_endpoints.py)."""
+    actor_a, token_a = await _create_and_login(api_client, real_session, "my-records-a")
+    await grant_permission(actor_a, PERMISSION_VITALS_RECORD)
+    actor_b, token_b = await _create_and_login(api_client, real_session, "my-records-b")
+    await grant_permission(actor_b, PERMISSION_VITALS_RECORD)
+
+    visit_a = await _make_visit(reception_service, actor_a, "MyRecordsA", vitals_required=True)
+    record_a_resp = await api_client.post(
+        "/api/v1/vitals",
+        json={"visit_id": str(visit_a.id), "systolic_bp": 110, "temperature": 98.0},
+        headers=_auth_header(token_a),
+    )
+    assert record_a_resp.status_code == 201, record_a_resp.text
+    record_a_id = record_a_resp.json()["data"]["id"]
+
+    visit_b = await _make_visit(reception_service, actor_b, "MyRecordsB", vitals_required=True)
+    record_b_resp = await api_client.post(
+        "/api/v1/vitals",
+        json={"visit_id": str(visit_b.id), "systolic_bp": 130, "temperature": 100.0},
+        headers=_auth_header(token_b),
+    )
+    assert record_b_resp.status_code == 201, record_b_resp.text
+    record_b_id = record_b_resp.json()["data"]["id"]
+
+    resp_a = await api_client.get("/api/v1/vitals/records/mine", headers=_auth_header(token_a))
+    assert resp_a.status_code == 200
+    ids_a = [row["id"] for row in resp_a.json()["data"]]
+    assert record_a_id in ids_a
+    assert record_b_id not in ids_a
+
+    resp_b = await api_client.get("/api/v1/vitals/records/mine", headers=_auth_header(token_b))
+    assert resp_b.status_code == 200
+    ids_b = [row["id"] for row in resp_b.json()["data"]]
+    assert record_b_id in ids_b
+    assert record_a_id not in ids_b
+
+
+async def test_list_my_vitals_records_newest_first_with_pagination_meta(
+    api_client, real_session, grant_permission, reception_service
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "my-records-order")
+    await grant_permission(actor, PERMISSION_VITALS_RECORD)
+
+    visit_1 = await _make_visit(reception_service, actor, "MyRecordsOrder1", vitals_required=True)
+    resp_1 = await api_client.post(
+        "/api/v1/vitals",
+        json={"visit_id": str(visit_1.id), "systolic_bp": 100, "temperature": 97.0},
+        headers=_auth_header(access_token),
+    )
+    assert resp_1.status_code == 201
+    first_id = resp_1.json()["data"]["id"]
+
+    visit_2 = await _make_visit(reception_service, actor, "MyRecordsOrder2", vitals_required=True)
+    resp_2 = await api_client.post(
+        "/api/v1/vitals",
+        json={"visit_id": str(visit_2.id), "systolic_bp": 140, "temperature": 101.0},
+        headers=_auth_header(access_token),
+    )
+    assert resp_2.status_code == 201
+    second_id = resp_2.json()["data"]["id"]
+
+    resp = await api_client.get(
+        "/api/v1/vitals/records/mine",
+        params={"page": 1, "page_size": 20},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    ids = [row["id"] for row in body["data"]]
+    # Newest first — the second-recorded entry appears before the first.
+    assert ids.index(second_id) < ids.index(first_id)
+    assert body["meta"]["page"] == 1
+    assert body["meta"]["page_size"] == 20
+    assert body["meta"]["total"] >= 2
