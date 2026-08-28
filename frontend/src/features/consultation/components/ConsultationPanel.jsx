@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
-import { HeartPulse, CheckCircle2, ReceiptText } from 'lucide-react';
+import { HeartPulse, CheckCircle2, ReceiptText, History } from 'lucide-react';
 import {
   useActiveConsultation,
   useConsultationById,
@@ -13,6 +13,7 @@ import {
   usePatientsForVisits,
 } from '@/features/consultation/hooks/useConsultation';
 import { useVisitsByIds, useVitalsForVisit } from '@/features/vitals/hooks/useVitals';
+import { VitalsHistoryDialog } from '@/features/vitals/components/VitalsHistoryDialog';
 import {
   ALL_VITALS_FIELDS,
   VITAL_FIELD_LABELS,
@@ -197,6 +198,10 @@ export function ConsultationPanel({ visitId }) {
   const sendToVitals = useSendToVitals();
   const completeConsultation = useCompleteConsultation();
   const [actionError, setActionError] = useState(null);
+  // "Show Details" (2026-08-28 addition, Step 4) — the patient's full
+  // cross-visit vitals history, a superset of RecordedVitals below
+  // (which only shows this one visit's own readings).
+  const [showHistory, setShowHistory] = useState(false);
 
   const { register, getValues } = useForm({
     defaultValues: { notes: '', diagnosis: '', prescription: '' },
@@ -254,11 +259,28 @@ export function ConsultationPanel({ visitId }) {
         ) : null}
 
         <div className="flex flex-col gap-2">
-          <Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Vitals
-          </Label>
+          <div className="flex items-center justify-between gap-2">
+            <Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Vitals
+            </Label>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setShowHistory(true)}
+              disabled={!patient}
+            >
+              <History className="h-3.5 w-3.5" />
+              Show Details
+            </Button>
+          </div>
           <RecordedVitals visitId={visitId} ageYears={patient?.age_years} />
         </div>
+        <VitalsHistoryDialog
+          patient={patient}
+          open={showHistory}
+          onClose={() => setShowHistory(false)}
+        />
 
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="notes">Clinical Notes</Label>

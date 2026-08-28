@@ -87,6 +87,21 @@ export function useVitalsForVisits(visits) {
   return { vitalsByVisitId: byId, isLoading };
 }
 
+/** Backs the "Show Details" cross-visit vitals history dialog — every
+ * vitals record ever recorded for this patient, across every visit,
+ * newest first (already sorted server-side, see
+ * VitalsRecordRepository.list_for_visit_ids). `enabled` only requires
+ * the patient id (unlike useLatestVitalsForPatient, there is no
+ * "current visit to exclude" here — this is an explicit "show me
+ * everything" view). */
+export function usePatientVitalsHistory(patientId) {
+  return useQuery({
+    queryKey: ['vitals', 'patients', patientId, 'history'],
+    queryFn: () => vitalsService.historyForPatient(patientId).then((res) => res.data),
+    enabled: Boolean(patientId),
+  });
+}
+
 export function useRecordVitals() {
   const queryClient = useQueryClient();
   return useMutation({

@@ -206,6 +206,67 @@ async def test_record_vitals_stamps_temperature_unit_fahrenheit(
     assert record.temperature_unit == TemperatureUnit.FAHRENHEIT
 
 
+async def test_list_for_patient_returns_records_across_all_visits_newest_first(
+    real_session, reception_service, vitals_service
+):
+    """"Show Details" cross-visit vitals history (2026-08-28 addition)
+    — a patient with two separate visits, each with its own vitals
+    record, must see both records back from `list_for_patient`, newest
+    first, unlike `get_latest_for_patient` which only ever returns one."""
+    doctor = await _make_doctor(real_session, "history")
+    first_visit, _entry = await _register(reception_service, doctor, "History", vitals_required=True)
+    first_record = await vitals_service.record_vitals(
+        actor=doctor,
+        visit_id=first_visit.id,
+        systolic_bp=100,
+        diastolic_bp=60,
+        pulse_rate=60,
+        temperature=97.0,
+        weight_kg=None,
+        height_cm=None,
+        spo2_percent=None,
+        notes="First visit",
+    )
+
+    second_patient, second_visit, _second_entry = await reception_service.register_visit(
+        actor=doctor,
+        patient_id=first_visit.patient_id,
+        new_patient=None,
+        doctor_user_id=doctor.id,
+        procedures=[(None, "Follow-up", Decimal("500.00"))],
+        vitals_required=True,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
+    )
+    second_record = await vitals_service.record_vitals(
+        actor=doctor,
+        visit_id=second_visit.id,
+        systolic_bp=140,
+        diastolic_bp=90,
+        pulse_rate=88,
+        temperature=101.0,
+        weight_kg=None,
+        height_cm=None,
+        spo2_percent=None,
+        notes="Second visit",
+    )
+
+    records = await vitals_service.list_for_patient(patient_id=second_patient.id)
+
+    assert [record.id for record in records] == [second_record.id, first_record.id]
+
+
+async def test_list_for_patient_returns_empty_list_when_none_recorded(
+    real_session, reception_service, vitals_service
+):
+    doctor = await _make_doctor(real_session, "history-empty")
+    visit, _entry = await _register(reception_service, doctor, "HistoryEmpty", vitals_required=False)
+
+    records = await vitals_service.list_for_patient(patient_id=visit.patient_id)
+
+    assert records == []
+
+
 async def test_record_vitals_no_temperature_leaves_unit_null(
     real_session, reception_service, vitals_service
 ):

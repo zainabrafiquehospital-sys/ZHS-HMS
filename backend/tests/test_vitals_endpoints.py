@@ -216,3 +216,82 @@ async def test_list_for_visit_returns_recorded_entries(
     assert resp.status_code == 200
     assert len(resp.json()["data"]) == 1
     assert resp.json()["data"][0]["systolic_bp"] == 115
+
+
+async def test_get_patient_vitals_history_requires_permission(
+    api_client, real_session, reception_service
+):
+    doctor, access_token = await _create_and_login(api_client, real_session, "history-no-perm")
+    visit = await _make_visit(reception_service, doctor, "HistoryNoPerm", vitals_required=False)
+
+    resp = await api_client.get(
+        f"/api/v1/vitals/patients/{visit.patient_id}/history", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_get_patient_vitals_history_returns_records_across_visits(
+    api_client, real_session, grant_permission, reception_service
+):
+    """"Show Details" cross-visit vitals history (2026-08-28 addition)
+    — a patient with vitals recorded on two separate visits must see
+    both records, newest first, each correctly carrying its own
+    `temperature_unit`."""
+    doctor, access_token = await _create_and_login(api_client, real_session, "history-http")
+    await grant_permission(doctor, PERMISSION_VITALS_RECORD)
+    await grant_permission(doctor, PERMISSION_VITALS_READ)
+    first_visit = await _make_visit(reception_service, doctor, "HistoryHttpA", vitals_required=True)
+    first_resp = await api_client.post(
+        "/api/v1/vitals",
+        json={"visit_id": str(first_visit.id), "systolic_bp": 100, "temperature": 97.0},
+        headers=_auth_header(access_token),
+    )
+    assert first_resp.status_code == 201
+
+    _second_patient, second_visit, _entry = await reception_service.register_visit(
+        actor=doctor,
+        patient_id=first_visit.patient_id,
+        new_patient=None,
+        doctor_user_id=None,
+        procedures=[(None, "Follow-up", Decimal("500.00"))],
+        vitals_required=True,
+        initial_payment_amount=Decimal("0.01"),
+        initial_payment_method=PaymentMethod.CASH,
+    )
+    second_resp = await api_client.post(
+        "/api/v1/vitals",
+        json={"visit_id": str(second_visit.id), "systolic_bp": 140, "temperature": 101.0},
+        headers=_auth_header(access_token),
+    )
+    assert second_resp.status_code == 201
+
+    resp = await api_client.get(
+        f"/api/v1/vitals/patients/{first_visit.patient_id}/history",
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert len(body) == 2
+    # Newest first.
+    assert body[0]["visit_id"] == str(second_visit.id)
+    assert body[0]["systolic_bp"] == 140
+    assert body[0]["temperature_unit"] == "fahrenheit"
+    assert body[1]["visit_id"] == str(first_visit.id)
+    assert body[1]["systolic_bp"] == 100
+
+
+async def test_get_patient_vitals_history_returns_empty_list_when_none_recorded(
+    api_client, real_session, grant_permission, reception_service
+):
+    doctor, access_token = await _create_and_login(api_client, real_session, "history-empty-http")
+    await grant_permission(doctor, PERMISSION_VITALS_READ)
+    visit = await _make_visit(reception_service, doctor, "HistoryEmptyHttp", vitals_required=False)
+
+    resp = await api_client.get(
+        f"/api/v1/vitals/patients/{visit.patient_id}/history", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"] == []

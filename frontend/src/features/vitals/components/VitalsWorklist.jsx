@@ -1,8 +1,10 @@
 'use client';
 
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { HeartPulse } from 'lucide-react';
+import { HeartPulse, History } from 'lucide-react';
 import { useVitalsWorklist, useVisitsByIds, usePatientsForVisits } from '@/features/vitals/hooks/useVitals';
+import { VitalsHistoryDialog } from '@/features/vitals/components/VitalsHistoryDialog';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
@@ -15,8 +17,11 @@ import { PageLoader } from '@/shared/components/PageLoader';
  * established for this app (icon circle in `bg-primary/10 text-primary`,
  * `border-border`/`bg-card`, same padding/radius) rather than inventing
  * a new visual language — every field/action the old table row carried
- * is still here, just laid out as a card instead of a row. */
-function WorklistCard({ entry, visit, patient, isLoadingVisits, onRecordVitals }) {
+ * is still here, just laid out as a card instead of a row. `onShowDetails`
+ * (2026-08-28 addition, Step 4) opens the patient's cross-visit vitals
+ * history — disabled until the patient itself has loaded, same reasoning
+ * as the queue-token placeholder above it. */
+function WorklistCard({ entry, visit, patient, isLoadingVisits, onRecordVitals, onShowDetails }) {
   return (
     <div className="flex items-start gap-3 rounded-md border border-border bg-card p-4">
       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
@@ -43,9 +48,15 @@ function WorklistCard({ entry, visit, patient, isLoadingVisits, onRecordVitals }
             <Badge variant="outline">Intake</Badge>
           </div>
         )}
-        <Button size="sm" onClick={onRecordVitals} className="mt-1 w-full sm:w-auto">
-          Record Vitals
-        </Button>
+        <div className="mt-1 flex flex-wrap gap-2">
+          <Button size="sm" onClick={onRecordVitals} className="flex-1 sm:flex-none">
+            Record Vitals
+          </Button>
+          <Button size="sm" variant="outline" onClick={onShowDetails} disabled={!patient}>
+            <History className="h-3.5 w-3.5" />
+            Show Details
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -58,6 +69,7 @@ export function VitalsWorklist() {
   const { visitsById, isLoading: isLoadingVisits } = useVisitsByIds(visitIds);
   const visits = visitIds.map((id) => visitsById[id]).filter(Boolean);
   const patientsById = usePatientsForVisits(visits);
+  const [historyPatient, setHistoryPatient] = useState(null);
 
   if (isLoadingWorklist) return <PageLoader label="Loading vitals worklist" />;
 
@@ -84,12 +96,18 @@ export function VitalsWorklist() {
                   patient={patient}
                   isLoadingVisits={isLoadingVisits}
                   onRecordVitals={() => router.push(`/vitals/${entry.visit_id}`)}
+                  onShowDetails={() => setHistoryPatient(patient)}
                 />
               );
             })}
           </div>
         )}
       </CardContent>
+      <VitalsHistoryDialog
+        patient={historyPatient}
+        open={Boolean(historyPatient)}
+        onClose={() => setHistoryPatient(null)}
+      />
     </Card>
   );
 }

@@ -160,6 +160,30 @@ class VitalsService:
         other_visit_ids = [visit.id for visit in visits if visit.id != exclude_visit_id]
         return await self._vitals_repo.get_latest_for_visit_ids(other_visit_ids)
 
+    async def list_for_patient(self, *, patient_id: UUID) -> list[VitalsRecord]:
+        """Backs the "Show Details" cross-visit vitals history view
+        (2026-08-28 addition) — every vitals record ever recorded for
+        this patient, across every one of their visits, newest first.
+        Unlike `get_latest_for_patient` above, there is no
+        `exclude_visit_id`: this is an explicit "show me everything"
+        view, not the entry-screen's "what was the *previous* reading"
+        panel, so the current visit's own record(s) belong in the list
+        too. Same visit-ID-resolution-via-VisitService shape as
+        `get_latest_for_patient` for the identical one-directional
+        module-dependency reason (see that method's docstring)."""
+        visits, _total = await self._visit_service.list_visits(
+            patient_id=patient_id,
+            doctor_user_id=None,
+            unassigned_only=False,
+            status=None,
+            sort_by="created_at",
+            sort_desc=True,
+            page=1,
+            page_size=50,
+        )
+        visit_ids = [visit.id for visit in visits]
+        return await self._vitals_repo.list_for_visit_ids(visit_ids)
+
     async def count_by_creator(self) -> dict[UUID, int]:
         """Read-only aggregate added for the Admin "Employee Accounts &
         Stats" page — see VitalsRecordRepository.count_by_creator."""

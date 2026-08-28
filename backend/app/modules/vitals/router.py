@@ -85,3 +85,20 @@ async def get_latest_for_patient(
     )
     body = VitalsRecordOut.from_record(record).model_dump(mode="json") if record else None
     return success_envelope(body)
+
+
+@router.get("/patients/{patient_id}/history")
+async def list_for_patient(
+    patient_id: UUID,
+    vitals_service: VitalsService = Depends(get_vitals_service),
+    _actor: User = Depends(require_permission(PERMISSION_VITALS_READ)),
+) -> dict:
+    """Backs the "Show Details" cross-visit vitals history view
+    (2026-08-28 addition) — every vitals record recorded for this
+    patient across every visit, newest first. Unlike `/latest` above,
+    this returns the full list (possibly empty), not a single record or
+    `null` — an empty list is this endpoint's own honest "no vitals on
+    file at all" signal, same convention as `list_for_visit`."""
+    records = await vitals_service.list_for_patient(patient_id=patient_id)
+    body = [VitalsRecordOut.from_record(record).model_dump(mode="json") for record in records]
+    return success_envelope(body)

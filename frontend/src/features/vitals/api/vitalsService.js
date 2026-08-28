@@ -25,4 +25,12 @@ export const vitalsService = {
       params: { exclude_visit_id: excludeVisitId },
     });
   },
+
+  // Every vitals record ever recorded for this patient, across every
+  // visit, newest first — backs the "Show Details" cross-visit history
+  // view. `data` is `[]` (never null) when none exist — see
+  // backend/app/modules/vitals/router.py's `list_for_patient` docstring.
+  historyForPatient(patientId) {
+    return httpClient.get(`/vitals/patients/${patientId}/history`);
+  },
 };
