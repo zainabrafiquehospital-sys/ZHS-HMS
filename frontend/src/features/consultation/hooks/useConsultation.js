@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { consultationService } from '@/features/consultation/api/consultationService';
 import { visitsService } from '@/features/visits/api/visitsService';
@@ -117,13 +118,50 @@ export function useVitalsPendingForDoctor(doctorUserId) {
   };
 }
 
+/** `refetchInterval` above is already the one mechanism that detects an
+ * `awaiting_vitals` consultation resuming on a doctor's own already-open
+ * screen — it polls every 5s for exactly as long as that status holds,
+ * which is how the "Waiting for vitals to be recorded" banner
+ * (ConsultationPanel.jsx) clears itself without a manual reload. That
+ * resume happens in the *vitals staff's own browser session*
+ * (ConsultationService.resume_from_vitals, triggered by their
+ * `record_vitals` call) — nothing in the doctor's separate session would
+ * otherwise know the new vitals reading exists, since `useVitalsForVisit`
+ * (features/vitals/hooks/useVitals.js) only ever fetches once on mount
+ * and this app deliberately runs no background polling/refetch-on-focus
+ * globally (see core/providers/QueryProvider.jsx). Piggybacking on this
+ * exact same transition-detection point — rather than adding polling to
+ * `useVitalsForVisit` itself, or changing any global default — is the
+ * targeted fix: the instant this poll observes the status leave
+ * `awaiting_vitals`, invalidate the vitals query for that same visit so
+ * `RecordedVitals` refetches itself in step, still gated by the doctor's
+ * own already-open screen actually detecting the transition, not a new
+ * independent poll of its own. */
 export function useConsultationById(consultationId) {
-  return useQuery({
+  const queryClient = useQueryClient();
+  const query = useQuery({
     queryKey: ['consultations', consultationId],
     queryFn: () => consultationService.getById(consultationId).then((res) => res.data),
     enabled: Boolean(consultationId),
-    refetchInterval: (query) => (query.state.data?.status === 'awaiting_vitals' ? 5000 : false),
+    refetchInterval: (q) => (q.state.data?.status === 'awaiting_vitals' ? 5000 : false),
   });
+
+  // Keyed by consultationId so a stale previous-status from a different
+  // consultation can never leak into this one's own transition check
+  // (the hook is always called with a stable id per mount in practice,
+  // but this keeps the check correct even if that ever changes).
+  const previousStatusRef = useRef({ consultationId, status: query.data?.status });
+  useEffect(() => {
+    const currentStatus = query.data?.status;
+    const sameConsultation = previousStatusRef.current.consultationId === consultationId;
+    const previousStatus = sameConsultation ? previousStatusRef.current.status : undefined;
+    if (previousStatus === 'awaiting_vitals' && currentStatus && currentStatus !== 'awaiting_vitals') {
+      queryClient.invalidateQueries({ queryKey: ['vitals', 'visits', query.data.visit_id] });
+    }
+    previousStatusRef.current = { consultationId, status: currentStatus };
+  }, [consultationId, query.data?.status, query.data?.visit_id, queryClient]);
+
+  return query;
 }
 
 export function useStartConsultation() {

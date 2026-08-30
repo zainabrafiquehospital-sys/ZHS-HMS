@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -16,5 +16,11 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
+    // e2e/ holds standalone Playwright scripts (raw chromium.launch()
+    // automation against a running dev stack, no describe/it blocks —
+    // see e2e/consultation-vitals-refetch.spec.js's own docstring) —
+    // not Vitest suites, even though their `.spec.js` naming would
+    // otherwise match Vitest's default test glob.
+    exclude: [...configDefaults.exclude, 'e2e/**'],
   },
 });
