@@ -14,19 +14,23 @@ const VITALS_TABS = [
   { value: 'worklist', label: 'Worklist' },
   { value: 'record_usage', label: 'Record Usage' },
   { value: 'raise_restock_request', label: 'Raise Restock Request' },
-  { value: 'my_records', label: 'My Records' },
 ];
 
 /** Vitals' existing worklist screen, extended (step 4) with two new
  * tabs for its own two Ward/Emergency Inventory actions — recording a
- * usage entry against Emergency Stock and raising a restock request —
- * and (2026-08-28 addition) a fourth "My Records" tab, the Vitals
- * sibling of Reception's own "My Registrations": every vitals record
- * this staff member has personally recorded, in one place, separate
- * from the time-sensitive Worklist tab since it's a historical browse
- * view rather than an action queue. "Worklist" stays the default/first
- * tab so nothing about the existing vitals-recording flow changes for
- * anyone who never touches the new tabs. */
+ * usage entry against Emergency Stock and raising a restock request.
+ * "My Vitals Records" (2026-08-28 addition) now lives inline below the
+ * Worklist tab's own content, always visible alongside it, rather than
+ * as its own separate tab — mirroring exactly how Reception's page
+ * works (RegisterVisitForm, then MyRegistrations directly below it,
+ * no tab switch needed): both VitalsWorklist and MyVitalsRecords are
+ * already independent, self-contained Cards with their own data-
+ * fetching, so this is purely a page-composition choice, no changes to
+ * either component. Record Usage and Raise Restock Request stay their
+ * own tabs — genuinely distinct action workflows, not history views,
+ * unlike the worklist/records pairing above. "Worklist" stays the
+ * default/first tab so nothing about the existing vitals-recording
+ * flow changes for anyone who never touches the other tabs. */
 export default function VitalsPage() {
   const [activeTab, setActiveTab] = useState('worklist');
 
@@ -43,17 +47,18 @@ export default function VitalsPage() {
       <Tabs value={activeTab} onValueChange={setActiveTab} tabs={VITALS_TABS} />
 
       {activeTab === 'worklist' ? (
-        <VitalsWorklist />
+        <div className="flex flex-col gap-6">
+          <VitalsWorklist />
+          <MyVitalsRecords />
+        </div>
       ) : activeTab === 'record_usage' ? (
         <div className="flex flex-col gap-6">
           <PrintDailyUsageSlip />
           <PrintDailySummary />
           <RecordInventoryUsageForm />
         </div>
-      ) : activeTab === 'raise_restock_request' ? (
-        <RaiseRestockRequestForm />
       ) : (
-        <MyVitalsRecords />
+        <RaiseRestockRequestForm />
       )}
     </div>
   );
