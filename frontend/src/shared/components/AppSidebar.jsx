@@ -37,7 +37,16 @@ const NAV_ITEMS = [
     icon: Stethoscope,
     permission: 'consultation:start',
   },
-  { href: ROUTES.VITALS, label: 'Vitals', icon: HeartPulse, permission: 'vitals:read' },
+  // Gated on vitals:record (the "does vitals work" permission), not the
+  // broader vitals:read Doctor also holds for its own read-only vitals
+  // display in ConsultationPanel — see this same reasoning in
+  // core/constants/access.js's identical MODULE_ACCESS entry and
+  // app/(dashboard)/vitals/layout.jsx's RequirePermission (2026-08-30
+  // root-cause fix: a Doctor holding only vitals:read must never see or
+  // reach the Vitals worklist/entry-form module at all, since neither
+  // step is actually usable for that role — the sidebar link itself was
+  // exposing an otherwise-unguarded path to a 403-after-data-entry).
+  { href: ROUTES.VITALS, label: 'Vitals', icon: HeartPulse, permission: 'vitals:record' },
   { href: ROUTES.BILLING, label: 'Billing', icon: Receipt, permission: 'billing:read' },
   { href: ROUTES.PHARMACY, label: 'Pharmacy', icon: Pill, permission: 'pharmacy:bill' },
   // Own top-level entry right after Pharmacy — Reception's existing

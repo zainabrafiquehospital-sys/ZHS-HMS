@@ -21,7 +21,13 @@ export const MODULE_ACCESS = [
   { route: ROUTES.ADMIN, permission: 'users:read', label: 'Admin' },
   { route: ROUTES.RECEPTION, permission: 'reception:register_visit', label: 'Reception' },
   { route: ROUTES.DOCTOR_QUEUE, permission: 'consultation:start', label: 'Doctor Queue' },
-  { route: ROUTES.VITALS, permission: 'vitals:read', label: 'Vitals' },
+  // vitals:record, not vitals:read — see app/(dashboard)/vitals/
+  // layout.jsx's identical reasoning (2026-08-30 root-cause fix): this
+  // entry drives both the post-login landing route and
+  // RequirePermission's own redirect-on-denial target, so it must agree
+  // with that layout's actual guard, or a Doctor denied elsewhere could
+  // be redirected straight into the same unusable Vitals module.
+  { route: ROUTES.VITALS, permission: 'vitals:record', label: 'Vitals' },
   { route: ROUTES.BILLING, permission: 'billing:read', label: 'Billing' },
   { route: ROUTES.PHARMACY, permission: 'pharmacy:bill', label: 'Pharmacy' },
   { route: ROUTES.LABORATORY, permission: 'lab:bill', label: 'Laboratory' },
