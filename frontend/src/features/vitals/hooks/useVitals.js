@@ -68,10 +68,24 @@ export function useVitalsForVisit(visitId) {
 }
 
 /** Same shape as usePatientsForVisits/useReceptionistsForVisits' join
- * pattern, for the doctor's queue and consultation view — both need
- * "does this visit have a flagged vital?" without an extra endpoint.
- * Shares its query key with `useVitalsForVisit` so both hooks read
- * from (and populate) the same cache entry per visit. */
+ * pattern — its only consumer is the Doctor Queue page
+ * (DoctorQueueList.jsx), which needs "does this visit have a flagged
+ * vital?" for each card without an extra endpoint. Shares its query
+ * key with `useVitalsForVisit` (singular, ConsultationPanel's own
+ * unrelated consumer) so both hooks read from/populate the same cache
+ * entry per visit id — but only this plural hook is polled (see
+ * below); `useVitalsForVisit` is deliberately left as-is, updated
+ * instead by useConsultationById's own targeted invalidation.
+ *
+ * `refetchInterval`/`refetchIntervalInBackground: true` (2026-08-30
+ * addition) — same fix and reasoning as useMyQueue/useUnassignedQueue
+ * in features/consultation/hooks/useConsultation.js: a visit newly
+ * appearing in "Waiting for You" already gets a correct first fetch
+ * (a brand-new query for a not-yet-seen visit id), but polling here
+ * too keeps every visit's badge genuinely live, matching the same 15s
+ * cadence and background behavior as the rest of the Doctor Queue
+ * page's own queries, for one consistent "how live is this page"
+ * story rather than one polled piece and one merely-fetch-once piece. */
 export function useVitalsForVisits(visits) {
   const uniqueVisitIds = [...new Set((visits ?? []).map((visit) => visit.id))];
   const results = useQueries({
@@ -79,6 +93,8 @@ export function useVitalsForVisits(visits) {
       queryKey: ['vitals', 'visits', visitId],
       queryFn: () => vitalsService.listForVisit(visitId).then((res) => res.data),
       enabled: Boolean(visitId),
+      refetchInterval: 15000,
+      refetchIntervalInBackground: true,
     })),
   });
   const byId = {};

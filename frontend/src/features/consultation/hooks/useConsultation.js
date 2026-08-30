@@ -8,25 +8,56 @@ import { openAndPrintHtml } from '@/utils/printWindow';
 
 export { usePatientsForVisits } from '@/features/patients/hooks/usePatientsForVisits';
 
+/** `refetchIntervalInBackground: true` (2026-08-30 addition) — this
+ * hook's only consumers are the Doctor Queue page itself
+ * (DoctorQueueList.jsx) and useVitalsPendingForDoctor below, both part
+ * of the same "vitals staff -> doctor" real-time handoff this fixes;
+ * no other page calls useMyQueue, so this is safely scoped without
+ * needing a per-call-site flag. Without it, React Query's own default
+ * (`refetchIntervalInBackground: false`, unrelated to and independent
+ * of this app's global `refetchOnWindowFocus: false` — see
+ * core/providers/QueryProvider.jsx, untouched by this fix) silently
+ * pauses this 15s poll the instant the Doctor Queue tab isn't the
+ * active/visible one, and nothing catches it back up on refocus either
+ * — a doctor who has this tab open but backgrounded (checking another
+ * window, a second monitor) would see a patient sent to vitals staff
+ * sit in "Vitals Pending" indefinitely after vitals staff actually
+ * complete it, until a manual reload. Confirmed via direct production
+ * database verification that the backend/data side was always correct
+ * in this exact incident — the visit's status, queue routing, and
+ * vitals_record linkage all transitioned correctly; only the doctor's
+ * own already-open browser tab never re-polled to see it. 15s is kept
+ * unchanged (not shortened) — it already matches this app's own
+ * established "live worklist" convention (useVitalsWorklist and
+ * Reception's own equivalent queue view both already poll at 15s); the
+ * tighter 5s useConsultationById already uses is deliberately reserved
+ * for that hook's narrower "watch this one visit resolve" case, which
+ * doesn't generalize to a multi-visit list endpoint the same way. */
 export function useMyQueue(doctorUserId, status = 'waiting_doctor') {
   return useQuery({
     queryKey: ['visits', 'doctor', doctorUserId, status],
     queryFn: () => visitsService.listForDoctor({ doctorUserId, status }).then((res) => res.data),
     enabled: Boolean(doctorUserId),
     refetchInterval: 15000,
+    refetchIntervalInBackground: true,
   });
 }
 
 /** Fast-registration Visits Reception found no online doctor to
  * auto-assign to (see visits/models.py's `doctor_user_id` docstring on
  * the backend) — any doctor may claim one by starting its consultation
- * (useStartConsultation already handles the claim server-side). */
+ * (useStartConsultation already handles the claim server-side).
+ * `refetchIntervalInBackground: true` — same reasoning as useMyQueue's
+ * own docstring immediately above (identical bug, identical fix); this
+ * hook's only consumers are also entirely within the Doctor Queue
+ * page. */
 export function useUnassignedQueue(status = 'waiting_doctor') {
   return useQuery({
     queryKey: ['visits', 'unassigned', status],
     queryFn: () =>
       visitsService.list({ status, unassignedOnly: true }).then((res) => res.data),
     refetchInterval: 15000,
+    refetchIntervalInBackground: true,
   });
 }
 
