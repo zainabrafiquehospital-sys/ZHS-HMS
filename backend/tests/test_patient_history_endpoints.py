@@ -193,3 +193,120 @@ async def test_get_history_with_every_section_permission_shows_every_section(
     assert body["invoices"] == []
     assert body["lab_bills"] == []
     assert body["pharmacy_bills"] == []
+
+
+# ---------------------------------------------------------------------
+# GET /patients/history/visits — the Patient History page's own
+# always-visible, hospital-wide visit list
+# ---------------------------------------------------------------------
+
+
+async def test_list_history_visits_requires_authentication(api_client):
+    resp = await api_client.get("/api/v1/patients/history/visits")
+
+    assert resp.status_code == 401
+
+
+async def test_list_history_visits_without_permission_is_forbidden(api_client, real_session):
+    _actor, access_token = await _create_and_login(api_client, real_session, "no-perm-list")
+
+    resp = await api_client.get(
+        "/api/v1/patients/history/visits", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_list_history_visits_search_isolates_a_matching_patient(
+    api_client, real_session, grant_permission
+):
+    """The default (unfiltered) list is genuinely hospital-wide, so
+    this test isolates its assertion via a unique search term instead
+    of asserting an exact total — the same reasoning
+    test_get_history_with_only_visits_read_shows_visits_and_hides_everything_else
+    already uses one row at a time for."""
+    actor, access_token = await _create_and_login(api_client, real_session, "history-list-search")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(actor, PERMISSION_PATIENTS_HISTORY_READ)
+    patient_id = await _register_visit(api_client, access_token, "ListSearchMatch")
+
+    resp = await api_client.get(
+        "/api/v1/patients/history/visits",
+        params={"search": f"{TEST_PATIENT_NAME_PREFIX}HistoryListSearchMatch"},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"][0]["patient_id"] == patient_id
+    assert body["meta"]["total"] == 1
+    assert len(body["data"]) == 1
+
+
+async def test_list_history_visits_search_with_no_match_returns_empty(
+    api_client, real_session, grant_permission
+):
+    """A search term matching no patient resolves to an empty
+    `patient_ids` list, not `None` — this must yield zero visits, not
+    silently fall back to the full hospital-wide list (see
+    VisitRepository.search's own `IN ()` docstring)."""
+    actor, access_token = await _create_and_login(api_client, real_session, "history-list-nomatch")
+    await grant_permission(actor, PERMISSION_PATIENTS_HISTORY_READ)
+
+    resp = await api_client.get(
+        "/api/v1/patients/history/visits",
+        params={"search": "NoSuchPatientNameAtAllXyz123"},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == []
+    assert body["meta"]["total"] == 0
+
+
+async def test_list_history_visits_date_range_narrows_results(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "history-list-range")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+    await grant_permission(actor, PERMISSION_PATIENTS_HISTORY_READ)
+    patient_id = await _register_visit(api_client, access_token, "ListDateRange")
+
+    far_past_resp = await api_client.get(
+        "/api/v1/patients/history/visits",
+        params={
+            "search": f"{TEST_PATIENT_NAME_PREFIX}HistoryListDateRange",
+            "start_date": "2000-01-01",
+            "end_date": "2000-01-02",
+        },
+        headers=_auth_header(access_token),
+    )
+    assert far_past_resp.status_code == 200
+    assert far_past_resp.json()["data"] == []
+
+    unfiltered_resp = await api_client.get(
+        "/api/v1/patients/history/visits",
+        params={"search": f"{TEST_PATIENT_NAME_PREFIX}HistoryListDateRange"},
+        headers=_auth_header(access_token),
+    )
+    assert unfiltered_resp.status_code == 200
+    assert unfiltered_resp.json()["data"][0]["patient_id"] == patient_id
+
+
+async def test_list_history_visits_pagination_meta_reflects_page_and_page_size(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "history-list-page")
+    await grant_permission(actor, PERMISSION_PATIENTS_HISTORY_READ)
+
+    resp = await api_client.get(
+        "/api/v1/patients/history/visits",
+        params={"page": 2, "page_size": 5},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 200
+    meta = resp.json()["meta"]
+    assert meta["page"] == 2
+    assert meta["page_size"] == 5

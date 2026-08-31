@@ -17,6 +17,7 @@ queries regardless of how many visits/bills/records the patient
 actually has, never one query per visit."""
 
 from dataclasses import dataclass
+from datetime import date as date_type
 from uuid import UUID
 
 from app.modules.billing.models import Invoice
@@ -29,7 +30,7 @@ from app.modules.patients.models import Patient
 from app.modules.patients.service import PatientService
 from app.modules.pharmacy.models import MedicineBill
 from app.modules.pharmacy.service import PharmacyService
-from app.modules.visits.models import Visit
+from app.modules.visits.models import Visit, VisitProcedureItem
 from app.modules.visits.service import VisitService
 from app.modules.vitals.models import VitalsRecord
 from app.modules.vitals.service import VitalsService
@@ -41,6 +42,16 @@ from app.modules.vitals.service import VitalsService
 # here since a *complete* history is this feature's whole purpose
 # (unlike that narrower trend panel), not merely the last handful.
 _MAX_VISITS = 200
+
+# The Patient History list's own name/MR/phone search (list_visits
+# below) resolves matching Patient rows before filtering visits by
+# them — a real "search-as-you-type" term realistically narrows to a
+# small handful of people (a name, an MR number, or a phone number all
+# identify a specific person or small family cluster), so this cap is
+# generous headroom, not a tight budget; it exists only to bound a
+# pathological single-character-style query, the same purpose
+# PRINT_FETCH_CAP serves in features/admin/components/PatientDirectory.jsx.
+_MAX_SEARCH_MATCHED_PATIENTS = 200
 
 
 @dataclass(frozen=True)
@@ -155,3 +166,60 @@ class PatientHistoryService:
         router.py's `list_visits`) without importing VisitService's own
         internals directly."""
         return await self._visit_service.list_procedure_items_for_visits(visit_ids)
+
+    async def list_visits(
+        self,
+        *,
+        search: str | None,
+        start_date: date_type | None,
+        end_date: date_type | None,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[Visit], int, dict[UUID, list[VisitProcedureItem]]]:
+        """Backs `GET /patients/history/visits` — the Patient History
+        page's own always-visible, hospital-wide visit list (never
+        empty-by-default the way the single-patient `get_history` above
+        is), with real server-side pagination/search/date-range, never
+        a client-side approximation over a capped fetch (the same
+        "current volume" convention this codebase already applies
+        everywhere else real search/pagination exists).
+
+        `search` (name/MR/phone) is resolved to matching Patient ids
+        *first*, via `PatientService.list_patients` — this module's own
+        "depends on everything it reports on" composition (see this
+        module's own docstring) — since `VisitService`/`VisitRepository`
+        must never depend on Patients directly (see
+        `VisitRepository.search`'s own docstring on why that filter is
+        a plain `patient_ids` `IN` list, resolved by the caller, never a
+        join owned by the Visits module itself). No `search` term means
+        no patient filter at all — every visit, hospital-wide, exactly
+        matching "never an empty screen" — this is deliberately the
+        page's own default state."""
+        patient_ids = None
+        if search:
+            matched_patients, _total = await self._patient_service.list_patients(
+                search=search,
+                sort_by="full_name",
+                sort_desc=False,
+                page=1,
+                page_size=_MAX_SEARCH_MATCHED_PATIENTS,
+            )
+            patient_ids = [patient.id for patient in matched_patients]
+
+        visits, total = await self._visit_service.list_visits(
+            patient_id=None,
+            doctor_user_id=None,
+            unassigned_only=False,
+            status=None,
+            patient_ids=patient_ids,
+            start_date=start_date,
+            end_date=end_date,
+            sort_by="created_at",
+            sort_desc=True,
+            page=page,
+            page_size=page_size,
+        )
+        items_by_visit = await self._visit_service.list_procedure_items_for_visits(
+            [visit.id for visit in visits]
+        )
+        return visits, total, items_by_visit

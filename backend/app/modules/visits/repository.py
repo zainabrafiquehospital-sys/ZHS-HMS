@@ -90,8 +90,11 @@ class VisitRepository(BaseRepository[Visit]):
         doctor_user_id: UUID | None,
         created_by: UUID | None = None,
         date: date_type | None = None,
+        start_date: date_type | None = None,
+        end_date: date_type | None = None,
         unassigned_only: bool = False,
         status: VisitStatus | None,
+        patient_ids: list[UUID] | None = None,
         sort_column: InstrumentedAttribute,
         sort_desc: bool,
         limit: int,
@@ -101,7 +104,11 @@ class VisitRepository(BaseRepository[Visit]):
         the Doctor Queue / Vitals worklist screens (built on top of the
         not-yet-built Queue module) will layer their own routing filter
         on top of this; this method only ever filters by Visit's own
-        columns.
+        columns — never a Patient one (see models.py's `Visit` docstring
+        on why this module never loads/joins a Patient at all, even for
+        filtering: `patient_ids` below is a plain `IN` filter against
+        this table's own `patient_id` FK column, resolved by the caller
+        from a separate Patient-module search, never a join here).
 
         `unassigned_only` backs the Doctor Queue's "unclaimed pool" view
         (fast-registration visits Reception couldn't auto-assign — see
@@ -125,10 +132,33 @@ class VisitRepository(BaseRepository[Visit]):
         the first/last few hours of a Karachi calendar day can appear
         under the adjacent UTC date near midnight). Added so the Admin
         Overview day-view is a real, always-accurate server-side query
-        instead of the same "fetch N most recent + filter" shortcut."""
+        instead of the same "fetch N most recent + filter" shortcut.
+
+        `start_date`/`end_date` (2026-09-01 addition) — an inclusive UTC
+        calendar-day *range*, the same interpretation as `date` above
+        but open-ended on either side (only `start_date` given: from
+        that day onward; only `end_date`: up to and including that day).
+        Independent of `date` — a caller passes one or the other, never
+        both in practice, but nothing here enforces that; both simply
+        add their own `created_at` bounds. Powers the Patient History
+        list's own From/To filter (`GET /patients/history/visits`),
+        mirroring `InventoryReceiptRepository`'s identical
+        `start_date`/`end_date` naming and semantics for the same kind
+        of range filter elsewhere in this app.
+
+        `patient_ids` (2026-09-01 addition) — an `IN` filter against
+        this table's own `patient_id` column, for "every visit belonging
+        to any of these patients" (the Patient History list's own name/
+        MR/phone search, which resolves matching Patient rows *before*
+        calling this method — see that endpoint's own docstring). An
+        empty list (as opposed to `None`, "no filter") correctly matches
+        zero rows via `IN ()`, needing no special-casing here — that is
+        exactly what "the search matched no patients" should do."""
         conditions = [Visit.deleted_at.is_(None)]
         if patient_id is not None:
             conditions.append(Visit.patient_id == patient_id)
+        if patient_ids is not None:
+            conditions.append(Visit.patient_id.in_(patient_ids))
         if unassigned_only:
             conditions.append(Visit.doctor_user_id.is_(None))
         elif doctor_user_id is not None:
@@ -140,6 +170,15 @@ class VisitRepository(BaseRepository[Visit]):
             end_of_day = start_of_day + timedelta(days=1)
             conditions.append(Visit.created_at >= start_of_day)
             conditions.append(Visit.created_at < end_of_day)
+        if start_date is not None:
+            conditions.append(
+                Visit.created_at >= datetime(start_date.year, start_date.month, start_date.day, tzinfo=UTC)
+            )
+        if end_date is not None:
+            end_of_range = datetime(
+                end_date.year, end_date.month, end_date.day, tzinfo=UTC
+            ) + timedelta(days=1)
+            conditions.append(Visit.created_at < end_of_range)
         if status is not None:
             conditions.append(Visit.status == status)
 

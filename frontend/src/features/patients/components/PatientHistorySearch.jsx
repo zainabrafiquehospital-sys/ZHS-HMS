@@ -1,9 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import { Printer } from 'lucide-react';
-import { patientsService } from '@/features/patients/api/patientsService';
-import { usePatientHistory } from '@/features/patients/hooks/usePatientHistory';
+import { ArrowLeft, Printer, Search } from 'lucide-react';
+import {
+  usePatientHistory,
+  useHistoryVisitList,
+} from '@/features/patients/hooks/usePatientHistory';
+import { usePatientsForVisits } from '@/features/patients/hooks/usePatientsForVisits';
 import { usePrintRegistrationSlip } from '@/features/reception/hooks/useReception';
 import { usePrintInvoice } from '@/features/billing/hooks/useBilling';
 import { usePrintLabBill } from '@/features/lab/hooks/useLab';
@@ -23,7 +26,8 @@ import { VISIT_STATUS_BADGE_VARIANT } from '@/shared/constants/visitStatus';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
-import { SearchSelect } from '@/shared/components/SearchSelect';
+import { Input } from '@/shared/components/ui/Input';
+import { Label } from '@/shared/components/ui/Label';
 import { PageLoader } from '@/shared/components/PageLoader';
 import { PageError } from '@/shared/components/PageError';
 import {
@@ -34,7 +38,14 @@ import {
   TableHeader,
   TableRow,
 } from '@/shared/components/ui/Table';
+import { useDebouncedValue } from '@/shared/hooks/useDebouncedValue';
 import { formatDisplayDate, formatDisplayTime, displayDayKey } from '@/utils/timezone';
+
+// Matches usePatientDirectory's own GET /patients page_size default —
+// this list is just as hospital-wide/unbounded, so it gets the exact
+// same real server-side pagination treatment, never a client-side
+// approximation over a capped fetch.
+const LIST_PAGE_SIZE = 20;
 
 const currencyFormatter = new Intl.NumberFormat('en-US', {
   minimumFractionDigits: 2,
@@ -411,11 +422,246 @@ function BillsSection({ title, bills, printLabel, printMutateAsync }) {
   );
 }
 
-/** The four-role shared "Patient History" search — a single search bar
- * (name/MR number/phone, the exact same `patientsService.search` +
- * `SearchSelect` pair RegisterVisitForm.jsx's own "Existing Patient"
- * picker already uses) that, once a patient is picked, shows their
- * full aggregated cross-module history from `usePatientHistory`.
+/** The Patient History page's own always-visible, hospital-wide,
+ * newest-first visit list — its default landing state, matching the
+ * live-search-as-you-type pattern already used elsewhere in this app
+ * (Reception's "My Registrations", Vitals' "My Vitals Records"), never
+ * a dead-end "search then pick one" box. Real server-side search
+ * (name/MR/phone)/date-range/pagination via `useHistoryVisitList`
+ * (never a client-side approximation over a capped fetch — this list
+ * is hospital-wide and unbounded, unlike MyRegistrations.jsx's own
+ * client-filtered table, which is acceptable only because it's scoped
+ * to one receptionist's own bounded lifetime volume). Column set
+ * mirrors MyRegistrations.jsx's own table exactly, plus the Print Slip
+ * action already established for this page's Visits section (see
+ * VisitsSection's own docstring on the extra `reception:*` permission
+ * check that action needs). Selecting a row hands its patient id up to
+ * the parent, which switches to the existing single-patient drill-down
+ * view below.
+ *
+ * `page`/`searchInput`/`startDate`/`endDate` are all controlled by the
+ * parent (`PatientHistorySearch`) rather than local state here — this
+ * component fully unmounts while the drill-down view is showing (see
+ * that component's own conditional render), so state that lived here
+ * instead would silently reset every time "← Back to all records" is
+ * pressed, defeating the point of a "back" action returning to
+ * wherever the receptionist actually was, filters and page included. */
+function VisitListView({
+  page,
+  setPage,
+  searchInput,
+  setSearchInput,
+  startDate,
+  setStartDate,
+  endDate,
+  setEndDate,
+  onSelectPatient,
+}) {
+  const { hasPermission } = useAuth();
+  const debouncedSearch = useDebouncedValue(searchInput, 300);
+
+  const { visits, meta, isLoading, isError, error, refetch } = useHistoryVisitList({
+    page,
+    pageSize: LIST_PAGE_SIZE,
+    search: debouncedSearch || undefined,
+    startDate: startDate || undefined,
+    endDate: endDate || undefined,
+  });
+  const patientsById = usePatientsForVisits(visits);
+  const printSlip = usePrintRegistrationSlip();
+  const { printingId, error: printError, handlePrint } = usePrintAction((visitId) =>
+    printSlip.mutateAsync(visitId),
+  );
+  const canPrintSlip =
+    hasPermission('reception:register_visit') || hasPermission('reception:view_slip');
+
+  const pageCount = Math.max(1, Math.ceil((meta?.total ?? 0) / LIST_PAGE_SIZE));
+
+  function handleSearchChange(value) {
+    setSearchInput(value);
+    setPage(1);
+  }
+
+  function handleStartDateChange(value) {
+    setStartDate(value);
+    setPage(1);
+  }
+
+  function handleEndDateChange(value) {
+    setEndDate(value);
+    setPage(1);
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-col gap-4">
+        <CardTitle>All Patient Records</CardTitle>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="relative w-full sm:w-72">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={searchInput}
+              onChange={(event) => handleSearchChange(event.target.value)}
+              placeholder="Search by name, MR number, or phone"
+              className="pl-8"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="history-list-start">From</Label>
+            <Input
+              id="history-list-start"
+              type="date"
+              value={startDate}
+              onChange={(event) => handleStartDateChange(event.target.value)}
+              className="w-auto"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="history-list-end">To</Label>
+            <Input
+              id="history-list-end"
+              type="date"
+              value={endDate}
+              onChange={(event) => handleEndDateChange(event.target.value)}
+              className="w-auto"
+            />
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        {printError ? <p className="text-sm text-destructive">{printError}</p> : null}
+        {isLoading ? (
+          <PageLoader label="Loading patient records" />
+        ) : isError ? (
+          <PageError error={error} reset={refetch} message="Couldn't load patient records." />
+        ) : visits.length === 0 ? (
+          <p className="py-10 text-center text-sm text-muted-foreground">
+            {debouncedSearch || startDate || endDate
+              ? 'No records match this search.'
+              : 'No visits recorded yet.'}
+          </p>
+        ) : (
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Time</TableHead>
+                  <TableHead>Queue Token</TableHead>
+                  <TableHead>Patient</TableHead>
+                  <TableHead>MR #</TableHead>
+                  <TableHead>Age / Gender</TableHead>
+                  <TableHead>Phone</TableHead>
+                  <TableHead>Procedure</TableHead>
+                  <TableHead>Doctor</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
+                  {canPrintSlip ? <TableHead /> : null}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {visits.map((visit) => {
+                  const patient = patientsById[visit.patient_id];
+                  return (
+                    <TableRow
+                      key={visit.id}
+                      className="cursor-pointer"
+                      onClick={() => patient && onSelectPatient(patient)}
+                    >
+                      <TableCell className="whitespace-nowrap">
+                        {displayDayKey(visit.created_at)} {formatDisplayTime(visit.created_at)}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap font-mono">
+                        {visit.queue_token}
+                      </TableCell>
+                      <TableCell className="max-w-[160px] truncate font-medium text-foreground">
+                        {patient ? patient.full_name : '…'}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap font-mono text-xs">
+                        {patient ? patient.mr_number : '…'}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap">
+                        {patient
+                          ? `${patient.age_years} / ${
+                              patient.gender
+                                ? patient.gender[0].toUpperCase() + patient.gender.slice(1)
+                                : '—'
+                            }`
+                          : '…'}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap">
+                        {patient?.phone_number || '—'}
+                      </TableCell>
+                      <TableCell className="max-w-[160px]">
+                        <VisitProcedureDisplay visit={visit} className="truncate" />
+                      </TableCell>
+                      <TableCell>
+                        {visit.doctor_user_id ? (
+                          <Badge variant="success">Assigned</Badge>
+                        ) : (
+                          <Badge variant="warning">Unassigned</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-right font-medium tabular-nums">
+                        {money(visit.amount)}
+                      </TableCell>
+                      {canPrintSlip ? (
+                        // The row itself opens the drill-down (see
+                        // TableRow's own onClick above) — stopped here so
+                        // clicking Print Slip never also selects the
+                        // patient, same guard PatientDirectory.jsx's row-
+                        // click + "Visit History" button already uses.
+                        <TableCell onClick={(event) => event.stopPropagation()}>
+                          <PrintButton
+                            label="Print Slip"
+                            id={visit.id}
+                            printingId={printingId}
+                            onPrint={handlePrint}
+                          />
+                        </TableCell>
+                      ) : null}
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+
+            {pageCount > 1 ? (
+              <div className="flex items-center justify-between text-sm text-muted-foreground">
+                <span>
+                  Page {page} of {pageCount} · {meta.total} record{meta.total === 1 ? '' : 's'}
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={page <= 1}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={page >= pageCount}
+                    onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** The four-role shared "Patient History" page. Defaults to
+ * `VisitListView` — an always-visible, hospital-wide, live-search-as-
+ * you-type list of every visit (see that component's own docstring),
+ * never a dead-end search box — and switches to this single patient's
+ * full aggregated cross-module history (from `usePatientHistory`) once
+ * a row is selected, via "← Back to all records" to return.
  *
  * Each section below only renders when its own array is genuinely
  * non-empty — a `null` section (the signed-in role doesn't hold that
@@ -430,40 +676,59 @@ function BillsSection({ title, bills, printLabel, printMutateAsync }) {
  * from "this patient has none" regardless, by design. */
 export function PatientHistorySearch() {
   const [selectedPatient, setSelectedPatient] = useState(null);
-  const [searchLabel, setSearchLabel] = useState('');
+  // Lives here, not inside VisitListView, so it survives that
+  // component unmounting while the drill-down view is showing — see
+  // VisitListView's own docstring.
+  const [page, setPage] = useState(1);
+  const [searchInput, setSearchInput] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const { history, isLoading, isError, error, refetch } = usePatientHistory(selectedPatient?.id);
   const printLabBill = usePrintLabBill();
   const printMedicineBill = usePrintMedicineBill();
 
+  if (!selectedPatient) {
+    return (
+      <div className="flex flex-col gap-6">
+        <div className="flex flex-col gap-1">
+          <h1 className="text-lg font-semibold text-foreground">Patient History</h1>
+          <p className="text-sm text-muted-foreground">
+            Every patient visit, hospital-wide. Search or select a row to see a patient's full
+            cross-module history.
+          </p>
+        </div>
+
+        <VisitListView
+          page={page}
+          setPage={setPage}
+          searchInput={searchInput}
+          setSearchInput={setSearchInput}
+          startDate={startDate}
+          setStartDate={setStartDate}
+          endDate={endDate}
+          setEndDate={setEndDate}
+          onSelectPatient={setSelectedPatient}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1">
+      <div>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setSelectedPatient(null)}
+          className="mb-4"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back to all records
+        </Button>
         <h1 className="text-lg font-semibold text-foreground">Patient History</h1>
-        <p className="text-sm text-muted-foreground">
-          Search for a patient to see their full history across every module.
-        </p>
       </div>
 
-      <Card>
-        <CardContent className="pt-6">
-          <div className="relative w-full sm:w-96">
-            <SearchSelect
-              queryKey={['patients', 'search']}
-              queryFn={(term) => patientsService.search(term).then((res) => res.data)}
-              getLabel={(patient) => patient.full_name}
-              getDescription={(patient) => `MR: ${patient.mr_number} · ${patient.phone_number}`}
-              placeholder="Search by name, MR number, or phone"
-              selectedLabel={searchLabel}
-              onSelect={(patient) => {
-                setSelectedPatient(patient);
-                setSearchLabel(`${patient.full_name} (${patient.mr_number})`);
-              }}
-            />
-          </div>
-        </CardContent>
-      </Card>
-
-      {!selectedPatient ? null : isLoading ? (
+      {isLoading ? (
         <PageLoader label="Loading patient history" />
       ) : isError ? (
         <PageError error={error} reset={refetch} message="Couldn't load this patient's history." />

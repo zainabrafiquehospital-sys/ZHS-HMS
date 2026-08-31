@@ -333,6 +333,128 @@ async def test_search_filters_by_date(db_session):
     assert visits[0].id == in_range.id
 
 
+async def test_search_filters_by_patient_ids(db_session):
+    """Backs the Patient History list's own search-by-name/MR/phone —
+    a plain `IN` filter against Visit's own `patient_id` column, the
+    id list itself always resolved by the caller (see this method's
+    own docstring on why the Visits module never joins Patient
+    directly)."""
+    matching_patient = await _make_patient(db_session)
+    other_patient = await _make_patient(db_session)
+    doctor = await _make_doctor(db_session)
+    target = await _make_visit(db_session, patient=matching_patient, doctor=doctor)
+    await _make_visit(db_session, patient=other_patient, doctor=doctor)
+
+    visits, total = await VisitRepository(db_session).search(
+        patient_id=None,
+        doctor_user_id=None,
+        patient_ids=[matching_patient.id],
+        status=None,
+        sort_column=VISIT_SORTABLE_COLUMNS["created_at"],
+        sort_desc=True,
+        limit=20,
+        offset=0,
+    )
+
+    assert total == 1
+    assert visits[0].id == target.id
+
+
+async def test_search_filters_by_patient_ids_empty_list_matches_nothing(db_session):
+    """An empty `patient_ids` list (as opposed to `None`, meaning "no
+    filter at all") is a real, deliberate "match zero patients" case —
+    e.g. a Patient History search term that matched no one — and must
+    correctly yield zero visits via `IN ()`, not silently fall back to
+    every visit."""
+    patient = await _make_patient(db_session)
+    doctor = await _make_doctor(db_session)
+    await _make_visit(db_session, patient=patient, doctor=doctor)
+
+    visits, total = await VisitRepository(db_session).search(
+        patient_id=None,
+        doctor_user_id=None,
+        patient_ids=[],
+        status=None,
+        sort_column=VISIT_SORTABLE_COLUMNS["created_at"],
+        sort_desc=True,
+        limit=20,
+        offset=0,
+    )
+
+    assert total == 0
+    assert visits == []
+
+
+async def test_search_filters_by_date_range(db_session):
+    """`start_date`/`end_date` — the Patient History list's own
+    From/To filter — is an inclusive UTC calendar-day range independent
+    of the existing single-day `date` filter above, mirroring
+    InventoryReceiptRepository's identical naming/semantics."""
+    patient = await _make_patient(db_session)
+    doctor = await _make_doctor(db_session)
+    in_range = Visit(
+        patient_id=patient.id,
+        doctor_user_id=doctor.id,
+        queue_token=_unique_token(),
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=True,
+        status=VisitStatus.REGISTERED,
+        created_at=datetime(2026, 3, 15, 10, 0, tzinfo=UTC),
+    )
+    await VisitRepository(db_session).add(in_range)
+    range_start_boundary = Visit(
+        patient_id=patient.id,
+        doctor_user_id=doctor.id,
+        queue_token=_unique_token(),
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=True,
+        status=VisitStatus.REGISTERED,
+        created_at=datetime(2026, 3, 14, 0, 0, tzinfo=UTC),
+    )
+    await VisitRepository(db_session).add(range_start_boundary)
+    before_range = Visit(
+        patient_id=patient.id,
+        doctor_user_id=doctor.id,
+        queue_token=_unique_token(),
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=True,
+        status=VisitStatus.REGISTERED,
+        created_at=datetime(2026, 3, 13, 23, 59, tzinfo=UTC),
+    )
+    await VisitRepository(db_session).add(before_range)
+    after_range = Visit(
+        patient_id=patient.id,
+        doctor_user_id=doctor.id,
+        queue_token=_unique_token(),
+        procedure="Consultation",
+        amount=Decimal("1500.00"),
+        vitals_required=True,
+        status=VisitStatus.REGISTERED,
+        created_at=datetime(2026, 3, 16, 0, 0, tzinfo=UTC),
+    )
+    await VisitRepository(db_session).add(after_range)
+
+    from datetime import date as date_type
+
+    visits, total = await VisitRepository(db_session).search(
+        patient_id=None,
+        doctor_user_id=None,
+        start_date=date_type(2026, 3, 14),
+        end_date=date_type(2026, 3, 15),
+        status=None,
+        sort_column=VISIT_SORTABLE_COLUMNS["created_at"],
+        sort_desc=True,
+        limit=20,
+        offset=0,
+    )
+
+    assert total == 2
+    assert {visit.id for visit in visits} == {in_range.id, range_start_boundary.id}
+
+
 async def test_search_excludes_soft_deleted_visits(db_session):
     patient = await _make_patient(db_session)
     doctor = await _make_doctor(db_session)

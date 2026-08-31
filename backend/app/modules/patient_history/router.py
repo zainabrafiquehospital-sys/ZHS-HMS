@@ -27,9 +27,10 @@ Billing/Lab/Pharmacy — confirmed directly against this app's actual
 RBAC grants, not assumed), never a hard failure just because one
 section isn't visible to this particular caller."""
 
+from datetime import date as date_type
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from app.modules.auth.dependencies import get_auth_service, require_permission
 from app.modules.auth.models import User
@@ -51,8 +52,48 @@ from app.modules.visits.schemas import VisitOut
 from app.modules.vitals.constants import PERMISSION_VITALS_READ
 from app.modules.vitals.schemas import VitalsRecordOut
 from app.shared.envelope import success_envelope
+from app.shared.pagination import PaginationMeta
 
 router = APIRouter(prefix="/patients", tags=["patient-history"])
+
+
+@router.get("/history/visits")
+async def list_patient_history_visits(
+    search: str | None = Query(
+        default=None,
+        description="Name/MR/phone — resolved to matching patients first (see "
+        "PatientHistoryService.list_visits's own docstring), then filtered down to just "
+        "their visits. Omitted entirely means every visit, hospital-wide — the Patient "
+        "History page's own always-visible default list, deliberately never empty.",
+    ),
+    start_date: date_type | None = Query(default=None),
+    end_date: date_type | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    history_service: PatientHistoryService = Depends(get_patient_history_service),
+    _actor: User = Depends(require_permission(PERMISSION_PATIENTS_HISTORY_READ)),
+) -> dict:
+    """Backs the Patient History page's always-visible, hospital-wide
+    visit list — a 2-segment path (`/patients/history/visits`),
+    deliberately placed ahead of `/{patient_id}/history` in this
+    router so it can never collide with a UUID path param (same
+    precaution `/patients/lookup/by-phone` already uses elsewhere in
+    this app). Returns the exact same `VisitOut[]` + pagination `meta`
+    shape `GET /visits` itself returns — reused verbatim rather than a
+    new response schema, since the row shape is identical."""
+    visits, total, items_by_visit = await history_service.list_visits(
+        search=search,
+        start_date=start_date,
+        end_date=end_date,
+        page=page,
+        page_size=page_size,
+    )
+    body = [
+        VisitOut.from_visit(visit, items_by_visit.get(visit.id, [])).model_dump(mode="json")
+        for visit in visits
+    ]
+    meta = PaginationMeta(page=page, page_size=page_size, total=total).model_dump(mode="json")
+    return success_envelope(body, meta)
 
 
 @router.get("/{patient_id}/history")

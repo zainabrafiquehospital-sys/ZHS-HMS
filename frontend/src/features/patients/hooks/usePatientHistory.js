@@ -1,6 +1,6 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { patientsService } from '@/features/patients/api/patientsService';
 
 /** Backs the Patient History search page's own result view, once a
@@ -25,4 +25,27 @@ export function usePatientHistory(patientId) {
     enabled: Boolean(patientId),
   });
   return { ...query, history: query.data ?? null };
+}
+
+/** The Patient History page's own always-visible, hospital-wide,
+ * server-paginated visit list — backed by
+ * `patientsService.listHistoryVisits` (see that method's docstring).
+ * `keepPreviousData` keeps the current page's rows on screen while the
+ * next page/search/date-range fetches, the same pattern
+ * usePatientDirectory (Admin) already uses for its own paginated
+ * table. */
+export function useHistoryVisitList({ page, pageSize, search, startDate, endDate }) {
+  const query = useQuery({
+    queryKey: ['patients', 'history', 'visits', { page, pageSize, search, startDate, endDate }],
+    queryFn: () =>
+      patientsService
+        .listHistoryVisits({ page, pageSize, search, startDate, endDate })
+        .then((res) => ({ visits: res.data, meta: res.meta })),
+    placeholderData: keepPreviousData,
+  });
+  return {
+    ...query,
+    visits: query.data?.visits ?? [],
+    meta: query.data?.meta ?? null,
+  };
 }
