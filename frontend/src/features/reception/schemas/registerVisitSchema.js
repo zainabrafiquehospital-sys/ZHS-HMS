@@ -3,17 +3,35 @@ import { z } from 'zod';
 // Only full_name/age_years/phone_number are compulsory (Phase 6
 // fast-registration §2) — guardian_name/gender/cnic/address are never
 // removed from the system, just optional at registration time.
+//
+// Every field here is schema-level optional/lenient — the real
+// "these three are required" rule lives in the top-level `superRefine`
+// below instead, gated on `patientMode === 'new'`. This shape alone
+// (unconditionally requiring full_name/age_years/phone_number) used to
+// sit directly on `newPatient` — harmless while every trigger that
+// switches into Existing Patient mode also happened to have those
+// fields either genuinely filled in or never touched — until
+// RegisterVisitForm.jsx's own name-based suggestion feature started
+// switching modes the instant a name alone is typed, well before
+// age/phone exist. RHF's `defaultValues` means `newPatient` is never
+// actually `undefined` (only `.optional()` at the wrapper level, which
+// this schema still had), so that leftover partial object kept
+// getting fully validated regardless of `patientMode` — silently
+// failing `handleSubmit` with no visible error, since the New Patient
+// fields that would render it aren't even on screen in Existing
+// Patient mode. See handleUseExistingPatient's own docstring for the
+// matching fix on the component side (resetting `newPatient` back to
+// blank on every switch) — this schema change is what actually makes
+// that blank state valid to submit.
 const newPatientSchema = z.object({
-  full_name: z.string().min(1, 'Full name is required').max(150),
+  full_name: z.string().max(150).optional().or(z.literal('')),
   guardian_name: z.string().max(150).optional().or(z.literal('')),
   gender: z.enum(['female', 'male', 'other']).optional().or(z.literal('')),
   age_years: z
     .union([z.string(), z.number()])
-    .transform((value) => (value === '' || value === undefined ? undefined : Number(value)))
-    .refine((value) => value !== undefined && Number.isInteger(value) && value >= 0 && value <= 150, {
-      message: 'Enter a valid age in years (0-150)',
-    }),
-  phone_number: z.string().min(6, 'Enter a valid phone number').max(20),
+    .optional()
+    .transform((value) => (value === '' || value === undefined ? undefined : Number(value))),
+  phone_number: z.string().max(20).optional().or(z.literal('')),
   cnic: z.string().max(20).optional().or(z.literal('')),
   address: z.string().max(2000).optional().or(z.literal('')),
 });
@@ -78,11 +96,47 @@ export const registerVisitSchema = z
     paymentMethod: z.string().min(1, 'Select a payment method'),
     advanceAmount: z.union([z.string(), z.number()]).optional(),
   })
-  .refine((data) => data.patientMode !== 'existing' || Boolean(data.existingPatientId), {
-    message: 'Search and select an existing patient',
-    path: ['existingPatientId'],
-  })
-  .refine((data) => data.patientMode !== 'new' || Boolean(data.newPatient), {
-    message: 'Fill in the new patient details',
-    path: ['newPatient'],
+  // Replaces the two simpler `.refine` calls this used to be (one per
+  // mode) — needed once `newPatientSchema` itself stopped enforcing
+  // full_name/age_years/phone_number unconditionally (see that
+  // schema's own docstring): those three rules now live here instead,
+  // gated on `patientMode === 'new'` specifically, each with its own
+  // field-level `path` so the existing `errors.newPatient?.full_name`/
+  // `.age_years`/`.phone_number` display logic in RegisterVisitForm.jsx
+  // keeps working unchanged.
+  .superRefine((data, ctx) => {
+    if (data.patientMode === 'existing') {
+      if (!data.existingPatientId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Search and select an existing patient',
+          path: ['existingPatientId'],
+        });
+      }
+      return;
+    }
+
+    const newPatient = data.newPatient;
+    if (!newPatient?.full_name || newPatient.full_name.trim().length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Full name is required',
+        path: ['newPatient', 'full_name'],
+      });
+    }
+    const ageYears = newPatient?.age_years;
+    if (ageYears === undefined || !Number.isInteger(ageYears) || ageYears < 0 || ageYears > 150) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Enter a valid age in years (0-150)',
+        path: ['newPatient', 'age_years'],
+      });
+    }
+    if (!newPatient?.phone_number || newPatient.phone_number.length < 6) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Enter a valid phone number',
+        path: ['newPatient', 'phone_number'],
+      });
+    }
   });

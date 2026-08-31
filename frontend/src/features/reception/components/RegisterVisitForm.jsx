@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { useQuery } from '@tanstack/react-query';
 import { registerVisitSchema } from '@/features/reception/schemas/registerVisitSchema';
 import { useRegisterVisit, useDoctorsForSelection } from '@/features/reception/hooks/useReception';
 import { patientsService } from '@/features/patients/api/patientsService';
@@ -19,7 +20,17 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui
 import { SearchSelect } from '@/shared/components/SearchSelect';
 import { PaymentMethodSelect } from '@/shared/components/PaymentMethodSelect';
 import { ReturningPatientDialog } from '@/features/reception/components/ReturningPatientDialog';
+import { PatientNameSuggestions } from '@/features/reception/components/PatientNameSuggestions';
 import { useToast } from '@/shared/components/toast/ToastProvider';
+import { useDebouncedValue } from '@/shared/hooks/useDebouncedValue';
+
+// Matches the task's own explicit floor (3+ characters) — deliberately
+// higher than SearchSelect's own default `minChars=2`: this fires
+// automatically off every keystroke in a field the receptionist is
+// already filling in for an unrelated reason (registering a new
+// patient), not a dedicated search box the receptionist opted into, so
+// it should stay quiet a little longer before offering anything.
+const NAME_SUGGESTION_MIN_CHARS = 3;
 
 const DEFAULT_VALUES = {
   patientMode: 'new',
@@ -151,6 +162,24 @@ export function RegisterVisitForm({ onRegistered }) {
     setValue('patientMode', 'existing');
     setValue('existingPatientId', patient.id, { shouldValidate: true });
     setValue('existingPatientLabel', `${patient.full_name} (${patient.mr_number})`);
+    // Clears whatever partial New Patient fields (if any) were typed
+    // before switching modes — registerVisitSchema's own `newPatient`
+    // is `.optional()` only at the wrapper level, not truly skipped
+    // once `patientMode` is 'existing': RHF's defaultValues means
+    // `newPatient` is never actually `undefined`, so its own
+    // `age_years`/`phone_number` rules (`min(6)`, a valid 0-150
+    // integer) still run against whatever is still sitting in that
+    // object — normally harmless from the phone-match dialog (a
+    // receptionist has usually typed the whole name+age+phone before
+    // that fires), but this new name-suggestion flow's entire point is
+    // firing the instant a name alone is typed, well before age/phone
+    // exist yet, which would otherwise leave the form silently stuck
+    // (handleSubmit's validation fails with no visible message, since
+    // the New Patient fields that would show it aren't even rendered
+    // in this mode). Resetting here, at the one shared switch-to-
+    // existing entry point every trigger already funnels through, is
+    // the general fix for all of them at once.
+    setValue('newPatient', DEFAULT_VALUES.newPatient);
     setPhoneMatches(null);
   }
 
@@ -160,6 +189,42 @@ export function RegisterVisitForm({ onRegistered }) {
       setDismissedPhoneNumbers((previous) => new Set(previous).add(phone));
     }
     setPhoneMatches(null);
+  }
+
+  // Name-based duplicate detection (New Patient mode only) — a second,
+  // softer, *earlier* signal than the phone-based one above: fires while
+  // the receptionist is still typing the name, well before a phone
+  // number is ever asked for or typed, using the exact same
+  // `patientsService.search` ILIKE lookup (and the same 300ms debounce
+  // pattern) "Existing Patient" mode's own SearchSelect already uses —
+  // deliberately fuzzy (a plain substring match, not exact), so a typo
+  // variant ("Fatima" vs "FATIMA") or a genuinely different phone number
+  // on file for what's otherwise the same name both still surface here.
+  // Selecting a suggestion reuses `handleUseExistingPatient` verbatim —
+  // switching into Existing Patient mode means the phone number (and
+  // every other identity field) is resolved server-side from
+  // `patient_id` at submission time, never re-collected on this screen,
+  // which is exactly what "the receptionist never has to ask for the
+  // phone number again" requires structurally, not as a separate
+  // pre-fill step of its own.
+  const typedName = watch('newPatient.full_name');
+  const debouncedName = useDebouncedValue(typedName, 300);
+  const trimmedDebouncedName = (debouncedName ?? '').trim();
+  const [dismissedName, setDismissedName] = useState(null);
+
+  const { data: nameMatches } = useQuery({
+    queryKey: ['patients', 'search', 'name-suggestions', trimmedDebouncedName],
+    queryFn: () => patientsService.search(trimmedDebouncedName).then((res) => res.data),
+    enabled: patientMode === 'new' && trimmedDebouncedName.length >= NAME_SUGGESTION_MIN_CHARS,
+  });
+  const showNameSuggestions =
+    patientMode === 'new' &&
+    trimmedDebouncedName.length >= NAME_SUGGESTION_MIN_CHARS &&
+    dismissedName !== trimmedDebouncedName &&
+    Boolean(nameMatches?.length);
+
+  function handleDismissNameSuggestions() {
+    setDismissedName(trimmedDebouncedName);
   }
 
   // The itemized procedure breakdown (2026-08-21 addition, replacing
@@ -310,13 +375,20 @@ export function RegisterVisitForm({ onRegistered }) {
                   patient — kept together, first, and un-collapsed so a
                   receptionist can register in a handful of keystrokes. */}
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                  <div className="flex flex-col gap-1.5">
+                  <div className="relative flex flex-col gap-1.5">
                     <Label htmlFor="full_name">Patient Name</Label>
                     <Input id="full_name" autoFocus {...register('newPatient.full_name')} />
                     {errors.newPatient?.full_name ? (
                       <p className="text-xs text-destructive">
                         {errors.newPatient.full_name.message}
                       </p>
+                    ) : null}
+                    {showNameSuggestions ? (
+                      <PatientNameSuggestions
+                        patients={nameMatches}
+                        onSelect={handleUseExistingPatient}
+                        onDismiss={handleDismissNameSuggestions}
+                      />
                     ) : null}
                   </div>
                   <div className="flex flex-col gap-1.5">
