@@ -1,8 +1,14 @@
 'use client';
 
 import { useState } from 'react';
+import { Printer } from 'lucide-react';
 import { patientsService } from '@/features/patients/api/patientsService';
 import { usePatientHistory } from '@/features/patients/hooks/usePatientHistory';
+import { usePrintRegistrationSlip } from '@/features/reception/hooks/useReception';
+import { usePrintInvoice } from '@/features/billing/hooks/useBilling';
+import { usePrintLabBill } from '@/features/lab/hooks/useLab';
+import { usePrintMedicineBill } from '@/features/pharmacy/hooks/usePharmacy';
+import { useAuth } from '@/features/auth/hooks/useAuth';
 import {
   ALL_VITALS_FIELDS,
   VITAL_FIELD_LABELS,
@@ -16,6 +22,7 @@ import { VisitProcedureDisplay } from '@/features/visits/components/VisitProcedu
 import { VISIT_STATUS_BADGE_VARIANT } from '@/shared/constants/visitStatus';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Badge } from '@/shared/components/ui/Badge';
+import { Button } from '@/shared/components/ui/Button';
 import { SearchSelect } from '@/shared/components/SearchSelect';
 import { PageLoader } from '@/shared/components/PageLoader';
 import { PageError } from '@/shared/components/PageError';
@@ -58,6 +65,53 @@ function MoneyStatusBadge({ status }) {
   );
 }
 
+/** Wraps one of this app's existing `usePrint*` mutations (registration
+ * slip / invoice receipt / lab bill / medicine bill — each already
+ * fetches its own HTML via the Central Print Service and hands it to
+ * `openAndPrintHtml`, completely unmodified here) with the same
+ * "one print job in flight at a time, per-row loading state, inline
+ * error message" boilerplate every existing print button in this app
+ * already repeats individually (MyRegistrations.jsx, MyLabBills.jsx,
+ * MyMedicineBills.jsx, PatientVisitHistoryDialog.jsx,
+ * BillingWorkspace.jsx) — factored into one local helper only because
+ * this one page now hosts four of these side by side, never a new
+ * print mechanism of its own. Each section keeps its own independent
+ * instance (printing a lab bill never disables the visits table's own
+ * buttons), matching how these were always independent on their
+ * original, separate pages. */
+function usePrintAction(mutateAsync) {
+  const [printingId, setPrintingId] = useState(null);
+  const [error, setError] = useState(null);
+
+  async function handlePrint(id) {
+    if (printingId) return;
+    setError(null);
+    setPrintingId(id);
+    try {
+      await mutateAsync(id);
+    } catch (err) {
+      setError(err.message || 'Unable to print — you can try again.');
+    } finally {
+      setPrintingId(null);
+    }
+  }
+
+  return { printingId, error, handlePrint };
+}
+
+/** Same `<Button size="sm" variant="outline">` + `Printer` icon shape
+ * every print action in this app already uses — never a new button
+ * style for this page specifically. */
+function PrintButton({ label, id, printingId, onPrint }) {
+  const isPrintingThisRow = printingId === id;
+  return (
+    <Button size="sm" variant="outline" disabled={Boolean(printingId)} onClick={() => onPrint(id)}>
+      <Printer className="h-3.5 w-3.5" />
+      {isPrintingThisRow ? 'Printing…' : label}
+    </Button>
+  );
+}
+
 function SectionCard({ title, count, children }) {
   return (
     <Card>
@@ -71,10 +125,32 @@ function SectionCard({ title, count, children }) {
   );
 }
 
+/** `GET /reception/visits/{id}/slip/print` (the same endpoint
+ * MyRegistrations.jsx/PatientVisitHistoryDialog.jsx's own "Print Slip"
+ * buttons call) requires `reception:register_visit` OR
+ * `reception:view_slip` — see backend/app/modules/reception/router.py's
+ * `print_registration_slip`. That's a *different* permission than the
+ * `visits:read` this whole section is already gated on server-side
+ * (backend/app/modules/patient_history/router.py), so unlike the
+ * Invoices/Lab Bills/Pharmacy Bills sections below (whose own print
+ * endpoints reuse the exact same read permission that already gates
+ * showing the section at all), this button needs its own extra
+ * frontend check — Vitals staff, for instance, can see this Visits
+ * section (holds visits:read) but holds neither reception permission,
+ * so must never see a button that would only 403 if clicked. */
 function VisitsSection({ visits }) {
+  const { hasPermission } = useAuth();
+  const printSlip = usePrintRegistrationSlip();
+  const { printingId, error, handlePrint } = usePrintAction((visitId) =>
+    printSlip.mutateAsync(visitId),
+  );
+  const canPrintSlip =
+    hasPermission('reception:register_visit') || hasPermission('reception:view_slip');
+
   if (!visits?.length) return null;
   return (
     <SectionCard title="Visits" count={visits.length}>
+      {error ? <p className="mb-3 text-sm text-destructive">{error}</p> : null}
       <Table>
         <TableHeader>
           <TableRow>
@@ -83,6 +159,7 @@ function VisitsSection({ visits }) {
             <TableHead>Procedure</TableHead>
             <TableHead>Status</TableHead>
             <TableHead className="text-right">Amount</TableHead>
+            {canPrintSlip ? <TableHead /> : null}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -108,6 +185,16 @@ function VisitsSection({ visits }) {
               <TableCell className="whitespace-nowrap text-right font-medium tabular-nums">
                 {money(visit.amount)}
               </TableCell>
+              {canPrintSlip ? (
+                <TableCell>
+                  <PrintButton
+                    label="Print Slip"
+                    id={visit.id}
+                    printingId={printingId}
+                    onPrint={handlePrint}
+                  />
+                </TableCell>
+              ) : null}
             </TableRow>
           ))}
         </TableBody>
@@ -204,10 +291,22 @@ function ConsultationsSection({ consultations }) {
   );
 }
 
+/** `GET /billing/invoices/{id}/print` requires `billing:read` — the
+ * exact same permission this whole Invoices section is already gated
+ * on server-side (backend/app/modules/patient_history/router.py), so
+ * unlike Visits above, no extra frontend permission check is needed
+ * here: anyone who can see this section at all can already print from
+ * it. */
 function InvoicesSection({ invoices }) {
+  const printInvoice = usePrintInvoice();
+  const { printingId, error, handlePrint } = usePrintAction((invoiceId) =>
+    printInvoice.mutateAsync(invoiceId),
+  );
+
   if (!invoices?.length) return null;
   return (
     <SectionCard title="Billing" count={invoices.length}>
+      {error ? <p className="mb-3 text-sm text-destructive">{error}</p> : null}
       <Table>
         <TableHeader>
           <TableRow>
@@ -216,6 +315,7 @@ function InvoicesSection({ invoices }) {
             <TableHead className="text-right">Total</TableHead>
             <TableHead className="text-right">Paid</TableHead>
             <TableHead className="text-right">Discount</TableHead>
+            <TableHead />
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -236,6 +336,14 @@ function InvoicesSection({ invoices }) {
               <TableCell className="whitespace-nowrap text-right tabular-nums">
                 {Number(invoice.discount_amount) > 0 ? money(invoice.discount_amount) : '—'}
               </TableCell>
+              <TableCell>
+                <PrintButton
+                  label="Print Receipt"
+                  id={invoice.id}
+                  printingId={printingId}
+                  onPrint={handlePrint}
+                />
+              </TableCell>
             </TableRow>
           ))}
         </TableBody>
@@ -244,10 +352,22 @@ function InvoicesSection({ invoices }) {
   );
 }
 
-function BillsSection({ title, bills }) {
+/** Shared by both Lab Bills and Pharmacy Bills below — same row shape,
+ * different underlying bill type, so the print mutation (`usePrintLabBill`
+ * or `usePrintMedicineBill`) is threaded in via `printMutateAsync` from
+ * each call site rather than picked inside this component; both of
+ * those endpoints (`GET /lab/bills/{id}/print`, `GET /pharmacy/bills/
+ * {id}/print`) require exactly the same read permission
+ * (`lab:read`/`pharmacy:read`) that already gates showing each section
+ * at all, so — like Invoices, unlike Visits — no extra frontend
+ * permission check is needed here either. */
+function BillsSection({ title, bills, printLabel, printMutateAsync }) {
+  const { printingId, error, handlePrint } = usePrintAction(printMutateAsync);
+
   if (!bills?.length) return null;
   return (
     <SectionCard title={title} count={bills.length}>
+      {error ? <p className="mb-3 text-sm text-destructive">{error}</p> : null}
       <Table>
         <TableHeader>
           <TableRow>
@@ -256,6 +376,7 @@ function BillsSection({ title, bills }) {
             <TableHead className="text-right">Items</TableHead>
             <TableHead className="text-right">Total</TableHead>
             <TableHead className="text-right">Paid</TableHead>
+            <TableHead />
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -273,6 +394,14 @@ function BillsSection({ title, bills }) {
               </TableCell>
               <TableCell className="whitespace-nowrap text-right tabular-nums">
                 {money(bill.amount_paid)}
+              </TableCell>
+              <TableCell>
+                <PrintButton
+                  label={printLabel}
+                  id={bill.id}
+                  printingId={printingId}
+                  onPrint={handlePrint}
+                />
               </TableCell>
             </TableRow>
           ))}
@@ -303,6 +432,8 @@ export function PatientHistorySearch() {
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [searchLabel, setSearchLabel] = useState('');
   const { history, isLoading, isError, error, refetch } = usePatientHistory(selectedPatient?.id);
+  const printLabBill = usePrintLabBill();
+  const printMedicineBill = usePrintMedicineBill();
 
   return (
     <div className="flex flex-col gap-6">
@@ -354,8 +485,18 @@ export function PatientHistorySearch() {
           <VitalsSection vitals={history.vitals} ageYears={history.patient.age_years} />
           <ConsultationsSection consultations={history.consultations} />
           <InvoicesSection invoices={history.invoices} />
-          <BillsSection title="Lab Bills" bills={history.lab_bills} />
-          <BillsSection title="Pharmacy Bills" bills={history.pharmacy_bills} />
+          <BillsSection
+            title="Lab Bills"
+            bills={history.lab_bills}
+            printLabel="Print Slip"
+            printMutateAsync={printLabBill.mutateAsync}
+          />
+          <BillsSection
+            title="Pharmacy Bills"
+            bills={history.pharmacy_bills}
+            printLabel="Print Slip"
+            printMutateAsync={printMedicineBill.mutateAsync}
+          />
         </div>
       ) : null}
     </div>
