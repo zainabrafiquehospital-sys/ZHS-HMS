@@ -32,6 +32,18 @@ export const patientsService = {
     return httpClient.get(`/patients/${patientId}`);
   },
 
+  // The Patient History search's own aggregated-timeline fetch, once a
+  // patient has been picked — backed by `GET /patients/{id}/history`
+  // (see backend/app/modules/patient_history/router.py). Every section
+  // in the response may independently be `null` (the caller's role
+  // doesn't hold that section's own other permission) or `[]` (it
+  // does, this patient just has none) — see that endpoint's own
+  // docstring; usePatientHistory (features/patients/hooks/
+  // usePatientHistory.js) is what tells the two apart for rendering.
+  getHistory(patientId) {
+    return httpClient.get(`/patients/${patientId}/history`);
+  },
+
   // The Admin Patient Directory's full, real server-side paginated/
   // sortable/searchable listing — deliberately distinct from `search`
   // above (a name-lookup autocomplete, always page_size=20/sorted by

@@ -10,6 +10,7 @@ from app.modules.consultation.router import router as consultation_router
 from app.modules.dashboard.router import router as dashboard_router
 from app.modules.inventory.router import router as inventory_router
 from app.modules.lab.router import router as lab_router
+from app.modules.patient_history.router import router as patient_history_router
 from app.modules.patients.router import router as patients_router
 from app.modules.pharmacy.router import router as pharmacy_router
 from app.modules.queue.router import router as queue_router
@@ -25,6 +26,7 @@ api_v1_router.include_router(user_router)
 api_v1_router.include_router(role_router)
 api_v1_router.include_router(permission_router)
 api_v1_router.include_router(patients_router)
+api_v1_router.include_router(patient_history_router)
 api_v1_router.include_router(visits_router)
 api_v1_router.include_router(queue_router)
 api_v1_router.include_router(reception_router)

@@ -624,3 +624,17 @@ class PharmacyService:
         """Read-only aggregate added for the Admin "Employee Accounts &
         Stats" page — see MedicineBillRepository.count_and_revenue_by_creator."""
         return await self._bill_repo.count_and_revenue_by_creator()
+
+    async def list_bills_for_visits(
+        self, visit_ids: list[UUID]
+    ) -> list[tuple[MedicineBill, int, list[str]]]:
+        """`(bill, item_count, payment_methods)` triples for every
+        medicine bill linked to one of the given Visits, oldest first —
+        identical shape to `list_bill_summaries_for_day`/
+        `list_bills_for_creator` above, backing the Patient History
+        aggregation module (app/modules/patient_history/service.py)."""
+        bills = await self._bill_repo.list_for_visit_ids(visit_ids)
+        bill_ids = [bill.id for bill in bills]
+        counts = await self._item_repo.count_items_for_bills(bill_ids)
+        methods = await self._payment_repo.list_distinct_payment_methods_for_bills(bill_ids)
+        return [(bill, counts.get(bill.id, 0), methods.get(bill.id, [])) for bill in bills]

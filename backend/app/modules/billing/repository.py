@@ -82,6 +82,23 @@ class InvoiceRepository(BaseRepository[Invoice]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_for_visit_ids(self, visit_ids: list[UUID]) -> list[Invoice]:
+        """Batched sibling of `list_for_visit` — every Invoice across the
+        given visits, oldest first. Used by the Patient History
+        aggregation module (app/modules/patient_history/service.py) to
+        avoid one query per visit — same N+1-avoidance shape as
+        app/modules/vitals/repository.py's `list_for_visit_ids`."""
+        if not visit_ids:
+            return []
+        stmt = self._exclude_soft_deleted(
+            select(Invoice)
+            .where(Invoice.visit_id.in_(visit_ids))
+            .order_by(Invoice.created_at.asc()),
+            include_deleted=False,
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_today_summary(self) -> tuple[Decimal, int, int]:
         """Backs the Reception/Billing Dashboard (§22): (revenue
         collected today, invoices paid today, currently-open invoices).

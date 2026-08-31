@@ -103,6 +103,7 @@ from app.modules.inventory.constants import (
 )
 from app.modules.patients.constants import (
     PERMISSION_PATIENTS_CREATE,
+    PERMISSION_PATIENTS_HISTORY_READ,
     PERMISSION_PATIENTS_READ,
     PERMISSION_PATIENTS_UPDATE,
 )
@@ -209,6 +210,14 @@ PERMISSION_CATALOG: list[tuple[str, str, str]] = [
     (PERMISSION_PATIENTS_CREATE, "Create Patients", "Register a new patient record."),
     (PERMISSION_PATIENTS_READ, "View Patients", "View patient records."),
     (PERMISSION_PATIENTS_UPDATE, "Update Patients", "Edit patient records."),
+    (
+        PERMISSION_PATIENTS_HISTORY_READ,
+        "View Patient History",
+        "View a patient's full aggregated history (visits, vitals, consultations, "
+        "billing, lab bills, pharmacy bills) via the cross-module Patient History "
+        "search. Each section is further scoped to whichever of those the actor "
+        "already holds read access to on their own.",
+    ),
     (PERMISSION_QUEUE_READ, "View Queue", "View queue worklists and history."),
     (PERMISSION_QUEUE_MANAGE, "Manage Queue", "Start serving a queue entry."),
     (
@@ -354,6 +363,13 @@ RECEPTIONIST_PERMISSION_CODES: list[str] = [
     # permission was added, see reception/constants.py's own docstring),
     # so only the "Clear Revenue" mutation needs its own grant here.
     PERMISSION_RECEPTION_CLEAR_OWN_REVENUE,  # POST /reception/revenue/clear
+    # Patient History search (2026-08-31 addition) — the new sidebar
+    # entry/page every one of Reception/Vitals/Doctor/admin gets (see
+    # app/modules/patient_history/router.py's own docstring); gates
+    # reaching the search itself, not which sections it returns (those
+    # are separately scoped per-actor against the permissions already
+    # listed above/below).
+    PERMISSION_PATIENTS_HISTORY_READ,
 ]
 # Deliberately NOT included, despite being in the originally proposed set —
 # not exercised by any reception UI code path as of this build, so excluded
@@ -405,6 +421,9 @@ VITALS_PERMISSION_CODES: list[str] = [
     PERMISSION_INVENTORY_READ,
     PERMISSION_INVENTORY_RECORD_USAGE,
     PERMISSION_INVENTORY_REQUEST_RESTOCK,
+    # Patient History search (2026-08-31 addition) — same grant/reasoning
+    # as RECEPTIONIST_PERMISSION_CODES' own identical addition above.
+    PERMISSION_PATIENTS_HISTORY_READ,
 ]
 
 

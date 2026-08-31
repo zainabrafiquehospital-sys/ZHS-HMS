@@ -37,4 +37,9 @@ export const ROUTES = {
   // deliberately isn't under the Admin-only /admin/* tree.
   PATIENTS: '/patients',
   ADMIN_EMPLOYEES: '/admin/employees',
+  // A top-level route, shared by Reception/Vitals/Doctor/admin (all four
+  // hold `patients:history:read`) — see app/(dashboard)/patient-history/
+  // layout.jsx's own docstring for why this is deliberately its own
+  // permission/route, not folded into /patients above.
+  PATIENT_HISTORY: '/patient-history',
 };

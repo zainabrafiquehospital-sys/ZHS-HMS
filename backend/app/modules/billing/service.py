@@ -450,6 +450,11 @@ class BillingService:
     async def list_invoices_for_visit(self, visit_id: UUID) -> list[Invoice]:
         return await self._invoice_repo.list_for_visit(visit_id)
 
+    async def list_invoices_for_visits(self, visit_ids: list[UUID]) -> list[Invoice]:
+        """Thin passthrough to InvoiceRepository.list_for_visit_ids —
+        see that method's own docstring."""
+        return await self._invoice_repo.list_for_visit_ids(visit_ids)
+
     async def get_line_items(self, invoice_id: UUID) -> list[InvoiceLineItem]:
         return await self._line_item_repo.list_for_invoice(invoice_id)
 

@@ -24,6 +24,25 @@ class ConsultationRepository(BaseRepository[Consultation]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def list_for_visit_ids(self, visit_ids: list[UUID]) -> list[Consultation]:
+        """Batched sibling of `get_active_for_visit` — every Consultation
+        (any status, not only the active one) across the given visits,
+        oldest first. Used by the Patient History aggregation module
+        (app/modules/patient_history/service.py) to show a patient's
+        full consultation history, not just whichever one is currently
+        in progress. Mirrors app/modules/vitals/repository.py's
+        `list_for_visit_ids` exactly — same N+1-avoidance shape."""
+        if not visit_ids:
+            return []
+        stmt = self._exclude_soft_deleted(
+            select(Consultation)
+            .where(Consultation.visit_id.in_(visit_ids))
+            .order_by(Consultation.created_at.asc()),
+            include_deleted=False,
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def count_completed_by_doctor(self) -> dict[UUID, int]:
         """Backs the Admin "Employee Accounts & Stats" page's per-doctor
         "consultations completed" figure — one `GROUP BY` query for

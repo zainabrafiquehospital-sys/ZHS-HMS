@@ -17,6 +17,7 @@ import {
   Users,
   ListChecks,
   Warehouse,
+  History,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { ROUTES } from '@/core/constants/routes';
@@ -78,6 +79,19 @@ const NAV_ITEMS = [
     label: 'Patient Directory',
     icon: BookUser,
     permission: 'patients:read',
+  },
+  // Reception/Vitals/Doctor/admin all hold `patients:history:read`
+  // (2026-08-31 addition) — a deliberately separate permission from
+  // `patients:read` above, see that route's own layout.jsx docstring.
+  // Which sections of any given patient's history actually render is a
+  // further, per-section permission check the backend makes on its own
+  // (app/modules/patient_history/router.py) — this sidebar gate only
+  // controls reaching the search at all.
+  {
+    href: ROUTES.PATIENT_HISTORY,
+    label: 'Patient History',
+    icon: History,
+    permission: 'patients:history:read',
   },
   // Gated on users:read, not a module-specific permission — see
   // core/constants/access.js's identical MODULE_ACCESS entry for why

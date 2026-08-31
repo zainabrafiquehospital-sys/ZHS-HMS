@@ -150,6 +150,25 @@ class LabBillRepository(BaseRepository[LabBill]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all()), total
 
+    async def list_for_patient(self, patient_id: UUID) -> list[LabBill]:
+        """Every lab bill actually linked to this Patient row (`patient_id`
+        set) — never a "manual"/walk-in bill, which by construction has
+        no `patient_id` at all (see this module's own docstring on the
+        mutual-exclusivity CHECK constraint) and so could never belong to
+        a specific Patient's history regardless. Used by the Patient
+        History aggregation module (app/modules/patient_history/
+        service.py) — unlike every other module in that aggregation,
+        LabBill needs no visit_id join at all, since it already carries
+        `patient_id` directly."""
+        stmt = self._exclude_soft_deleted(
+            select(LabBill)
+            .where(LabBill.patient_id == patient_id)
+            .order_by(LabBill.created_at.asc()),
+            include_deleted=False,
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def list_for_day(self, day: datetime) -> list[LabBill]:
         """Every lab bill created on `day`'s UTC calendar date — the
         Admin Overview's Lab Bills tab, the same UTC-calendar-day window

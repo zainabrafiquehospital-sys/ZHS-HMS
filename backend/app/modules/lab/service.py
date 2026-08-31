@@ -569,6 +569,20 @@ class LabService:
         methods = await self._payment_repo.list_distinct_payment_methods_for_bills(bill_ids)
         return [(bill, counts.get(bill.id, 0), methods.get(bill.id, [])) for bill in bills], total
 
+    async def list_bills_for_patient(
+        self, patient_id: UUID
+    ) -> list[tuple[LabBill, int, list[str]]]:
+        """`(bill, item_count, payment_methods)` triples for every lab
+        bill actually linked to this Patient, oldest first — identical
+        shape to `list_bill_summaries_for_day`/`list_bills_for_creator`
+        above, backing the Patient History aggregation module
+        (app/modules/patient_history/service.py)."""
+        bills = await self._bill_repo.list_for_patient(patient_id)
+        bill_ids = [bill.id for bill in bills]
+        counts = await self._item_repo.count_items_for_bills(bill_ids)
+        methods = await self._payment_repo.list_distinct_payment_methods_for_bills(bill_ids)
+        return [(bill, counts.get(bill.id, 0), methods.get(bill.id, [])) for bill in bills]
+
     async def count_and_revenue_by_creator(self) -> dict[UUID, tuple[int, Decimal]]:
         """Read-only aggregate for the Admin "Employee Accounts &
         Stats" page — see LabBillRepository.count_and_revenue_by_creator."""

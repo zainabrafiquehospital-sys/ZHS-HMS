@@ -260,6 +260,11 @@ class ConsultationService:
     async def get_active_for_visit(self, visit_id: UUID) -> Consultation | None:
         return await self._consultation_repo.get_active_for_visit(visit_id)
 
+    async def list_for_visits(self, visit_ids: list[UUID]) -> list[Consultation]:
+        """Thin passthrough to ConsultationRepository.list_for_visit_ids —
+        see that method's own docstring."""
+        return await self._consultation_repo.list_for_visit_ids(visit_ids)
+
     async def count_completed_by_doctor(self) -> dict[UUID, int]:
         """Read-only aggregate added for the Admin "Employee Accounts &
         Stats" page — see ConsultationRepository.count_completed_by_doctor."""

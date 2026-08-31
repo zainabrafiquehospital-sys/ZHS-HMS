@@ -195,6 +195,28 @@ class MedicineBillRepository(BaseRepository[MedicineBill]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_for_visit_ids(self, visit_ids: list[UUID]) -> list[MedicineBill]:
+        """Every medicine bill actually linked to one of the given
+        Visits (`visit_id` set) — never a "manual"/walk-in bill, which
+        by construction has no `visit_id` at all (see this module's own
+        docstring on the mutual-exclusivity CHECK constraint). Used by
+        the Patient History aggregation module (app/modules/
+        patient_history/service.py), the same visit-ID-batch shape as
+        app/modules/vitals/repository.py's `list_for_visit_ids` —
+        MedicineBill has no `patient_id` column of its own (unlike
+        LabBill), so this is the only path from patient to their
+        medicine bills."""
+        if not visit_ids:
+            return []
+        stmt = self._exclude_soft_deleted(
+            select(MedicineBill)
+            .where(MedicineBill.visit_id.in_(visit_ids))
+            .order_by(MedicineBill.created_at.asc()),
+            include_deleted=False,
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
 
 class MedicineBillItemRepository(BaseRepository[MedicineBillItem]):
     model = MedicineBillItem
