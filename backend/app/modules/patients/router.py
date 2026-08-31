@@ -71,6 +71,30 @@ async def list_patients(
     return success_envelope(body, meta)
 
 
+@router.get("/lookup/by-phone")
+async def find_patients_by_phone(
+    phone_number: str = Query(min_length=1, max_length=20),
+    patient_service: PatientService = Depends(get_patient_service),
+    _actor: User = Depends(require_permission(PERMISSION_PATIENTS_READ)),
+) -> dict:
+    """Exact-match lookup, backing Reception's returning-patient prompt
+    (RegisterVisitForm.jsx, on the phone number field's blur) — never
+    the fuzzy `search` param `GET /patients` (this same router's
+    top-level listing) already offers, see PatientRepository.
+    list_by_phone_number's own docstring. `/lookup/by-phone` is a
+    two-segment path, `GET /patients/{patient_id}` below a one-segment
+    one — different segment counts, so Starlette/FastAPI's routing
+    can never confuse the two regardless of declaration order; placed
+    above it anyway so every literal-path route in this file reads
+    top-to-bottom before the catch-all `{patient_id}` one. Returns a
+    list — zero, one, or (family
+    members sharing a household number) more than one match, never a
+    404 for zero."""
+    patients = await patient_service.find_by_phone_number(phone_number)
+    body = [PatientOut.from_patient(patient).model_dump(mode="json") for patient in patients]
+    return success_envelope(body)
+
+
 @router.get("/{patient_id}")
 async def get_patient(
     patient_id: UUID,

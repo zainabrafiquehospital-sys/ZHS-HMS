@@ -44,6 +44,19 @@ export const patientsService = {
     return httpClient.get(`/patients/${patientId}/history`);
   },
 
+  // Exact phone-number match — backs Reception's returning-patient
+  // prompt (RegisterVisitForm.jsx, on the phone number field's blur).
+  // Deliberately NOT `search` above (a fuzzy, multi-field ILIKE), see
+  // backend/app/modules/patients/repository.py's
+  // `list_by_phone_number` docstring. Always returns an array — zero,
+  // one, or (family members sharing a household number) more than one
+  // match, never a 404.
+  findByPhoneNumber(phoneNumber) {
+    return httpClient.get('/patients/lookup/by-phone', {
+      params: { phone_number: phoneNumber },
+    });
+  },
+
   // The Admin Patient Directory's full, real server-side paginated/
   // sortable/searchable listing — deliberately distinct from `search`
   // above (a name-lookup autocomplete, always page_size=20/sorted by

@@ -170,6 +170,120 @@ async def test_get_patient_returns_404_for_unknown_id(api_client, real_session, 
     assert resp.json()["error"]["code"] == "PATIENT_NOT_FOUND"
 
 
+# ---------------------------------------------------------------------
+# Exact phone-number lookup (2026-08-31 addition, Feature 2's
+# returning-patient detection) — GET /patients/lookup/by-phone
+# ---------------------------------------------------------------------
+
+
+async def test_find_by_phone_requires_authentication(api_client):
+    resp = await api_client.get(
+        "/api/v1/patients/lookup/by-phone", params={"phone_number": "03001234567"}
+    )
+
+    assert resp.status_code == 401
+
+
+async def test_find_by_phone_without_permission_is_forbidden(api_client, real_session):
+    _actor, access_token = await _create_and_login(api_client, real_session, "no-perm-phone")
+
+    resp = await api_client.get(
+        "/api/v1/patients/lookup/by-phone",
+        params={"phone_number": "03001234567"},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_find_by_phone_returns_empty_list_for_no_match(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "phone-no-match")
+    await grant_permission(actor, PERMISSION_PATIENTS_READ)
+
+    resp = await api_client.get(
+        "/api/v1/patients/lookup/by-phone",
+        params={"phone_number": "03009999999"},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"] == []
+
+
+async def test_find_by_phone_exact_match_only_not_partial(
+    api_client, real_session, grant_permission
+):
+    """A number that merely *contains* the typed digits as a substring
+    must never match — this is the whole reason this endpoint exists
+    separately from `search`'s own fuzzy ILIKE (see PatientRepository.
+    list_by_phone_number's own docstring)."""
+    actor, access_token = await _create_and_login(api_client, real_session, "phone-exact-only")
+    await grant_permission(actor, PERMISSION_PATIENTS_CREATE)
+    await grant_permission(actor, PERMISSION_PATIENTS_READ)
+    # A number unique to this test run, not a fixed literal — this
+    # suite runs against a real, persistent, shared dev database (see
+    # tests/conftest.py's own module docstring on `real_session`), so a
+    # hardcoded phone number risks colliding with genuinely unrelated
+    # rows already on file from other tests/manual use.
+    full_number = f"03{uuid7().hex[:9]}"
+    await api_client.post(
+        "/api/v1/patients",
+        json=_valid_payload(f"{TEST_PATIENT_NAME_PREFIX}PhoneExact", phone_number=full_number),
+        headers=_auth_header(access_token),
+    )
+
+    exact_resp = await api_client.get(
+        "/api/v1/patients/lookup/by-phone",
+        params={"phone_number": full_number},
+        headers=_auth_header(access_token),
+    )
+    partial_resp = await api_client.get(
+        "/api/v1/patients/lookup/by-phone",
+        params={"phone_number": full_number[:-1]},
+        headers=_auth_header(access_token),
+    )
+
+    assert len(exact_resp.json()["data"]) == 1
+    assert exact_resp.json()["data"][0]["phone_number"] == full_number
+    assert partial_resp.json()["data"] == []
+
+
+async def test_find_by_phone_returns_every_match_for_a_shared_number(
+    api_client, real_session, grant_permission
+):
+    """Family members sharing a household number — the multi-match case
+    ReturningPatientDialog.jsx's own list rendering exists for."""
+    actor, access_token = await _create_and_login(api_client, real_session, "phone-shared")
+    await grant_permission(actor, PERMISSION_PATIENTS_CREATE)
+    await grant_permission(actor, PERMISSION_PATIENTS_READ)
+    # Unique to this test run — see test_find_by_phone_exact_match_only_not_partial's
+    # identical comment above on why a fixed literal is unsafe here.
+    shared_number = f"03{uuid7().hex[:9]}"
+    for name_suffix in ("SharedOne", "SharedTwo"):
+        await api_client.post(
+            "/api/v1/patients",
+            json=_valid_payload(
+                f"{TEST_PATIENT_NAME_PREFIX}{name_suffix}", phone_number=shared_number
+            ),
+            headers=_auth_header(access_token),
+        )
+
+    resp = await api_client.get(
+        "/api/v1/patients/lookup/by-phone",
+        params={"phone_number": shared_number},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 200
+    names = {row["full_name"] for row in resp.json()["data"]}
+    assert names == {
+        f"{TEST_PATIENT_NAME_PREFIX}SharedOne",
+        f"{TEST_PATIENT_NAME_PREFIX}SharedTwo",
+    }
+
+
 async def test_update_patient_changes_address(api_client, real_session, grant_permission):
     actor, access_token = await _create_and_login(api_client, real_session, "update-patient")
     await grant_permission(actor, PERMISSION_PATIENTS_CREATE)

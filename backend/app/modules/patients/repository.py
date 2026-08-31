@@ -59,6 +59,28 @@ class PatientRepository(BaseRepository[Patient]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def list_by_phone_number(self, phone_number: str) -> list[Patient]:
+        """Exact `phone_number` match — deliberately not `search`'s own
+        `ILIKE '%term%'` (that's a fuzzy, multi-field lookup autocomplete;
+        this backs the returning-patient prompt Reception's registration
+        form shows on phone-number blur, which needs to say "this exact
+        number already belongs to someone" without also firing on any
+        number that merely *contains* the typed digits as a substring).
+        A list, not `Patient | None` like `get_by_mr_number`/`get_by_cnic`
+        above — `phone_number` carries no uniqueness constraint (unlike
+        `mr_number`/`cnic`), so more than one patient (e.g. family
+        members sharing a household number) can legitimately share one.
+        Oldest-registered first, so the prompt's ordering is stable and
+        deterministic across repeated lookups of the same number."""
+        stmt = self._exclude_soft_deleted(
+            select(Patient)
+            .where(Patient.phone_number == phone_number)
+            .order_by(Patient.created_at.asc()),
+            include_deleted=False,
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def list_by_ids(self, patient_ids: list[UUID]) -> list[Patient]:
         """One query for every given id, not one `get_by_id` per id —
         added (2026-08-26) for the Inventory module's usage-history print

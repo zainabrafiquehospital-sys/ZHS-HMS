@@ -102,6 +102,12 @@ class PatientService:
             raise PatientNotFoundError
         return patient
 
+    async def find_by_phone_number(self, phone_number: str) -> list[Patient]:
+        """Thin passthrough to PatientRepository.list_by_phone_number —
+        see that method's own docstring for why this is an exact match,
+        not `list_patients`' own fuzzy multi-field search."""
+        return await self._patient_repo.list_by_phone_number(phone_number)
+
     async def list_by_ids(self, patient_ids: list[UUID]) -> list[Patient]:
         """Batch lookup — see PatientRepository.list_by_ids's own
         docstring. Never raises PatientNotFoundError for a missing id
