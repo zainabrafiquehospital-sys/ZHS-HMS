@@ -74,12 +74,17 @@ function VisitLinkPanel({
         </CardHeader>
         <CardContent className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-col gap-0.5 text-sm">
+            {/* The genuine "this bill will be tied to a real patient
+             * record" confirmation — only ever shown once a Visit is
+             * actually selected, since that's the only thing
+             * handleFinalize's own visit_id actually reflects (see
+             * this component's own module docstring). */}
             <span className="font-medium text-foreground">
-              {selectedPatient.full_name} (MR: {selectedPatient.mr_number})
+              Linked to {selectedPatient.full_name}&apos;s visit{' '}
+              <span className="font-mono">{selectedVisit.queue_token}</span>
             </span>
             <span className="text-muted-foreground">
-              Queue Token <span className="font-mono">{selectedVisit.queue_token}</span> ·{' '}
-              {selectedVisit.procedure} ·{' '}
+              MR: {selectedPatient.mr_number} · {selectedVisit.procedure} ·{' '}
               {formatDisplayDate(displayDayKey(selectedVisit.created_at))} at{' '}
               {formatDisplayTime(selectedVisit.created_at)}
             </span>
@@ -168,52 +173,78 @@ function VisitLinkPanel({
                 selectedLabel={selectedPatient ? `${selectedPatient.full_name}` : ''}
                 onSelect={(patient) => onSelectPatient(patient)}
               />
-              {selectedPatient ? (
-                <p className="text-xs text-muted-foreground">Selected: {selectedPatient.full_name}</p>
-              ) : (
+              {/* Deliberately NOT a "Selected: {name}" confirmation —
+               * selecting a patient here does nothing on its own
+               * (handleFinalize never sends selectedPatient at all,
+               * only selectedVisit's id); a confirmation-shaped message
+               * at this stage previously read as "linking done" when
+               * it wasn't, which is the exact bug this reworked prompt
+               * fixes. The real "this bill will be tied to a patient
+               * record" confirmation only appears once a Visit is
+               * actually selected — see the "Linked to ...'s visit"
+               * card above. */}
+              {!selectedPatient ? (
                 <p className="text-xs text-muted-foreground">
                   Leave unselected to bill this as a walk-in sale.
                 </p>
-              )}
+              ) : null}
             </div>
 
             {selectedPatient ? (
               isLoading ? (
-                <p className="text-sm text-muted-foreground">Loading visits…</p>
+                <p className="text-sm text-muted-foreground">
+                  Loading {selectedPatient.full_name}&apos;s visits…
+                </p>
               ) : (visits ?? []).length === 0 ? (
-                <p className="text-sm text-muted-foreground">No visits found for this patient.</p>
+                // No visit to select means there is structurally no way
+                // to link this bill (MedicineBill has no patient_id
+                // column of its own — only visit_id, see app/modules/
+                // pharmacy/models.py's own docstring) — spelled out
+                // explicitly rather than left as a silent dead end.
+                <div className="flex items-center gap-2 rounded-md bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+                  <span>
+                    {selectedPatient.full_name} has no registered visits — finalizing this bill
+                    now will create it as anonymous, with no patient record attached.
+                  </span>
+                </div>
               ) : (
-                <ul className="flex flex-col gap-2">
-                  {visits.map((visit) => (
-                    <li key={visit.id}>
-                      <button
-                        type="button"
-                        onClick={() => onSelectVisit(visit)}
-                        className="flex w-full flex-wrap items-center justify-between gap-2 rounded-md border border-border px-3 py-2 text-left text-sm hover:bg-muted"
-                      >
-                        <span className="flex items-center gap-2">
-                          <span className="font-mono font-medium text-foreground">
-                            {visit.queue_token}
+                <div className="flex flex-col gap-2">
+                  <p className="rounded-md bg-primary/10 px-3 py-2 text-sm font-medium text-primary">
+                    Select one of {selectedPatient.full_name}&apos;s visits below to link this
+                    bill to their record.
+                  </p>
+                  <ul className="flex flex-col gap-2">
+                    {visits.map((visit) => (
+                      <li key={visit.id}>
+                        <button
+                          type="button"
+                          onClick={() => onSelectVisit(visit)}
+                          className="flex w-full flex-wrap items-center justify-between gap-2 rounded-md border border-border px-3 py-2 text-left text-sm hover:bg-muted"
+                        >
+                          <span className="flex items-center gap-2">
+                            <span className="font-mono font-medium text-foreground">
+                              {visit.queue_token}
+                            </span>
+                            <VisitProcedureDisplay
+                              visit={visit}
+                              className="text-muted-foreground"
+                            />
+                            <Badge
+                              variant={VISIT_STATUS_BADGE_VARIANT[visit.status] ?? 'outline'}
+                              className="capitalize"
+                            >
+                              {visit.status.replaceAll('_', ' ')}
+                            </Badge>
                           </span>
-                          <VisitProcedureDisplay
-                            visit={visit}
-                            className="text-muted-foreground"
-                          />
-                          <Badge
-                            variant={VISIT_STATUS_BADGE_VARIANT[visit.status] ?? 'outline'}
-                            className="capitalize"
-                          >
-                            {visit.status.replaceAll('_', ' ')}
-                          </Badge>
-                        </span>
-                        <span className="text-xs text-muted-foreground">
-                          {formatDisplayDate(displayDayKey(visit.created_at))} at{' '}
-                          {formatDisplayTime(visit.created_at)}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
+                          <span className="text-xs text-muted-foreground">
+                            {formatDisplayDate(displayDayKey(visit.created_at))} at{' '}
+                            {formatDisplayTime(visit.created_at)}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )
             ) : null}
           </>
