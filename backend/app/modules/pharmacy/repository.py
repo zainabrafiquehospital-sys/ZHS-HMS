@@ -217,6 +217,23 @@ class MedicineBillRepository(BaseRepository[MedicineBill]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_by_ids(self, medicine_bill_ids: list[UUID]) -> list[MedicineBill]:
+        """One query for every given id — same `.in_(...)` batch-fetch
+        shape as `PatientRepository.list_by_ids`. Backs the Patient
+        History unified feed's own page-enrichment step (app/modules/
+        patient_history/repository.py's union query resolves ids first,
+        across three tables; this is the MedicineBill side of enriching
+        just that one page). An empty input list short-circuits without
+        a wasted `WHERE id IN ()` query."""
+        if not medicine_bill_ids:
+            return []
+        stmt = self._exclude_soft_deleted(
+            select(MedicineBill).where(MedicineBill.id.in_(medicine_bill_ids)),
+            include_deleted=False,
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
 
 class MedicineBillItemRepository(BaseRepository[MedicineBillItem]):
     model = MedicineBillItem

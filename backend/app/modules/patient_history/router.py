@@ -1,31 +1,42 @@
-"""HTTP endpoint for the Patient History module: `GET /patients/{patient_id}
-/history` — a single, cross-module aggregated timeline for one patient
-(visits, vitals, consultations, billing, lab bills, pharmacy bills),
-additive alongside (never replacing) `GET /visits?patient_id=` and
-`GET /vitals/patients/{id}/history`, which stay exactly as they are for
-their own existing callers.
+"""HTTP endpoints for the Patient History module — two, both gated on
+`patients:history:read` (see app/modules/patients/constants.py's own
+docstring) to even be reached at all, but built for genuinely different
+purposes:
 
-Gated on the new `patients:history:read` permission (see
-app/modules/patients/constants.py's own docstring) to even reach this
-endpoint at all — but that permission alone decides nothing about
-*which* sections come back. Each section is independently re-checked
-against the actor's own other permissions, mirroring the exact
-permission that section's own reader-facing GET route already requires
-elsewhere in the app:
-  - `visits`          -> `visits:read`        (GET /visits)
-  - `vitals`           -> `vitals:read`         (GET /vitals/visits/{id})
-  - `consultations`    -> `consultation:read`   (GET /consultations/{id})
-  - `invoices`         -> `billing:read`        (GET /visits/{id}/invoices)
-  - `lab_bills`         -> `lab:read`            (GET /lab/bills)
-  - `pharmacy_bills`    -> `pharmacy:read`        (GET /pharmacy/bills)
-A section the actor can't independently read stays `null` in the
-response rather than 403ing the whole request — this endpoint's entire
-point is that different roles legitimately see different slices of the
-same patient's history (e.g. Reception sees Lab/Pharmacy but not
-Vitals/Consultation; Doctor sees Vitals/Consultation but not
-Billing/Lab/Pharmacy — confirmed directly against this app's actual
-RBAC grants, not assumed), never a hard failure just because one
-section isn't visible to this particular caller."""
+  - `GET /patients/history/visits` — the always-visible, hospital-wide,
+    paginated *feed*, unified across Visit/MedicineBill/LabBill (see
+    app/modules/patient_history/repository.py's own docstring for why
+    a single query is allowed to span all three here). Never empty by
+    default; a receptionist lands on it and sees every recent record,
+    searchable by name/MR/phone/CNIC or by Token #.
+  - `GET /{patient_id}/history` — a single, cross-module aggregated
+    *timeline* for one already-identified patient (visits, vitals,
+    consultations, billing, lab bills, pharmacy bills), additive
+    alongside (never replacing) `GET /visits?patient_id=` and
+    `GET /vitals/patients/{id}/history`, which stay exactly as they are
+    for their own existing callers.
+
+Both share the identical per-type/per-section permission re-check
+beyond the gating `patients:history:read` permission — a role that
+can't independently read a given type never sees it, in either
+endpoint, mirroring the exact permission that type's own reader-facing
+GET route already requires elsewhere in the app:
+  - visits            -> `visits:read`        (GET /visits)
+  - medicine bills      -> `pharmacy:read`      (GET /pharmacy/bills)
+  - lab bills            -> `lab:read`            (GET /lab/bills)
+  - vitals               -> `vitals:read`         (GET /vitals/visits/{id}, drill-down only)
+  - consultations        -> `consultation:read`   (GET /consultations/{id}, drill-down only)
+  - invoices             -> `billing:read`        (GET /visits/{id}/invoices, drill-down only)
+In the feed, a type the actor can't read is dropped from the
+underlying query entirely (never fetched then filtered); in the
+drill-down, that same section comes back `null` rather than 403ing the
+whole request — this pair's entire point is that different roles
+legitimately see different slices of the same hospital-wide data (e.g.
+Reception sees Lab/Pharmacy but not Vitals/Consultation; Doctor sees
+Vitals/Consultation but not Billing/Lab/Pharmacy — confirmed directly
+against this app's actual RBAC grants, not assumed), never a hard
+failure just because one section/type isn't visible to this particular
+caller."""
 
 from datetime import date as date_type
 from uuid import UUID
@@ -41,7 +52,11 @@ from app.modules.consultation.schemas import ConsultationOut
 from app.modules.lab.constants import PERMISSION_LAB_READ
 from app.modules.lab.schemas import LabBillSummaryOut
 from app.modules.patient_history.dependencies import get_patient_history_service
-from app.modules.patient_history.schemas import PatientHistoryInvoiceOut, PatientHistoryOut
+from app.modules.patient_history.schemas import (
+    PatientHistoryInvoiceOut,
+    PatientHistoryOut,
+    PatientHistoryRecordOut,
+)
 from app.modules.patient_history.service import PatientHistoryService
 from app.modules.patients.constants import PERMISSION_PATIENTS_HISTORY_READ
 from app.modules.patients.schemas import PatientOut
@@ -58,12 +73,13 @@ router = APIRouter(prefix="/patients", tags=["patient-history"])
 
 
 @router.get("/history/visits")
-async def list_patient_history_visits(
+async def list_patient_history_records(
     search: str | None = Query(
         default=None,
-        description="Name/MR/phone — resolved to matching patients first (see "
-        "PatientHistoryService.list_visits's own docstring), then filtered down to just "
-        "their visits. Omitted entirely means every visit, hospital-wide — the Patient "
+        description="Name/MR/phone/CNIC (resolved to matching patients first) OR a "
+        "Token # substring, matched directly against Visit/MedicineBill/LabBill's own "
+        "queue_token — combined with OR, see PatientHistoryService.list_records's own "
+        "docstring. Omitted entirely means every record, hospital-wide — the Patient "
         "History page's own always-visible default list, deliberately never empty.",
     ),
     start_date: date_type | None = Query(default=None),
@@ -71,27 +87,83 @@ async def list_patient_history_visits(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     history_service: PatientHistoryService = Depends(get_patient_history_service),
-    _actor: User = Depends(require_permission(PERMISSION_PATIENTS_HISTORY_READ)),
+    auth_service: AuthService = Depends(get_auth_service),
+    actor: User = Depends(require_permission(PERMISSION_PATIENTS_HISTORY_READ)),
 ) -> dict:
     """Backs the Patient History page's always-visible, hospital-wide
-    visit list — a 2-segment path (`/patients/history/visits`),
-    deliberately placed ahead of `/{patient_id}/history` in this
-    router so it can never collide with a UUID path param (same
-    precaution `/patients/lookup/by-phone` already uses elsewhere in
-    this app). Returns the exact same `VisitOut[]` + pagination `meta`
-    shape `GET /visits` itself returns — reused verbatim rather than a
-    new response schema, since the row shape is identical."""
-    visits, total, items_by_visit = await history_service.list_visits(
+    feed — a 2-segment path (`/patients/history/visits`), deliberately
+    placed ahead of `/{patient_id}/history` in this router so it can
+    never collide with a UUID path param (same precaution `/patients/
+    lookup/by-phone` already uses elsewhere in this app).
+
+    Unified across Visit/MedicineBill/LabBill (2026-09 redesign — see
+    app/modules/patient_history/repository.py's own docstring for why
+    a single query is allowed to span all three here): every real
+    Token # in the hospital is drawn from one shared Postgres sequence
+    across all three tables, so a list that only ever showed Visit rows
+    was silently missing every medicine bill and lab bill, standalone
+    or not — this endpoint's whole point is that the sequence a
+    receptionist sees on screen should be exactly as continuous as the
+    one already printed on every slip.
+
+    Each record type is independently gated on the exact same
+    permission its own reader-facing GET route already requires
+    (visits:read / pharmacy:read / lab:read) — the identical per-
+    section gating `GET /{patient_id}/history` below already
+    establishes, just applied per-row instead of per-section: an actor
+    who can't read a given type never sees it in the feed at all
+    (dropped from the underlying query, not fetched-then-filtered),
+    the same way that type's own section would come back `null` in the
+    drill-down."""
+    held = auth_service.effective_permission_codes(actor)
+    include_visits = PERMISSION_VISITS_READ in held
+    include_medicine_bills = PERMISSION_PHARMACY_READ in held
+    include_lab_bills = PERMISSION_LAB_READ in held
+
+    records, total = await history_service.list_records(
         search=search,
         start_date=start_date,
         end_date=end_date,
+        include_visits=include_visits,
+        include_medicine_bills=include_medicine_bills,
+        include_lab_bills=include_lab_bills,
         page=page,
         page_size=page_size,
     )
-    body = [
-        VisitOut.from_visit(visit, items_by_visit.get(visit.id, [])).model_dump(mode="json")
-        for visit in visits
-    ]
+
+    body = []
+    for record in records:
+        out = PatientHistoryRecordOut(
+            record_type=record.record_type,
+            queue_token=record.queue_token,
+            created_at=record.created_at,
+            patient_id=record.patient_id,
+            visit=(
+                VisitOut.from_visit(record.visit, record.visit_procedure_items or [])
+                if record.visit is not None
+                else None
+            ),
+            medicine_bill=(
+                MedicineBillSummaryOut.from_bill(
+                    record.medicine_bill,
+                    record.medicine_bill_item_count or 0,
+                    record.medicine_bill_payment_methods,
+                )
+                if record.medicine_bill is not None
+                else None
+            ),
+            lab_bill=(
+                LabBillSummaryOut.from_bill(
+                    record.lab_bill,
+                    record.lab_bill_item_count or 0,
+                    record.lab_bill_payment_methods,
+                )
+                if record.lab_bill is not None
+                else None
+            ),
+        )
+        body.append(out.model_dump(mode="json"))
+
     meta = PaginationMeta(page=page, page_size=page_size, total=total).model_dump(mode="json")
     return success_envelope(body, meta)
 

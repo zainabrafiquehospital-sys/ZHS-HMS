@@ -638,3 +638,18 @@ class PharmacyService:
         counts = await self._item_repo.count_items_for_bills(bill_ids)
         methods = await self._payment_repo.list_distinct_payment_methods_for_bills(bill_ids)
         return [(bill, counts.get(bill.id, 0), methods.get(bill.id, [])) for bill in bills]
+
+    async def list_bills_by_ids(
+        self, bill_ids: list[UUID]
+    ) -> list[tuple[MedicineBill, int, list[str]]]:
+        """`(bill, item_count, payment_methods)` triples for exactly
+        the given bill ids, order not significant (the caller re-sorts
+        against its own already-ordered id list) — the Patient History
+        unified feed's own page-enrichment step (app/modules/
+        patient_history/service.py), same batch shape as
+        `list_bills_for_visits` immediately above, just keyed by the
+        bill's own id instead of its visit_id."""
+        bills = await self._bill_repo.list_by_ids(bill_ids)
+        counts = await self._item_repo.count_items_for_bills(bill_ids)
+        methods = await self._payment_repo.list_distinct_payment_methods_for_bills(bill_ids)
+        return [(bill, counts.get(bill.id, 0), methods.get(bill.id, [])) for bill in bills]

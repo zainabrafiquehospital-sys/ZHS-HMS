@@ -321,6 +321,14 @@ class VisitService:
         list_for_visits's own docstring for the N+1-avoidance shape)."""
         return await self._procedure_item_repo.list_for_visits(visit_ids)
 
+    async def list_by_ids(self, visit_ids: list[UUID]) -> list[Visit]:
+        """Thin passthrough to `VisitRepository.list_by_ids` — backs
+        the Patient History unified feed's own page-enrichment step
+        (app/modules/patient_history/service.py), which resolves a
+        page of ids across Visit/MedicineBill/LabBill first, then
+        looks up each type's own full rows in one batched call."""
+        return await self._visit_repo.list_by_ids(visit_ids)
+
     # ------------------------------------------------------------------
     # Registration-charge payment tracking (2026-08-22 addition) —
     # mirrors PharmacyService's own "_apply_payment/record_payment"

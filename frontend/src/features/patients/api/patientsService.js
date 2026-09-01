@@ -77,17 +77,22 @@ export const patientsService = {
     });
   },
 
-  // The Patient History page's own always-visible, hospital-wide visit
-  // list — backed by `GET /patients/history/visits` (see backend/app/
-  // modules/patient_history/router.py). Real server-side search
-  // (name/MR/phone, resolved to patients first) + date range +
-  // pagination, mirroring visitsService.list's own shape but never the
-  // client-filtered-over-a-capped-fetch pattern MyRegistrations.jsx
-  // uses (that one is acceptable only because it's scoped to one
-  // receptionist's own bounded lifetime volume — this list is
-  // hospital-wide and unbounded). No `search`/`startDate`/`endDate`
-  // means no filter at all — every visit, newest first — this
-  // endpoint's own default state, deliberately never empty.
+  // The Patient History page's own always-visible, hospital-wide feed
+  // — backed by `GET /patients/history/visits` (see backend/app/
+  // modules/patient_history/router.py). Unified across Visit/
+  // MedicineBill/LabBill (2026-09 redesign) — every real Token # in
+  // the hospital is drawn from one shared sequence across all three,
+  // so this returns them genuinely interleaved, not Visit rows alone.
+  // Real server-side search (name/MR/phone/CNIC, resolved to patients
+  // first, OR a direct Token # substring match against all three
+  // tables' own token columns) + date range + pagination, mirroring
+  // visitsService.list's own shape but never the client-filtered-over-
+  // a-capped-fetch pattern MyRegistrations.jsx uses (that one is
+  // acceptable only because it's scoped to one receptionist's own
+  // bounded lifetime volume — this list is hospital-wide and
+  // unbounded). No `search`/`startDate`/`endDate` means no filter at
+  // all — every record, newest first — this endpoint's own default
+  // state, deliberately never empty.
   listHistoryVisits({ page = 1, pageSize = 20, search, startDate, endDate } = {}) {
     return httpClient.get('/patients/history/visits', {
       params: {

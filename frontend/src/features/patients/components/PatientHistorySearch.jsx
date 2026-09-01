@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { ArrowLeft, Printer, Search } from 'lucide-react';
 import {
   usePatientHistory,
-  useHistoryVisitList,
+  useHistoryRecordList,
 } from '@/features/patients/hooks/usePatientHistory';
 import { usePatientsForVisits } from '@/features/patients/hooks/usePatientsForVisits';
 import { usePrintRegistrationSlip } from '@/features/reception/hooks/useReception';
@@ -12,6 +12,7 @@ import { usePrintInvoice } from '@/features/billing/hooks/useBilling';
 import { usePrintLabBill } from '@/features/lab/hooks/useLab';
 import { usePrintMedicineBill } from '@/features/pharmacy/hooks/usePharmacy';
 import { useAuth } from '@/features/auth/hooks/useAuth';
+import { useToast } from '@/shared/components/toast/ToastProvider';
 import {
   ALL_VITALS_FIELDS,
   VITAL_FIELD_LABELS,
@@ -46,6 +47,21 @@ import { formatDisplayDate, formatDisplayTime, displayDayKey } from '@/utils/tim
 // same real server-side pagination treatment, never a client-side
 // approximation over a capped fetch.
 const LIST_PAGE_SIZE = 20;
+
+// The unified feed's own "what kind of row is this" label — shown as
+// a small Badge prefix inside the existing Procedure/Description
+// column (not a separate column) so the sequence itself stays the
+// visual focus, matching the exact design confirmed for this feature.
+const RECORD_TYPE_LABEL = {
+  visit: 'Visit',
+  medicine_bill: 'Medicine Bill',
+  lab_bill: 'Lab Test',
+};
+const RECORD_TYPE_BADGE_VARIANT = {
+  visit: 'outline',
+  medicine_bill: 'secondary',
+  lab_bill: 'secondary',
+};
 
 const currencyFormatter = new Intl.NumberFormat('en-US', {
   minimumFractionDigits: 2,
@@ -422,22 +438,109 @@ function BillsSection({ title, bills, printLabel, printMutateAsync }) {
   );
 }
 
+/** One record's Patient/MR#/Age-Gender/Phone cells. Three distinct
+ * states, told apart by `patientId` vs. `patient`: a real, already-
+ * resolved Patient (full row); `patientId` set but `patient` not yet
+ * loaded (`usePatientsForVisits`'s own per-id fetch still in flight —
+ * "…", never misread as "no patient"); and no `patientId` at all (a
+ * manual name if the underlying bill has one, else "Anonymous" — the
+ * remaining columns dashed out either way, since a manual walk-in
+ * entry never has a real MR number/age/gender/phone on file, only
+ * whatever name was typed on the slip). */
+function PatientCells({ patientId, patient, manualName }) {
+  if (patientId && !patient) {
+    return (
+      <>
+        <TableCell className="text-muted-foreground">…</TableCell>
+        <TableCell className="text-muted-foreground">…</TableCell>
+        <TableCell className="text-muted-foreground">…</TableCell>
+        <TableCell className="text-muted-foreground">…</TableCell>
+      </>
+    );
+  }
+  if (patient) {
+    return (
+      <>
+        <TableCell className="max-w-[160px] truncate font-medium text-foreground">
+          {patient.full_name}
+        </TableCell>
+        <TableCell className="whitespace-nowrap font-mono text-xs">{patient.mr_number}</TableCell>
+        <TableCell className="whitespace-nowrap">
+          {`${patient.age_years} / ${
+            patient.gender ? patient.gender[0].toUpperCase() + patient.gender.slice(1) : '—'
+          }`}
+        </TableCell>
+        <TableCell className="whitespace-nowrap">{patient.phone_number || '—'}</TableCell>
+      </>
+    );
+  }
+  return (
+    <>
+      <TableCell className="max-w-[160px] truncate text-muted-foreground">
+        {manualName || 'Anonymous'}
+      </TableCell>
+      <TableCell className="text-muted-foreground">—</TableCell>
+      <TableCell className="text-muted-foreground">—</TableCell>
+      <TableCell className="text-muted-foreground">—</TableCell>
+    </>
+  );
+}
+
+/** One record's Procedure/Description cell — a `RECORD_TYPE_LABEL`
+ * badge (see that constant's own docstring on why this lives inside
+ * the existing column rather than a new one) plus a short type-
+ * appropriate description: a Visit's own itemized procedure display
+ * (unchanged), or an item count for a Medicine/Lab bill (the same
+ * `item_count` summary MyMedicineBills.jsx/MyLabBills.jsx already show
+ * instead of a full per-item join, avoiding N+1 across a paginated
+ * feed). */
+function RecordDescriptionCell({ record }) {
+  return (
+    <TableCell className="max-w-[220px]">
+      <div className="flex items-center gap-1.5">
+        <Badge variant={RECORD_TYPE_BADGE_VARIANT[record.record_type]} className="shrink-0">
+          {RECORD_TYPE_LABEL[record.record_type]}
+        </Badge>
+        {record.record_type === 'visit' ? (
+          <VisitProcedureDisplay visit={record.visit} className="truncate" />
+        ) : (
+          <span className="truncate text-muted-foreground">
+            {(record.record_type === 'medicine_bill' ? record.medicine_bill : record.lab_bill)
+              .item_count}{' '}
+            item
+            {(record.record_type === 'medicine_bill' ? record.medicine_bill : record.lab_bill)
+              .item_count === 1
+              ? ''
+              : 's'}
+          </span>
+        )}
+      </div>
+    </TableCell>
+  );
+}
+
 /** The Patient History page's own always-visible, hospital-wide,
- * newest-first visit list — its default landing state, matching the
- * live-search-as-you-type pattern already used elsewhere in this app
+ * newest-first feed — its default landing state, matching the live-
+ * search-as-you-type pattern already used elsewhere in this app
  * (Reception's "My Registrations", Vitals' "My Vitals Records"), never
- * a dead-end "search then pick one" box. Real server-side search
- * (name/MR/phone)/date-range/pagination via `useHistoryVisitList`
- * (never a client-side approximation over a capped fetch — this list
- * is hospital-wide and unbounded, unlike MyRegistrations.jsx's own
- * client-filtered table, which is acceptable only because it's scoped
- * to one receptionist's own bounded lifetime volume). Column set
- * mirrors MyRegistrations.jsx's own table exactly, plus the Print Slip
- * action already established for this page's Visits section (see
- * VisitsSection's own docstring on the extra `reception:*` permission
- * check that action needs). Selecting a row hands its patient id up to
- * the parent, which switches to the existing single-patient drill-down
- * view below.
+ * a dead-end "search then pick one" box. Unified across Visit/
+ * MedicineBill/LabBill (2026-09 redesign — see backend/app/modules/
+ * patient_history/repository.py's own docstring for the full "every
+ * Token # drawn from one shared sequence" rationale): every real
+ * hospital record shows in one genuinely continuous, token-sequence-
+ * complete list, not a Visit-only one that silently hid every walk-in
+ * medicine/lab bill. Real server-side search (name/MR/phone/CNIC OR a
+ * direct Token # match)/date-range/pagination via
+ * `useHistoryRecordList` (never a client-side approximation over a
+ * capped fetch — this list is hospital-wide and unbounded, unlike
+ * MyRegistrations.jsx's own client-filtered table, which is acceptable
+ * only because it's scoped to one receptionist's own bounded lifetime
+ * volume). Selecting a row with a real linked patient hands that
+ * patient up to the parent, which switches to the existing single-
+ * patient drill-down view below; a row with no linked patient (a fully
+ * anonymous walk-in, or one with only a manual name on file — neither
+ * has a real `Patient` row to drill into) shows a toast instead of
+ * erroring or silently doing nothing.
  *
  * `page`/`searchInput`/`startDate`/`endDate` are all controlled by the
  * parent (`PatientHistorySearch`) rather than local state here — this
@@ -458,22 +561,30 @@ function VisitListView({
   onSelectPatient,
 }) {
   const { hasPermission } = useAuth();
+  const { toast } = useToast();
   const debouncedSearch = useDebouncedValue(searchInput, 300);
 
-  const { visits, meta, isLoading, isError, error, refetch } = useHistoryVisitList({
+  const { records, meta, isLoading, isError, error, refetch } = useHistoryRecordList({
     page,
     pageSize: LIST_PAGE_SIZE,
     search: debouncedSearch || undefined,
     startDate: startDate || undefined,
     endDate: endDate || undefined,
   });
-  const patientsById = usePatientsForVisits(visits);
+  const patientsById = usePatientsForVisits(records);
+
   const printSlip = usePrintRegistrationSlip();
-  const { printingId, error: printError, handlePrint } = usePrintAction((visitId) =>
-    printSlip.mutateAsync(visitId),
-  );
+  const visitPrint = usePrintAction((visitId) => printSlip.mutateAsync(visitId));
   const canPrintSlip =
     hasPermission('reception:register_visit') || hasPermission('reception:view_slip');
+
+  const printMedicineBill = usePrintMedicineBill();
+  const medicineBillPrint = usePrintAction((billId) => printMedicineBill.mutateAsync(billId));
+
+  const printLabBill = usePrintLabBill();
+  const labBillPrint = usePrintAction((billId) => printLabBill.mutateAsync(billId));
+
+  const printError = visitPrint.error || medicineBillPrint.error || labBillPrint.error;
 
   const pageCount = Math.max(1, Math.ceil((meta?.total ?? 0) / LIST_PAGE_SIZE));
 
@@ -492,6 +603,18 @@ function VisitListView({
     setPage(1);
   }
 
+  function handleRowClick(record) {
+    if (!record.patient_id) {
+      toast.info({
+        title: 'No patient record linked',
+        description: 'This record has no linked patient, so there is nothing to view.',
+      });
+      return;
+    }
+    const patient = patientsById[record.patient_id];
+    if (patient) onSelectPatient(patient);
+  }
+
   return (
     <Card>
       <CardHeader className="flex flex-col gap-4">
@@ -502,7 +625,7 @@ function VisitListView({
             <Input
               value={searchInput}
               onChange={(event) => handleSearchChange(event.target.value)}
-              placeholder="Search by name, MR number, or phone"
+              placeholder="Search by name, MR number, phone, or Token #"
               className="pl-8"
             />
           </div>
@@ -534,11 +657,11 @@ function VisitListView({
           <PageLoader label="Loading patient records" />
         ) : isError ? (
           <PageError error={error} reset={refetch} message="Couldn't load patient records." />
-        ) : visits.length === 0 ? (
+        ) : records.length === 0 ? (
           <p className="py-10 text-center text-sm text-muted-foreground">
             {debouncedSearch || startDate || endDate
               ? 'No records match this search.'
-              : 'No visits recorded yet.'}
+              : 'No records yet.'}
           </p>
         ) : (
           <>
@@ -554,70 +677,91 @@ function VisitListView({
                   <TableHead>Procedure</TableHead>
                   <TableHead>Doctor</TableHead>
                   <TableHead className="text-right">Amount</TableHead>
-                  {canPrintSlip ? <TableHead /> : null}
+                  <TableHead />
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {visits.map((visit) => {
-                  const patient = patientsById[visit.patient_id];
+                {records.map((record) => {
+                  const patient = patientsById[record.patient_id];
+                  const manualName =
+                    record.medicine_bill?.manual_patient_name ??
+                    record.lab_bill?.manual_patient_name ??
+                    null;
+                  const amount =
+                    record.record_type === 'visit'
+                      ? record.visit.amount
+                      : record.record_type === 'medicine_bill'
+                        ? record.medicine_bill.total_amount
+                        : record.lab_bill.total_amount;
+
+                  let printProps = null;
+                  if (record.record_type === 'visit' && canPrintSlip) {
+                    printProps = {
+                      id: record.visit.id,
+                      printingId: visitPrint.printingId,
+                      onPrint: visitPrint.handlePrint,
+                    };
+                  } else if (record.record_type === 'medicine_bill') {
+                    printProps = {
+                      id: record.medicine_bill.id,
+                      printingId: medicineBillPrint.printingId,
+                      onPrint: medicineBillPrint.handlePrint,
+                    };
+                  } else if (record.record_type === 'lab_bill') {
+                    printProps = {
+                      id: record.lab_bill.id,
+                      printingId: labBillPrint.printingId,
+                      onPrint: labBillPrint.handlePrint,
+                    };
+                  }
+
                   return (
                     <TableRow
-                      key={visit.id}
+                      key={`${record.record_type}-${record.visit?.id ?? record.medicine_bill?.id ?? record.lab_bill?.id}`}
                       className="cursor-pointer"
-                      onClick={() => patient && onSelectPatient(patient)}
+                      onClick={() => handleRowClick(record)}
                     >
                       <TableCell className="whitespace-nowrap">
-                        {displayDayKey(visit.created_at)} {formatDisplayTime(visit.created_at)}
+                        {displayDayKey(record.created_at)} {formatDisplayTime(record.created_at)}
                       </TableCell>
                       <TableCell className="whitespace-nowrap font-mono">
-                        {visit.queue_token}
+                        {record.queue_token || '—'}
                       </TableCell>
-                      <TableCell className="max-w-[160px] truncate font-medium text-foreground">
-                        {patient ? patient.full_name : '…'}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap font-mono text-xs">
-                        {patient ? patient.mr_number : '…'}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        {patient
-                          ? `${patient.age_years} / ${
-                              patient.gender
-                                ? patient.gender[0].toUpperCase() + patient.gender.slice(1)
-                                : '—'
-                            }`
-                          : '…'}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        {patient?.phone_number || '—'}
-                      </TableCell>
-                      <TableCell className="max-w-[160px]">
-                        <VisitProcedureDisplay visit={visit} className="truncate" />
-                      </TableCell>
+                      <PatientCells
+                        patientId={record.patient_id}
+                        patient={patient}
+                        manualName={manualName}
+                      />
+                      <RecordDescriptionCell record={record} />
                       <TableCell>
-                        {visit.doctor_user_id ? (
-                          <Badge variant="success">Assigned</Badge>
+                        {record.record_type === 'visit' ? (
+                          record.visit.doctor_user_id ? (
+                            <Badge variant="success">Assigned</Badge>
+                          ) : (
+                            <Badge variant="warning">Unassigned</Badge>
+                          )
                         ) : (
-                          <Badge variant="warning">Unassigned</Badge>
+                          <span className="text-muted-foreground">—</span>
                         )}
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-right font-medium tabular-nums">
-                        {money(visit.amount)}
+                        {money(amount)}
                       </TableCell>
-                      {canPrintSlip ? (
+                      {printProps ? (
                         // The row itself opens the drill-down (see
                         // TableRow's own onClick above) — stopped here so
-                        // clicking Print Slip never also selects the
-                        // patient, same guard PatientDirectory.jsx's row-
-                        // click + "Visit History" button already uses.
+                        // clicking Print never also selects the patient,
+                        // same guard PatientDirectory.jsx's row-click +
+                        // "Visit History" button already uses.
                         <TableCell onClick={(event) => event.stopPropagation()}>
                           <PrintButton
-                            label="Print Slip"
-                            id={visit.id}
-                            printingId={printingId}
-                            onPrint={handlePrint}
+                            label={record.record_type === 'visit' ? 'Print Slip' : 'Print'}
+                            {...printProps}
                           />
                         </TableCell>
-                      ) : null}
+                      ) : (
+                        <TableCell />
+                      )}
                     </TableRow>
                   );
                 })}

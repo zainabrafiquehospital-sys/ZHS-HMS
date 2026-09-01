@@ -20,6 +20,7 @@ the actor cannot see at all vs. one they can see that is just empty)."""
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -81,3 +82,41 @@ class PatientHistoryOut(BaseModel):
     invoices: list[PatientHistoryInvoiceOut] | None = None
     lab_bills: list[LabBillSummaryOut] | None = None
     pharmacy_bills: list[MedicineBillSummaryOut] | None = None
+
+
+class PatientHistoryRecordOut(BaseModel):
+    """One row of the Patient History page's own always-visible,
+    hospital-wide feed — `GET /patients/history/visits` — spanning
+    Visit/MedicineBill/LabBill in one interleaved, token-sequence-
+    complete list (see app/modules/patient_history/repository.py's own
+    docstring for why a single query is allowed to span all three
+    here). Reuses each type's own existing response shape unchanged
+    (`VisitOut`/`MedicineBillSummaryOut`/`LabBillSummaryOut`) rather
+    than redefining their fields a second time — exactly one of
+    `visit`/`medicine_bill`/`lab_bill` is populated per row,
+    discriminated by `record_type`, the same "exactly one populated,
+    discriminated by an explicit field" shape `PatientHistoryOut`
+    above already uses for its own section fields.
+
+    `queue_token`/`patient_id` are duplicated at this top level (each
+    also lives inside the populated nested object) purely so the
+    frontend can read them uniformly regardless of `record_type`,
+    without needing three different per-type field paths — `visit.
+    patient_id` vs. (for a medicine bill) a join the frontend has no
+    way to perform itself vs. `lab_bill.patient_id`. `patient_id` is
+    `None` both for a genuinely anonymous record (no manual name
+    either) and for one with only a `manual_patient_name` on file (see
+    the nested object for that name) — in both cases there is no real
+    `Patient` row to drill into, which is the only distinction that
+    actually matters to a row-click handler deciding whether to open
+    the single-patient drill-down."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    record_type: Literal["visit", "medicine_bill", "lab_bill"]
+    queue_token: str | None
+    created_at: datetime
+    patient_id: UUID | None
+    visit: VisitOut | None = None
+    medicine_bill: MedicineBillSummaryOut | None = None
+    lab_bill: LabBillSummaryOut | None = None

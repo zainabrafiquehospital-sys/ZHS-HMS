@@ -4,13 +4,16 @@ see app/modules/search/dependencies.py's identical composition pattern
 owning no repository of its own)."""
 
 from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.dependencies import get_db
 from app.modules.billing.dependencies import get_billing_service
 from app.modules.billing.service import BillingService
 from app.modules.consultation.dependencies import get_consultation_service
 from app.modules.consultation.service import ConsultationService
 from app.modules.lab.dependencies import get_lab_service
 from app.modules.lab.service import LabService
+from app.modules.patient_history.repository import PatientHistoryRepository
 from app.modules.patient_history.service import PatientHistoryService
 from app.modules.patients.dependencies import get_patient_service
 from app.modules.patients.service import PatientService
@@ -22,6 +25,12 @@ from app.modules.vitals.dependencies import get_vitals_service
 from app.modules.vitals.service import VitalsService
 
 
+def get_patient_history_repository(
+    db: AsyncSession = Depends(get_db),
+) -> PatientHistoryRepository:
+    return PatientHistoryRepository(db)
+
+
 def get_patient_history_service(
     patient_service: PatientService = Depends(get_patient_service),
     visit_service: VisitService = Depends(get_visit_service),
@@ -30,6 +39,7 @@ def get_patient_history_service(
     billing_service: BillingService = Depends(get_billing_service),
     lab_service: LabService = Depends(get_lab_service),
     pharmacy_service: PharmacyService = Depends(get_pharmacy_service),
+    history_repository: PatientHistoryRepository = Depends(get_patient_history_repository),
 ) -> PatientHistoryService:
     return PatientHistoryService(
         patient_service=patient_service,
@@ -39,4 +49,5 @@ def get_patient_history_service(
         billing_service=billing_service,
         lab_service=lab_service,
         pharmacy_service=pharmacy_service,
+        history_repository=history_repository,
     )

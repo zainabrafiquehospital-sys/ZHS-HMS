@@ -169,6 +169,22 @@ class LabBillRepository(BaseRepository[LabBill]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_by_ids(self, lab_bill_ids: list[UUID]) -> list[LabBill]:
+        """One query for every given id — same `.in_(...)` batch-fetch
+        shape as `PatientRepository.list_by_ids`. Backs the Patient
+        History unified feed's own page-enrichment step (app/modules/
+        patient_history/repository.py's union query resolves ids first,
+        across three tables; this is the LabBill side of enriching just
+        that one page). An empty input list short-circuits without a
+        wasted `WHERE id IN ()` query."""
+        if not lab_bill_ids:
+            return []
+        stmt = self._exclude_soft_deleted(
+            select(LabBill).where(LabBill.id.in_(lab_bill_ids)), include_deleted=False
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def list_for_day(self, day: datetime) -> list[LabBill]:
         """Every lab bill created on `day`'s UTC calendar date — the
         Admin Overview's Lab Bills tab, the same UTC-calendar-day window

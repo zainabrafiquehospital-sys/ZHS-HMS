@@ -28,24 +28,30 @@ export function usePatientHistory(patientId) {
 }
 
 /** The Patient History page's own always-visible, hospital-wide,
- * server-paginated visit list — backed by
- * `patientsService.listHistoryVisits` (see that method's docstring).
- * `keepPreviousData` keeps the current page's rows on screen while the
- * next page/search/date-range fetches, the same pattern
- * usePatientDirectory (Admin) already uses for its own paginated
- * table. */
-export function useHistoryVisitList({ page, pageSize, search, startDate, endDate }) {
+ * server-paginated feed — backed by `patientsService.listHistoryVisits`
+ * (see that method's docstring). Unified across Visit/MedicineBill/
+ * LabBill (2026-09 redesign): each row is `{record_type, queue_token,
+ * created_at, patient_id, visit, medicine_bill, lab_bill}`, with
+ * exactly one of `visit`/`medicine_bill`/`lab_bill` populated per
+ * `record_type` — the frontend's own mirror of `PatientHistoryRecordOut`
+ * (see backend/app/modules/patient_history/schemas.py's own docstring
+ * for why each type's existing shape is reused unchanged rather than
+ * redefined). `keepPreviousData` keeps the current page's rows on
+ * screen while the next page/search/date-range fetches, the same
+ * pattern usePatientDirectory (Admin) already uses for its own
+ * paginated table. */
+export function useHistoryRecordList({ page, pageSize, search, startDate, endDate }) {
   const query = useQuery({
-    queryKey: ['patients', 'history', 'visits', { page, pageSize, search, startDate, endDate }],
+    queryKey: ['patients', 'history', 'records', { page, pageSize, search, startDate, endDate }],
     queryFn: () =>
       patientsService
         .listHistoryVisits({ page, pageSize, search, startDate, endDate })
-        .then((res) => ({ visits: res.data, meta: res.meta })),
+        .then((res) => ({ records: res.data, meta: res.meta })),
     placeholderData: keepPreviousData,
   });
   return {
     ...query,
-    visits: query.data?.visits ?? [],
+    records: query.data?.records ?? [],
     meta: query.data?.meta ?? null,
   };
 }

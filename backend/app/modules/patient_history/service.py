@@ -17,7 +17,7 @@ queries regardless of how many visits/bills/records the patient
 actually has, never one query per visit."""
 
 from dataclasses import dataclass
-from datetime import date as date_type
+from datetime import date as date_type, datetime
 from uuid import UUID
 
 from app.modules.billing.models import Invoice
@@ -26,6 +26,7 @@ from app.modules.consultation.models import Consultation
 from app.modules.consultation.service import ConsultationService
 from app.modules.lab.models import LabBill
 from app.modules.lab.service import LabService
+from app.modules.patient_history.repository import PatientHistoryRepository
 from app.modules.patients.models import Patient
 from app.modules.patients.service import PatientService
 from app.modules.pharmacy.models import MedicineBill
@@ -73,6 +74,30 @@ class PatientHistoryData:
     pharmacy_bills: list[tuple[MedicineBill, int, list[str]]] | None
 
 
+@dataclass(frozen=True)
+class PatientHistoryRecord:
+    """One row of `PatientHistoryService.list_records`'s unified feed —
+    exactly one of `visit`/`medicine_bill`/`lab_bill` is populated,
+    matching `record_type`. `router.py` turns this into a
+    `PatientHistoryRecordOut`; kept as a plain dataclass here (not the
+    Pydantic response model itself) for the same "service returns raw
+    data, router builds the Out schema" split `get_history`/
+    `PatientHistoryData` above already follow."""
+
+    record_type: str
+    queue_token: str | None
+    created_at: datetime
+    patient_id: UUID | None
+    visit: Visit | None = None
+    visit_procedure_items: list[VisitProcedureItem] | None = None
+    medicine_bill: MedicineBill | None = None
+    medicine_bill_item_count: int | None = None
+    medicine_bill_payment_methods: list[str] | None = None
+    lab_bill: LabBill | None = None
+    lab_bill_item_count: int | None = None
+    lab_bill_payment_methods: list[str] | None = None
+
+
 class PatientHistoryService:
     def __init__(
         self,
@@ -83,6 +108,7 @@ class PatientHistoryService:
         billing_service: BillingService,
         lab_service: LabService,
         pharmacy_service: PharmacyService,
+        history_repository: PatientHistoryRepository,
     ) -> None:
         self._patient_service = patient_service
         self._visit_service = visit_service
@@ -91,6 +117,7 @@ class PatientHistoryService:
         self._billing_service = billing_service
         self._lab_service = lab_service
         self._pharmacy_service = pharmacy_service
+        self._history_repo = history_repository
 
     async def get_history(
         self,
@@ -167,34 +194,47 @@ class PatientHistoryService:
         internals directly."""
         return await self._visit_service.list_procedure_items_for_visits(visit_ids)
 
-    async def list_visits(
+    async def list_records(
         self,
         *,
         search: str | None,
         start_date: date_type | None,
         end_date: date_type | None,
+        include_visits: bool,
+        include_medicine_bills: bool,
+        include_lab_bills: bool,
         page: int,
         page_size: int,
-    ) -> tuple[list[Visit], int, dict[UUID, list[VisitProcedureItem]]]:
+    ) -> tuple[list[PatientHistoryRecord], int]:
         """Backs `GET /patients/history/visits` — the Patient History
-        page's own always-visible, hospital-wide visit list (never
-        empty-by-default the way the single-patient `get_history` above
-        is), with real server-side pagination/search/date-range, never
-        a client-side approximation over a capped fetch (the same
-        "current volume" convention this codebase already applies
-        everywhere else real search/pagination exists).
+        page's own always-visible, hospital-wide feed across Visit/
+        MedicineBill/LabBill (never empty-by-default the way the
+        single-patient `get_history` above is), with real server-side
+        pagination/search/date-range across all three, never a client-
+        side approximation over a capped fetch (the same "current
+        volume" convention this codebase already applies everywhere
+        else real search/pagination exists).
 
-        `search` (name/MR/phone) is resolved to matching Patient ids
-        *first*, via `PatientService.list_patients` — this module's own
-        "depends on everything it reports on" composition (see this
-        module's own docstring) — since `VisitService`/`VisitRepository`
-        must never depend on Patients directly (see
-        `VisitRepository.search`'s own docstring on why that filter is
-        a plain `patient_ids` `IN` list, resolved by the caller, never a
-        join owned by the Visits module itself). No `search` term means
-        no patient filter at all — every visit, hospital-wide, exactly
-        matching "never an empty screen" — this is deliberately the
-        page's own default state."""
+        `search` serves two purposes at once, combined with `OR` at the
+        query level (see `PatientHistoryRepository.search_feed`'s own
+        docstring): resolved to matching Patient ids first, via
+        `PatientService.list_patients` — this module's own "depends on
+        everything it reports on" composition (see this module's own
+        docstring) — *and* passed through unchanged as a direct
+        `queue_token` substring match, so a token-shaped search (e.g.
+        "802" or "Token #000802") finds the right row even though a
+        `Patient` row has no token column of its own to search against.
+        No `search` term means no filter at all — every record,
+        hospital-wide, exactly matching "never an empty screen" — this
+        is deliberately the page's own default state.
+
+        `include_visits`/`include_medicine_bills`/`include_lab_bills`
+        are the router's own per-actor permission decision (visits:read/
+        pharmacy:read/lab:read respectively) — passed straight through
+        to the repository, which drops any branch the actor can't see
+        from the underlying `UNION ALL` entirely (see that method's own
+        docstring); this service adds no permission logic of its own,
+        matching `get_history` above."""
         patient_ids = None
         if search:
             matched_patients, _total = await self._patient_service.list_patients(
@@ -206,20 +246,85 @@ class PatientHistoryService:
             )
             patient_ids = [patient.id for patient in matched_patients]
 
-        visits, total = await self._visit_service.list_visits(
-            patient_id=None,
-            doctor_user_id=None,
-            unassigned_only=False,
-            status=None,
+        rows, total = await self._history_repo.search_feed(
             patient_ids=patient_ids,
+            token_search=search,
             start_date=start_date,
             end_date=end_date,
-            sort_by="created_at",
-            sort_desc=True,
-            page=page,
-            page_size=page_size,
+            include_visits=include_visits,
+            include_medicine_bills=include_medicine_bills,
+            include_lab_bills=include_lab_bills,
+            limit=page_size,
+            offset=(page - 1) * page_size,
         )
-        items_by_visit = await self._visit_service.list_procedure_items_for_visits(
-            [visit.id for visit in visits]
-        )
-        return visits, total, items_by_visit
+
+        visit_ids = [row.id for row in rows if row.record_type == "visit"]
+        medicine_bill_ids = [row.id for row in rows if row.record_type == "medicine_bill"]
+        lab_bill_ids = [row.id for row in rows if row.record_type == "lab_bill"]
+
+        visits_by_id = {visit.id: visit for visit in await self._visit_service.list_by_ids(visit_ids)}
+        items_by_visit = await self._visit_service.list_procedure_items_for_visits(visit_ids)
+
+        medicine_bills_by_id = {
+            bill.id: (bill, item_count, methods)
+            for bill, item_count, methods in await self._pharmacy_service.list_bills_by_ids(
+                medicine_bill_ids
+            )
+        }
+        lab_bills_by_id = {
+            bill.id: (bill, item_count, methods)
+            for bill, item_count, methods in await self._lab_service.list_bills_by_ids(
+                lab_bill_ids
+            )
+        }
+
+        records: list[PatientHistoryRecord] = []
+        for row in rows:
+            if row.record_type == "visit":
+                visit = visits_by_id.get(row.id)
+                if visit is None:
+                    continue
+                records.append(
+                    PatientHistoryRecord(
+                        record_type="visit",
+                        queue_token=row.queue_token,
+                        created_at=row.created_at,
+                        patient_id=row.patient_id,
+                        visit=visit,
+                        visit_procedure_items=items_by_visit.get(visit.id, []),
+                    )
+                )
+            elif row.record_type == "medicine_bill":
+                entry = medicine_bills_by_id.get(row.id)
+                if entry is None:
+                    continue
+                bill, item_count, methods = entry
+                records.append(
+                    PatientHistoryRecord(
+                        record_type="medicine_bill",
+                        queue_token=row.queue_token,
+                        created_at=row.created_at,
+                        patient_id=row.patient_id,
+                        medicine_bill=bill,
+                        medicine_bill_item_count=item_count,
+                        medicine_bill_payment_methods=methods,
+                    )
+                )
+            else:
+                entry = lab_bills_by_id.get(row.id)
+                if entry is None:
+                    continue
+                bill, item_count, methods = entry
+                records.append(
+                    PatientHistoryRecord(
+                        record_type="lab_bill",
+                        queue_token=row.queue_token,
+                        created_at=row.created_at,
+                        patient_id=row.patient_id,
+                        lab_bill=bill,
+                        lab_bill_item_count=item_count,
+                        lab_bill_payment_methods=methods,
+                    )
+                )
+
+        return records, total

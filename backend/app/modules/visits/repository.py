@@ -52,6 +52,23 @@ class VisitRepository(BaseRepository[Visit]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def list_by_ids(self, visit_ids: list[UUID]) -> list[Visit]:
+        """One query for every given id, not one `get_by_id` per id —
+        same `.in_(...)` batch-fetch shape as `PatientRepository.
+        list_by_ids`. Added for the Patient History unified feed
+        (app/modules/patient_history/repository.py's own union query
+        resolves ids first, across three tables; this is the Visit
+        side of enriching just that one page's worth of visit rows).
+        An empty input list short-circuits to an empty result without
+        a wasted `WHERE id IN ()` query."""
+        if not visit_ids:
+            return []
+        stmt = self._exclude_soft_deleted(
+            select(Visit).where(Visit.id.in_(visit_ids)), include_deleted=False
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_for_update(self, visit_id: UUID) -> Visit | None:
         """Row-locking variant of `get_by_id`, for `VisitService.
         record_payment`'s read-modify-write — identical rationale to
