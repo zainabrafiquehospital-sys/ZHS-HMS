@@ -1,6 +1,6 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { inventoryService } from '@/features/inventory/api/inventoryService';
 import { openAndPrintHtml } from '@/utils/printWindow';
 
@@ -125,12 +125,42 @@ export function useInventoryTransfers({ itemId, startDate, endDate } = {}) {
   });
 }
 
-export function useInventoryUsageEntries({ itemId, startDate, endDate } = {}) {
+export function useInventoryUsageEntries({ itemId, createdBy, startDate, endDate } = {}) {
   return useQuery({
-    queryKey: ['inventory', 'usage', { itemId, startDate, endDate }],
+    queryKey: ['inventory', 'usage', { itemId, createdBy, startDate, endDate }],
     queryFn: () =>
-      inventoryService.listUsageEntries({ itemId, startDate, endDate }).then((res) => res.data),
+      inventoryService
+        .listUsageEntries({ itemId, createdBy, startDate, endDate })
+        .then((res) => res.data),
   });
+}
+
+/** Every Emergency Stock usage entry the calling Vitals staff member
+ * has personally recorded, newest first — real server-side pagination
+ * (unlike MyVitalsRecords.jsx's own client-capped-fetch shape:
+ * `GET /inventory/usage` already supports genuine `page`/`page_size`/
+ * `meta.total`, so there's no reason to approximate it client-side
+ * here). Backs "My Inventory Usage" (features/vitals/components/
+ * MyInventoryUsage.jsx) — the fix for usage entries that were being
+ * recorded correctly but were never visible anywhere to the person who
+ * recorded them (confirmed: `GET /inventory/usage/mine` existed but had
+ * no frontend caller; this reuses the general, already-paginated
+ * `GET /inventory/usage` instead, scoped via `created_by`). */
+export function useMyInventoryUsage({ userId, page, pageSize }) {
+  const query = useQuery({
+    queryKey: ['inventory', 'usage', 'mine', userId, { page, pageSize }],
+    queryFn: () =>
+      inventoryService
+        .listUsageEntries({ createdBy: userId, page, pageSize })
+        .then((res) => ({ entries: res.data, meta: res.meta })),
+    enabled: Boolean(userId),
+    placeholderData: keepPreviousData,
+  });
+  return {
+    ...query,
+    entries: query.data?.entries ?? [],
+    meta: query.data?.meta ?? null,
+  };
 }
 
 export function useInventoryRequests({ status } = {}) {
@@ -253,11 +283,3 @@ export function usePrintInventoryHistoryLog() {
   });
 }
 
-export function usePrintDailyUsageSlip() {
-  return useMutation({
-    mutationFn: async (date) => {
-      const html = await inventoryService.fetchDailyUsageSlipHtml(date);
-      await openAndPrintHtml(html);
-    },
-  });
-}

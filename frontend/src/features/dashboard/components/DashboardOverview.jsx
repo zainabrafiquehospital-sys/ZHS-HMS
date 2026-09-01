@@ -6,6 +6,7 @@ import {
   useDoctorDashboard,
   useVitalsDashboard,
 } from '@/features/dashboard/hooks/useDashboard';
+import { useInventoryItems } from '@/features/inventory/hooks/useInventory';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Badge } from '@/shared/components/ui/Badge';
 import { PageLoader } from '@/shared/components/PageLoader';
@@ -90,6 +91,64 @@ function DoctorDashboardCard({ query }) {
   );
 }
 
+// Deliberately minimal — name + live emergency_stock_level + unit only
+// (confirmed design: no main stock, no thresholds, no actions), a
+// smaller purpose-built card rather than reusing
+// InventoryOverviewPanel.jsx's own `ItemCard` (which shows both stock
+// levels plus a low-stock badge and category icon — more than this
+// glanceable "what's available right now" tile needs). Same bordered-
+// card visual language as that panel's cards, just denser, since each
+// card here is only two short lines.
+function EmergencyStockCard({ item }) {
+  return (
+    <div className="flex flex-col gap-0.5 rounded-md border border-border bg-card px-3 py-2">
+      <span className="truncate text-xs font-medium text-foreground" title={item.name}>
+        {item.name}
+      </span>
+      <span className="text-sm font-semibold tabular-nums text-foreground">
+        {item.emergency_stock_level}{' '}
+        <span className="text-xs font-normal text-muted-foreground">{item.unit}</span>
+      </span>
+    </div>
+  );
+}
+
+/** A live, glanceable Emergency Stock overview (2026-09 addition) — one
+ * small card per active InventoryItem, reusing the exact same
+ * `inventory:read` permission Vitals already holds (see
+ * app/modules/inventory/constants.py's own docstring) and the already-
+ * cached `useInventoryItems()` query (no new backend endpoint). Quietly
+ * hidden (not an error block) if the actor can't read inventory or the
+ * fetch fails — the "Waiting for Vitals" stat above still shows either
+ * way, since that's a separate, independent query. */
+function EmergencyStockGrid() {
+  // `useInventoryItems` is a plain query (no `isForbidden` derivation
+  // the way this file's own dashboard-summary hooks have — see
+  // useDashboard.js) — a 403 still lands as `isError` regardless, so
+  // "hide the section" behavior is unaffected either way.
+  const { data: items, isLoading, isError } = useInventoryItems();
+  if (isError) return null;
+
+  const activeItems = (items ?? []).filter((item) => item.is_active);
+
+  return (
+    <div className="flex flex-col gap-3 border-t border-border pt-4">
+      <p className="text-xs font-medium text-muted-foreground">Emergency Stock</p>
+      {isLoading ? (
+        <PageLoader label="Loading emergency stock" />
+      ) : activeItems.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No active items in the catalog yet.</p>
+      ) : (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+          {activeItems.map((item) => (
+            <EmergencyStockCard key={item.id} item={item} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function VitalsDashboardCard({ query }) {
   const { data, isLoading, isForbidden, isError } = query;
   if (isForbidden || isError) return null;
@@ -100,7 +159,7 @@ function VitalsDashboardCard({ query }) {
         <HeartPulse className="h-4 w-4 text-muted-foreground" />
         <CardTitle>Vitals</CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex flex-col gap-4">
         {isLoading ? (
           <PageLoader label="Loading vitals summary" />
         ) : (
@@ -108,6 +167,7 @@ function VitalsDashboardCard({ query }) {
             <StatTile label="Waiting for Vitals" value={data.waiting_count} />
           </div>
         )}
+        <EmergencyStockGrid />
       </CardContent>
     </Card>
   );

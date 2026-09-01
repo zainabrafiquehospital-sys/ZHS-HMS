@@ -72,10 +72,17 @@ export const inventoryService = {
     });
   },
 
-  listUsageEntries({ itemId, startDate, endDate, page = 1, pageSize = 50 } = {}) {
+  // `createdBy` (2026-09 addition) — lets a caller scope this down to
+  // one user's own usage entries (Vitals' own "My Inventory Usage"
+  // list, see features/vitals/components/MyInventoryUsage.jsx) without
+  // a separate endpoint; `GET /inventory/usage` already supported the
+  // `created_by` query param server-side (the Inventory History panel
+  // just never had a reason to pass it before now).
+  listUsageEntries({ itemId, createdBy, startDate, endDate, page = 1, pageSize = 50 } = {}) {
     return httpClient.get('/inventory/usage', {
       params: {
         item_id: itemId || undefined,
+        created_by: createdBy || undefined,
         start_date: startDate || undefined,
         end_date: endDate || undefined,
         page,
@@ -135,15 +142,6 @@ export const inventoryService = {
         start_date: startDate || undefined,
         end_date: endDate || undefined,
       },
-      responseType: 'text',
-    });
-  },
-
-  // Vitals-only (inventory:record_usage) — always the calling user's
-  // own day, same actor-scoping as `listUsageEntries`'s `mine` sibling.
-  fetchDailyUsageSlipHtml(date) {
-    return httpClient.get('/inventory/usage/mine/print', {
-      params: { date },
       responseType: 'text',
     });
   },
