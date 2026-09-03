@@ -1863,14 +1863,33 @@ _PRESCRIPTION_SLIP_STYLE = """
     margin-right: 2mm;
   }
 
-  /* One 3-column grid holds both the boxes row and the Dx row, so the
-     Dx line stays locked to the C/O (middle) column's own width. */
+  /* Two flex rows sharing one 3-track shape: the boxes row (H/O / C/O /
+     Adv) and, directly beneath it, the Dx row whose middle cell holds
+     the Dx line so it stays locked to the C/O column's own width.
+     Deliberately flexbox, NOT `display: grid` — Chromium's Windows GDI
+     physical-print path (direct-to-printer, as opposed to Save-as-PDF /
+     preview, which both go through the Skia/PDF compositor) has a long
+     history of failing to paint grid containers, and every other
+     document in this module already prints reliably through the same
+     `openAndPrintHtml` pipeline using only flex/block/table. `flex: 1 1
+     0` + `gap` yields the exact same three equal columns `1fr 1fr 1fr`
+     + `column-gap` did; `align-items: stretch` (the flex default) keeps
+     the three boxes the same height, as the grid row did. */
   .clinical-grid {
     margin-top: var(--header-to-boxes-gap);
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    column-gap: var(--box-gap);
-    row-gap: 0;
+  }
+  .boxes-row {
+    display: flex;
+    gap: var(--box-gap);
+  }
+  .dx-row {
+    display: flex;
+    gap: var(--box-gap);
+  }
+  .boxes-row > .box,
+  .dx-row > .dx-cell {
+    flex: 1 1 0;
+    min-width: 0;
   }
   .box {
     border: var(--box-border);
@@ -1889,9 +1908,9 @@ _PRESCRIPTION_SLIP_STYLE = """
     word-break: break-word;
   }
 
-  .dx-row-spacer { }             /* empty grid cells flanking the Dx line */
+  /* The two flanking `.dx-cell`s are empty — they only reserve the H/O
+     and Adv columns so the Dx line sits under the C/O (middle) box. */
   .dx {
-    grid-column: 2;             /* directly beneath the C/O box ONLY */
     margin-top: var(--dx-offset-top);
     height: var(--dx-height);
     border: var(--dx-border);
@@ -2036,15 +2055,21 @@ def render_prescription_slip(
       </div>
 
       <div class="clinical-grid">
-        {_prescription_box_html("H/O", history_of)}
-        {_prescription_box_html("C/O", complaint_of)}
-        {_prescription_box_html("Adv", advised)}
-        <div class="dx-row-spacer"></div>
-        <div class="dx">
-          <span class="dx-label">Dx</span>
-          <span class="dx-value">{_escape(diagnosis or "")}</span>
+        <div class="boxes-row">
+          {_prescription_box_html("H/O", history_of)}
+          {_prescription_box_html("C/O", complaint_of)}
+          {_prescription_box_html("Adv", advised)}
         </div>
-        <div class="dx-row-spacer"></div>
+        <div class="dx-row">
+          <div class="dx-cell"></div>
+          <div class="dx-cell">
+            <div class="dx">
+              <span class="dx-label">Dx</span>
+              <span class="dx-value">{_escape(diagnosis or "")}</span>
+            </div>
+          </div>
+          <div class="dx-cell"></div>
+        </div>
       </div>
 
       <div class="rx">
