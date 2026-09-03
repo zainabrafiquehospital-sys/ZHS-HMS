@@ -1,10 +1,10 @@
 'use client';
 
-import { useState } from 'react';
-import { HeartPulse, Plus, Trash2, X } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { HeartPulse, Search, Trash2, X } from 'lucide-react';
 import { patientsService } from '@/features/patients/api/patientsService';
-import { inventoryService } from '@/features/inventory/api/inventoryService';
 import {
+  useInventoryItems,
   useInventoryPatientContext,
   useRecordInventoryUsage,
 } from '@/features/inventory/hooks/useInventory';
@@ -17,6 +17,8 @@ import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
 import { Label } from '@/shared/components/ui/Label';
 import { SearchSelect } from '@/shared/components/SearchSelect';
+import { PageLoader } from '@/shared/components/PageLoader';
+import { PageError } from '@/shared/components/PageError';
 import {
   Table,
   TableBody,
@@ -26,9 +28,8 @@ import {
   TableRow,
 } from '@/shared/components/ui/Table';
 import { useToast } from '@/shared/components/toast/ToastProvider';
+import { useDebouncedValue } from '@/shared/hooks/useDebouncedValue';
 import { todayDisplayDayKey } from '@/utils/timezone';
-
-let nextLineKey = 0;
 
 /** The "which patient is this for" panel — patient-linked, not
  * visit-linked (a deliberate departure from Pharmacy's own
@@ -43,9 +44,7 @@ let nextLineKey = 0;
  * usage entry itself depends on a visit existing. Manual Entry mirrors
  * VisitLinkPanel's identical fallback exactly (same three fields, same
  * "all three together" rule, same "no patient/visit record is looked up
- * or created" framing). Fixed for the whole item batch below — the same
- * "one context, items added one at a time" shape RegisterVisitForm.jsx
- * uses for its own patient/visit context while procedures are added. */
+ * or created" framing). Fixed for the whole item batch below. */
 function PatientLinkPanel({
   mode,
   onModeChange,
@@ -174,23 +173,40 @@ function PatientLinkPanel({
   );
 }
 
+/** One row's parsed quantity, or an error string. A blank quantity
+ * means "this item isn't part of the batch" — never an error. */
+function parseLineQuantity(rawQuantity, available) {
+  const parsed = usageLineItemSchema.safeParse({ quantity: rawQuantity, reason_note: '' });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? 'Invalid quantity' };
+  }
+  if (parsed.data.quantity > Number(available)) {
+    return { error: `Only ${available} available` };
+  }
+  return { quantity: parsed.data.quantity };
+}
+
 /** Records one-or-more Emergency Stock usage entries against a fixed
  * patient context — the only way emergency_stock_level decreases (see
  * backend/app/modules/inventory/service.py's record_usage docstring).
  *
- * Add-to-a-running-list-then-submit-once shape (2026-08-27 redesign),
- * matching ProcedureItemsEditor.jsx (Reception) and
- * MedicineBillingWorkspace.jsx's (Pharmacy) own item-adding pattern:
- * pick an item + quantity (+ optional per-line reason note), add it to
- * the visible list, repeat, then one "Record Usage" submit sends the
- * whole list together. The backend still writes one fully independent
- * InventoryUsageEntry row per line (no batch/session entity), just
- * atomically — see RecordUsageRequest's own docstring. Item picker is a
- * SearchSelect against the active-items-only `/inventory/items/search`
- * endpoint, same reuse as Receive Stock/Transfer to Emergency. */
+ * Multi-select checklist shape (2026-09 redesign of the earlier
+ * search-one-item-then-Add flow): once a patient is chosen, the whole
+ * available Emergency Stock catalogue is shown as one filterable table,
+ * each row carrying its own quantity + optional reason input. Any row
+ * with a quantity is part of the batch; a compact "Items to Record"
+ * list below restates the selection with a remove (X) per row so a
+ * mistakenly-added item can be dropped before submitting. One "Record
+ * Usage" button POSTs the whole selection to `POST /inventory/usage`,
+ * which still writes one fully independent, individually-audited
+ * `InventoryUsageEntry` row per item inside a single atomic transaction
+ * (all rows commit together, or none do) — see RecordUsageRequest's own
+ * backend docstring. No batch/session parent entity is introduced. */
 export function RecordInventoryUsageForm() {
   const { toast } = useToast();
   const recordUsage = useRecordInventoryUsage();
+  const { data: items, isLoading, isError, error, refetch } = useInventoryItems();
+
   const [linkMode, setLinkMode] = useState('search');
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [manualName, setManualName] = useState('');
@@ -198,15 +214,68 @@ export function RecordInventoryUsageForm() {
   const [manualPhone, setManualPhone] = useState('');
   const [usedOn, setUsedOn] = useState(todayDisplayDayKey());
 
-  const [selectedItem, setSelectedItem] = useState(null);
-  const [quantity, setQuantity] = useState('');
-  const [reasonNote, setReasonNote] = useState('');
-  const [lineError, setLineError] = useState(null);
-  const [lines, setLines] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const debouncedSearch = useDebouncedValue(searchTerm, 200);
+  // `{ [itemId]: { quantity: string, reason: string } }` — a key is
+  // present iff the user has touched that row; a row counts toward the
+  // batch only once its quantity parses to a positive number.
+  const [selections, setSelections] = useState({});
 
   const [submitError, setSubmitError] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const availableItems = useMemo(
+    () => (items ?? []).filter((item) => item.is_active && Number(item.emergency_stock_level) > 0),
+    [items],
+  );
+
+  const visibleItems = useMemo(() => {
+    const term = debouncedSearch.trim().toLowerCase();
+    if (!term) return availableItems;
+    return availableItems.filter((item) => item.name.toLowerCase().includes(term));
+  }, [availableItems, debouncedSearch]);
+
+  // Every touched row, resolved back to its catalogue item — drives the
+  // "Items to Record" recap list, independent of the search filter so a
+  // selected item never vanishes just because it's filtered out above.
+  const selectedRows = useMemo(() => {
+    return Object.entries(selections)
+      .map(([itemId, draft]) => {
+        const item = availableItems.find((candidate) => candidate.id === itemId);
+        if (!item) return null;
+        return { item, quantity: draft.quantity ?? '', reason: draft.reason ?? '' };
+      })
+      .filter(Boolean);
+  }, [selections, availableItems]);
+
+  function setRowQuantity(itemId, quantity) {
+    setSelections((current) => {
+      const next = { ...current };
+      const existing = next[itemId] ?? { quantity: '', reason: '' };
+      if (quantity === '' && !existing.reason) {
+        delete next[itemId];
+      } else {
+        next[itemId] = { ...existing, quantity };
+      }
+      return next;
+    });
+  }
+
+  function setRowReason(itemId, reason) {
+    setSelections((current) => {
+      const existing = current[itemId] ?? { quantity: '', reason: '' };
+      return { ...current, [itemId]: { ...existing, reason } };
+    });
+  }
+
+  function removeRow(itemId) {
+    setSelections((current) => {
+      const next = { ...current };
+      delete next[itemId];
+      return next;
+    });
+  }
 
   function clearPatientLink() {
     setSelectedPatient(null);
@@ -215,43 +284,28 @@ export function RecordInventoryUsageForm() {
     setManualPhone('');
   }
 
-  function handleAddLine() {
-    setLineError(null);
-    if (!selectedItem) return;
-    const parsed = usageLineItemSchema.safeParse({ quantity, reason_note: reasonNote });
-    if (!parsed.success) {
-      setLineError(parsed.error.issues[0]?.message ?? 'Invalid quantity');
-      return;
-    }
-
-    setLines((current) => [
-      ...current,
-      {
-        key: nextLineKey++,
-        item_id: selectedItem.id,
-        name: selectedItem.name,
-        unit: selectedItem.unit,
-        available: selectedItem.emergency_stock_level,
-        quantity: parsed.data.quantity,
-        reason_note: parsed.data.reason_note || '',
-      },
-    ]);
-    setSelectedItem(null);
-    setQuantity('');
-    setReasonNote('');
-  }
-
-  function handleRemoveLine(key) {
-    setLines((current) => current.filter((line) => line.key !== key));
-  }
-
-  async function handleSubmitBatch() {
+  async function handleSubmit() {
     setSubmitError(null);
     setSuccessMessage(null);
 
-    if (lines.length === 0) {
-      setSubmitError('Add at least one item before recording usage.');
+    const activeRows = selectedRows.filter((row) => String(row.quantity).trim() !== '');
+    if (activeRows.length === 0) {
+      setSubmitError('Enter a quantity for at least one item before recording usage.');
       return;
+    }
+
+    const parsedLines = [];
+    for (const row of activeRows) {
+      const result = parseLineQuantity(row.quantity, row.item.emergency_stock_level);
+      if (result.error) {
+        setSubmitError(`${row.item.name}: ${result.error}`);
+        return;
+      }
+      parsedLines.push({
+        item_id: row.item.id,
+        quantity: result.quantity,
+        reason_note: row.reason.trim() || null,
+      });
     }
 
     let manualPatientPayload = {};
@@ -274,20 +328,19 @@ export function RecordInventoryUsageForm() {
     setIsSubmitting(true);
     try {
       await recordUsage.mutateAsync({
-        items: lines.map((line) => ({
-          item_id: line.item_id,
-          quantity: line.quantity,
-          reason_note: line.reason_note || null,
-        })),
+        items: parsedLines,
         used_on: usedOn,
         patient_id: selectedPatient?.id ?? null,
         ...manualPatientPayload,
       });
       const message =
-        lines.length === 1 ? 'Usage entry recorded.' : `${lines.length} usage entries recorded.`;
+        parsedLines.length === 1
+          ? 'Usage entry recorded.'
+          : `${parsedLines.length} usage entries recorded.`;
       setSuccessMessage(message);
       toast.success({ title: 'Usage recorded', description: message });
-      setLines([]);
+      setSelections({});
+      setSearchTerm('');
       clearPatientLink();
     } catch (submitErr) {
       const message = submitErr.message || 'Unable to record this usage batch.';
@@ -316,50 +369,82 @@ export function RecordInventoryUsageForm() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Add Item</CardTitle>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <CardTitle>Select Items</CardTitle>
+            <div className="relative w-full sm:w-64">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Search item by name…"
+                className="pl-8"
+              />
+            </div>
+          </div>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
-            <div className="flex min-w-[220px] flex-1 flex-col gap-1.5">
-              <Label>Item</Label>
-              <SearchSelect
-                queryKey={['inventory', 'items', 'search']}
-                queryFn={(term) => inventoryService.searchItems(term).then((res) => res.data)}
-                getLabel={(item) => item.name}
-                getDescription={(item) =>
-                  `${item.unit} — ${item.emergency_stock_level} available`
-                }
-                placeholder="Search item by name"
-                selectedLabel={selectedItem ? selectedItem.name : ''}
-                onSelect={(item) => setSelectedItem(item)}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="usage_quantity">Quantity</Label>
-              <Input
-                id="usage_quantity"
-                type="number"
-                step="0.01"
-                min="0"
-                className="w-28"
-                value={quantity}
-                onChange={(event) => setQuantity(event.target.value)}
-              />
-            </div>
-            <div className="flex min-w-[200px] flex-1 flex-col gap-1.5">
-              <Label htmlFor="usage_line_reason_note">Reason (optional)</Label>
-              <Input
-                id="usage_line_reason_note"
-                value={reasonNote}
-                onChange={(event) => setReasonNote(event.target.value)}
-              />
-            </div>
-            <Button type="button" onClick={handleAddLine} disabled={!selectedItem}>
-              <Plus className="h-4 w-4" />
-              Add Item
-            </Button>
-          </div>
-          {lineError ? <p className="text-xs text-destructive">{lineError}</p> : null}
+          {isLoading ? (
+            <PageLoader label="Loading Emergency Stock items" />
+          ) : isError ? (
+            <PageError
+              error={error}
+              reset={refetch}
+              message="Couldn't load Emergency Stock items."
+            />
+          ) : availableItems.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No active items currently have Emergency Stock available.
+            </p>
+          ) : visibleItems.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No items match &quot;{debouncedSearch}&quot;.
+            </p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Item</TableHead>
+                  <TableHead className="text-right">Available</TableHead>
+                  <TableHead className="w-32">Quantity</TableHead>
+                  <TableHead>Reason (optional)</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {visibleItems.map((item) => {
+                  const draft = selections[item.id];
+                  const isSelected = Boolean(draft && String(draft.quantity).trim() !== '');
+                  return (
+                    <TableRow key={item.id} className={isSelected ? 'bg-muted/40' : undefined}>
+                      <TableCell className="font-medium text-foreground">
+                        {item.name} <span className="text-muted-foreground">({item.unit})</span>
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {item.emergency_stock_level}
+                      </TableCell>
+                      <TableCell>
+                        <Input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          aria-label={`Quantity for ${item.name}`}
+                          className="w-28"
+                          value={draft?.quantity ?? ''}
+                          onChange={(event) => setRowQuantity(item.id, event.target.value)}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Input
+                          aria-label={`Reason for ${item.name}`}
+                          value={draft?.reason ?? ''}
+                          onChange={(event) => setRowReason(item.id, event.target.value)}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
           <div className="flex flex-col gap-1.5 sm:max-w-xs">
             <Label htmlFor="usage_used_on">Used On</Label>
             <Input
@@ -377,8 +462,10 @@ export function RecordInventoryUsageForm() {
           <CardTitle>Items to Record</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          {lines.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No items added yet.</p>
+          {selectedRows.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No items selected yet — enter a quantity against an item above.
+            </p>
           ) : (
             <>
               <Table>
@@ -391,21 +478,23 @@ export function RecordInventoryUsageForm() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {lines.map((line) => (
-                    <TableRow key={line.key}>
+                  {selectedRows.map((row) => (
+                    <TableRow key={row.item.id}>
                       <TableCell className="font-medium text-foreground">
-                        {line.name} <span className="text-muted-foreground">({line.unit})</span>
+                        {row.item.name}{' '}
+                        <span className="text-muted-foreground">({row.item.unit})</span>
                       </TableCell>
-                      <TableCell className="text-right tabular-nums">{line.quantity}</TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {line.reason_note || '—'}
+                      <TableCell className="text-right tabular-nums">
+                        {String(row.quantity).trim() === '' ? '—' : row.quantity}
                       </TableCell>
+                      <TableCell className="text-muted-foreground">{row.reason || '—'}</TableCell>
                       <TableCell>
                         <Button
                           type="button"
                           size="sm"
                           variant="ghost"
-                          onClick={() => handleRemoveLine(line.key)}
+                          aria-label={`Remove ${row.item.name}`}
+                          onClick={() => removeRow(row.item.id)}
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -415,7 +504,7 @@ export function RecordInventoryUsageForm() {
                 </TableBody>
               </Table>
               <div>
-                <Button type="button" onClick={handleSubmitBatch} disabled={isSubmitting}>
+                <Button type="button" onClick={handleSubmit} disabled={isSubmitting}>
                   <HeartPulse className="h-4 w-4" />
                   {isSubmitting ? 'Recording…' : 'Record Usage'}
                 </Button>

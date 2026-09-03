@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Printer } from 'lucide-react';
+import { Printer, X } from 'lucide-react';
 import {
   useInventoryItems,
   useInventoryReceipts,
@@ -13,7 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui
 import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
 import { Label } from '@/shared/components/ui/Label';
-import { Select } from '@/shared/components/ui/Select';
+import { SearchSelect } from '@/shared/components/SearchSelect';
 import { Tabs } from '@/shared/components/ui/Tabs';
 import { PageLoader } from '@/shared/components/PageLoader';
 import { PageError } from '@/shared/components/PageError';
@@ -101,7 +101,8 @@ function TransfersTable({ items, itemId, startDate, endDate }) {
     return <PageError error={error} reset={refetch} message="Couldn't load transfers." />;
   }
   const rows = data ?? [];
-  if (rows.length === 0) return <p className="text-sm text-muted-foreground">No transfers found.</p>;
+  if (rows.length === 0)
+    return <p className="text-sm text-muted-foreground">No transfers found.</p>;
 
   return (
     <Table>
@@ -198,10 +199,25 @@ export function InventoryHistoryPanel() {
   const { data: items } = useInventoryItems();
   const [activeTab, setActiveTab] = useState('receipts');
   const [itemId, setItemId] = useState('');
+  const [selectedItemName, setSelectedItemName] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const printHistoryLog = usePrintInventoryHistoryLog();
   const [printError, setPrintError] = useState(null);
+
+  // Client-side filter over the already-fetched catalog (same approach
+  // as RaiseRestockRequestForm.jsx's `searchCatalog`) — replaces the old
+  // long <Select> of every item with the app's standard searchable
+  // picker, while still driving the server-side `item_id` query param.
+  function searchCatalogItems(term) {
+    const lower = term.toLowerCase();
+    return Promise.resolve((items ?? []).filter((item) => item.name.toLowerCase().includes(lower)));
+  }
+
+  function clearItemFilter() {
+    setItemId('');
+    setSelectedItemName('');
+  }
 
   async function handlePrint() {
     setPrintError(null);
@@ -222,27 +238,41 @@ export function InventoryHistoryPanel() {
       <CardHeader className="flex flex-col gap-4">
         <div className="flex items-center justify-between gap-3">
           <CardTitle>History</CardTitle>
-          <Button size="sm" variant="outline" onClick={handlePrint} disabled={printHistoryLog.isPending}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handlePrint}
+            disabled={printHistoryLog.isPending}
+          >
             <Printer className="h-4 w-4" />
             {printHistoryLog.isPending ? 'Preparing…' : 'Print'}
           </Button>
         </div>
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="history-item">Item</Label>
-            <Select
-              id="history-item"
-              value={itemId}
-              onChange={(event) => setItemId(event.target.value)}
-              className="w-auto"
-            >
-              <option value="">All items</option>
-              {(items ?? []).map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </Select>
+            <Label>Item</Label>
+            <div className="flex items-center gap-2">
+              <div className="w-56">
+                <SearchSelect
+                  queryKey={['inventory', 'items', 'history-filter']}
+                  queryFn={searchCatalogItems}
+                  getLabel={(item) => item.name}
+                  getDescription={(item) => item.unit}
+                  placeholder="All items"
+                  selectedLabel={selectedItemName}
+                  onSelect={(item) => {
+                    setItemId(item.id);
+                    setSelectedItemName(item.name);
+                  }}
+                />
+              </div>
+              {itemId ? (
+                <Button size="sm" variant="ghost" onClick={clearItemFilter}>
+                  <X className="h-4 w-4" />
+                  Clear
+                </Button>
+              ) : null}
+            </div>
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="history-start">From</Label>

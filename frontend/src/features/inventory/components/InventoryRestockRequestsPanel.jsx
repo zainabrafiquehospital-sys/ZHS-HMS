@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Check, X } from 'lucide-react';
+import { Check, Search, X } from 'lucide-react';
 import {
   useInventoryItems,
   useInventoryRequests,
@@ -32,6 +32,7 @@ import {
   TableRow,
 } from '@/shared/components/ui/Table';
 import { useToast } from '@/shared/components/toast/ToastProvider';
+import { useDebouncedValue } from '@/shared/hooks/useDebouncedValue';
 import { formatDisplayTime, todayDisplayDayKey } from '@/utils/timezone';
 
 const REQUEST_STATUS_BADGE_VARIANT = {
@@ -42,6 +43,33 @@ const REQUEST_STATUS_BADGE_VARIANT = {
 
 function itemName(items, itemId) {
   return items.find((item) => item.id === itemId)?.name ?? 'Unknown item';
+}
+
+/** Client-side filter of a request list by its resolved item name —
+ * the requests are a single unbounded fetch (no server pagination),
+ * so this stays local, same as every other list search in this app. */
+function filterByItemName(requests, items, term) {
+  const query = term.trim().toLowerCase();
+  if (!query) return requests;
+  return requests.filter((request) =>
+    itemName(items, request.item_id).toLowerCase().includes(query),
+  );
+}
+
+/** The shared inline "<Search> icon + <Input>" search box (see
+ * MyMedicineBills.jsx for the pattern this mirrors). */
+function ItemNameSearchInput({ value, onChange }) {
+  return (
+    <div className="relative w-full sm:w-64">
+      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="Search by item name…"
+        className="pl-8"
+      />
+    </div>
+  );
 }
 
 /** Fulfilling a request performs the actual Main -> Emergency transfer
@@ -257,14 +285,34 @@ export function InventoryRestockRequestsPanel() {
   const { data: allRequests, isLoading: historyLoading } = useInventoryRequests({});
   const [fulfilling, setFulfilling] = useState(null);
   const [rejecting, setRejecting] = useState(null);
+  const [pendingSearch, setPendingSearch] = useState('');
+  const [resolvedSearch, setResolvedSearch] = useState('');
+  const debouncedPendingSearch = useDebouncedValue(pendingSearch, 200);
+  const debouncedResolvedSearch = useDebouncedValue(resolvedSearch, 200);
 
-  const resolvedRequests = (allRequests ?? []).filter((request) => request.status !== 'pending');
+  const itemList = useMemo(() => items ?? [], [items]);
+  const resolvedRequests = useMemo(
+    () => (allRequests ?? []).filter((request) => request.status !== 'pending'),
+    [allRequests],
+  );
+
+  const visiblePending = useMemo(
+    () => filterByItemName(pendingRequests ?? [], itemList, debouncedPendingSearch),
+    [pendingRequests, itemList, debouncedPendingSearch],
+  );
+  const visibleResolved = useMemo(
+    () => filterByItemName(resolvedRequests, itemList, debouncedResolvedSearch),
+    [resolvedRequests, itemList, debouncedResolvedSearch],
+  );
 
   return (
     <div className="flex flex-col gap-6">
       <Card>
         <CardHeader>
-          <CardTitle>Pending Requests</CardTitle>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <CardTitle>Pending Requests</CardTitle>
+            <ItemNameSearchInput value={pendingSearch} onChange={setPendingSearch} />
+          </div>
         </CardHeader>
         <CardContent>
           {pendingLoading ? (
@@ -277,8 +325,8 @@ export function InventoryRestockRequestsPanel() {
             />
           ) : (
             <RequestsTable
-              requests={pendingRequests ?? []}
-              items={items ?? []}
+              requests={visiblePending}
+              items={itemList}
               showActions
               onFulfill={setFulfilling}
               onReject={setRejecting}
@@ -289,13 +337,16 @@ export function InventoryRestockRequestsPanel() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Resolved History</CardTitle>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <CardTitle>Resolved History</CardTitle>
+            <ItemNameSearchInput value={resolvedSearch} onChange={setResolvedSearch} />
+          </div>
         </CardHeader>
         <CardContent>
           {historyLoading ? (
             <PageLoader label="Loading history" />
           ) : (
-            <RequestsTable requests={resolvedRequests} items={items ?? []} showActions={false} />
+            <RequestsTable requests={visibleResolved} items={itemList} showActions={false} />
           )}
         </CardContent>
       </Card>

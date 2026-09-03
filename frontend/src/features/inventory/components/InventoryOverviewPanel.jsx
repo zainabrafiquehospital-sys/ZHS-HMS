@@ -1,12 +1,15 @@
 'use client';
 
-import { Boxes, Droplet, Pill, Siren, Syringe, Wrench } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Boxes, Droplet, Pill, Search, Siren, Syringe, Wrench } from 'lucide-react';
 import { useInventoryItems } from '@/features/inventory/hooks/useInventory';
 import { INVENTORY_CATEGORIES } from '@/features/inventory/schemas/inventorySchemas';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Badge } from '@/shared/components/ui/Badge';
+import { Input } from '@/shared/components/ui/Input';
 import { PageLoader } from '@/shared/components/PageLoader';
 import { PageError } from '@/shared/components/PageError';
+import { useDebouncedValue } from '@/shared/hooks/useDebouncedValue';
 
 // Covers inventorySchemas.js's INVENTORY_CATEGORIES exactly — no
 // category icons existed anywhere in this app before this screen
@@ -139,13 +142,28 @@ function ItemCard({ item }) {
  * themselves are laid out. */
 export function InventoryOverviewPanel() {
   const { data: items, isLoading, isError, error, refetch } = useInventoryItems();
+  const [searchTerm, setSearchTerm] = useState('');
+  const debouncedSearch = useDebouncedValue(searchTerm, 200);
+
+  const activeItems = useMemo(() => (items ?? []).filter((item) => item.is_active), [items]);
+
+  // Name/category filter — applies only to the item cards below, never
+  // to the two headline tiles (those stay whole-catalog totals by
+  // design, see this component's own docstring).
+  const visibleItems = useMemo(() => {
+    const term = debouncedSearch.trim().toLowerCase();
+    if (!term) return activeItems;
+    return activeItems.filter(
+      (item) =>
+        item.name.toLowerCase().includes(term) || item.category.toLowerCase().includes(term),
+    );
+  }, [activeItems, debouncedSearch]);
 
   if (isLoading) return <PageLoader label="Loading inventory" />;
   if (isError) {
     return <PageError error={error} reset={refetch} message="Couldn't load the item catalog." />;
   }
 
-  const activeItems = (items ?? []).filter((item) => item.is_active);
   const emergencyStockedItems = activeItems.filter(
     (item) => Number(item.emergency_stock_level) > 0,
   );
@@ -154,9 +172,10 @@ export function InventoryOverviewPanel() {
     activeItems,
     (item) => Number(item.main_stock_level) + Number(item.emergency_stock_level),
   ).join(' · ');
-  const emergencyBreakdown = summarizeByUnit(activeItems, (item) => item.emergency_stock_level).join(
-    ' · ',
-  );
+  const emergencyBreakdown = summarizeByUnit(
+    activeItems,
+    (item) => item.emergency_stock_level,
+  ).join(' · ');
 
   return (
     <div className="flex flex-col gap-6">
@@ -177,15 +196,30 @@ export function InventoryOverviewPanel() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Items</CardTitle>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <CardTitle>Items</CardTitle>
+            <div className="relative w-full sm:w-64">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Search by name or category…"
+                className="pl-8"
+              />
+            </div>
+          </div>
         </CardHeader>
         <CardContent className="flex flex-col gap-6">
           {activeItems.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No active items in the catalog yet — add one under Catalog first.
             </p>
+          ) : visibleItems.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No items match &quot;{debouncedSearch}&quot;.
+            </p>
           ) : (
-            groupByCategory(activeItems).map(({ category, items: categoryItems }) => {
+            groupByCategory(visibleItems).map(({ category, items: categoryItems }) => {
               const Icon = CATEGORY_ICONS[category] ?? Boxes;
               return (
                 <div key={category} className="flex flex-col gap-3">

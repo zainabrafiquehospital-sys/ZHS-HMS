@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Pencil, PlusCircle, Power, PowerOff } from 'lucide-react';
+import { Pencil, PlusCircle, Power, PowerOff, Search } from 'lucide-react';
 import {
   useInventoryItems,
   useCreateInventoryItem,
@@ -30,6 +30,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/shared/components/ui/Table';
+import { useDebouncedValue } from '@/shared/hooks/useDebouncedValue';
 import { useToast } from '@/shared/components/toast/ToastProvider';
 
 const EMPTY_VALUES = { name: '', category: '', unit: '', low_stock_threshold: '' };
@@ -190,6 +191,22 @@ function ItemsListPanel({ items, onEdit }) {
   const { toast } = useToast();
   const updateItem = useUpdateInventoryItem();
   const [toggleError, setToggleError] = useState(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const debouncedSearch = useDebouncedValue(searchTerm, 200);
+
+  // Client-side name/category filter over the already-fetched catalog —
+  // the same inline "<Search> icon + debounced <Input> + local filter"
+  // pattern PatientDirectory.jsx / MyMedicineBills.jsx use; the catalog
+  // is a single page_size=100 fetch, never server-paginated, so there's
+  // nothing to wire this into.
+  const filteredItems = useMemo(() => {
+    const term = debouncedSearch.trim().toLowerCase();
+    if (!term) return items;
+    return items.filter(
+      (item) =>
+        item.name.toLowerCase().includes(term) || item.category.toLowerCase().includes(term),
+    );
+  }, [items, debouncedSearch]);
 
   async function handleToggleActive(item) {
     setToggleError(null);
@@ -210,11 +227,26 @@ function ItemsListPanel({ items, onEdit }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Item Catalog</CardTitle>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <CardTitle>Item Catalog</CardTitle>
+          <div className="relative w-full sm:w-64">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search by name or category…"
+              className="pl-8"
+            />
+          </div>
+        </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {items.length === 0 ? (
           <p className="text-sm text-muted-foreground">No items added yet.</p>
+        ) : filteredItems.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No items match &quot;{debouncedSearch}&quot;.
+          </p>
         ) : (
           <Table>
             <TableHeader>
@@ -229,7 +261,7 @@ function ItemsListPanel({ items, onEdit }) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {items.map((item) => (
+              {filteredItems.map((item) => (
                 <TableRow key={item.id}>
                   <TableCell className="font-medium text-foreground">{item.name}</TableCell>
                   <TableCell className="capitalize">{item.category}</TableCell>
