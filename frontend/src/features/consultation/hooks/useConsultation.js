@@ -54,8 +54,7 @@ export function useMyQueue(doctorUserId, status = 'waiting_doctor') {
 export function useUnassignedQueue(status = 'waiting_doctor') {
   return useQuery({
     queryKey: ['visits', 'unassigned', status],
-    queryFn: () =>
-      visitsService.list({ status, unassignedOnly: true }).then((res) => res.data),
+    queryFn: () => visitsService.list({ status, unassignedOnly: true }).then((res) => res.data),
     refetchInterval: 15000,
     refetchIntervalInBackground: true,
   });
@@ -186,7 +185,11 @@ export function useConsultationById(consultationId) {
     const currentStatus = query.data?.status;
     const sameConsultation = previousStatusRef.current.consultationId === consultationId;
     const previousStatus = sameConsultation ? previousStatusRef.current.status : undefined;
-    if (previousStatus === 'awaiting_vitals' && currentStatus && currentStatus !== 'awaiting_vitals') {
+    if (
+      previousStatus === 'awaiting_vitals' &&
+      currentStatus &&
+      currentStatus !== 'awaiting_vitals'
+    ) {
       queryClient.invalidateQueries({ queryKey: ['vitals', 'visits', query.data.visit_id] });
     }
     previousStatusRef.current = { consultationId, status: currentStatus };
@@ -247,6 +250,20 @@ export function useViewRegistrationSlip() {
   return useMutation({
     mutationFn: async (visitId) => {
       const html = await consultationService.fetchRegistrationSlipHtml(visitId);
+      await openAndPrintHtml(html);
+    },
+  });
+}
+
+/** "Print Prescription" (2026-09-03) — ConsultationPanel's own button,
+ * available once the consultation is completed (the slip reads the
+ * persisted consultation). Same fetch-HTML-then-openAndPrintHtml
+ * pipeline / hidden-iframe print mechanism as useViewRegistrationSlip
+ * above, just against the Consultation module's own slip endpoint. */
+export function usePrintPrescriptionSlip() {
+  return useMutation({
+    mutationFn: async (consultationId) => {
+      const html = await consultationService.fetchPrescriptionSlipHtml(consultationId);
       await openAndPrintHtml(html);
     },
   });

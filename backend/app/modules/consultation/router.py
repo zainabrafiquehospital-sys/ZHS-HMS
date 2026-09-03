@@ -3,7 +3,9 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import HTMLResponse
 
+from app.core.config import Settings, get_settings
 from app.modules.auth.dependencies import require_permission
 from app.modules.auth.models import User
 from app.modules.consultation.constants import (
@@ -20,7 +22,12 @@ from app.modules.consultation.schemas import (
     StartConsultationRequest,
 )
 from app.modules.consultation.service import ConsultationService
+from app.modules.patients.dependencies import get_patient_service
+from app.modules.patients.service import PatientService
+from app.modules.visits.dependencies import get_visit_service
+from app.modules.visits.service import VisitService
 from app.shared.envelope import success_envelope
+from app.shared.printing.service import render_prescription_slip
 
 router = APIRouter(prefix="/consultations", tags=["consultations"])
 
@@ -107,3 +114,38 @@ async def complete_consultation(
         updates=payload.model_dump(exclude_unset=True),
     )
     return success_envelope(ConsultationOut.from_consultation(consultation).model_dump(mode="json"))
+
+
+@router.get("/{consultation_id}/slip/print", response_class=HTMLResponse)
+async def print_prescription_slip(
+    consultation_id: UUID,
+    consultation_service: ConsultationService = Depends(get_consultation_service),
+    visit_service: VisitService = Depends(get_visit_service),
+    patient_service: PatientService = Depends(get_patient_service),
+    settings: Settings = Depends(get_settings),
+    _actor: User = Depends(require_permission(PERMISSION_CONSULTATION_READ)),
+) -> HTMLResponse:
+    """The doctor's prescription slip — same Central Print Service
+    pattern as Billing's invoice print and Reception's registration
+    slip (this module decides *whether* it may be printed, via the same
+    `consultation:read` gate as viewing it, and supplies the data; the
+    shared printing service only renders it — Phase 6 §14). Unlike those
+    two this is a full-page layout meant to overprint paper already
+    bearing the hospital's own letterhead, so `render_prescription_slip`
+    draws no hospital identity itself — see its docstring."""
+    consultation = await consultation_service.get_consultation(consultation_id)
+    visit = await visit_service.get_visit(consultation.visit_id)
+    patient = await patient_service.get_patient(visit.patient_id)
+
+    html_document = render_prescription_slip(
+        hospital_name=settings.app_name,
+        visit_queue_token=visit.queue_token,
+        patient_full_name=patient.full_name,
+        patient_age_years=patient.age_years,
+        history_of=consultation.history_of,
+        complaint_of=consultation.complaint_of,
+        advised=consultation.advised,
+        diagnosis=consultation.diagnosis,
+        prescription=consultation.prescription,
+    )
+    return HTMLResponse(content=html_document)

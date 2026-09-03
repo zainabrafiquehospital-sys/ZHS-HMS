@@ -203,3 +203,125 @@ async def test_complete_consultation_success_via_http(
 
     assert resp.status_code == 200
     assert resp.json()["data"]["status"] == "completed"
+
+
+async def _start_consultation_id(api_client, access_token, visit) -> str:
+    start_resp = await api_client.post(
+        "/api/v1/consultations",
+        json={"visit_id": str(visit.id)},
+        headers=_auth_header(access_token),
+    )
+    assert start_resp.status_code == 201
+    return start_resp.json()["data"]["id"]
+
+
+async def test_print_prescription_slip_requires_consultation_read(
+    api_client, real_session, grant_permission, reception_service
+):
+    doctor, access_token = await _create_and_login(api_client, real_session, "rx-slip-no-perm")
+    await grant_permission(doctor, PERMISSION_CONSULTATION_START)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_MANAGE)
+    # deliberately NOT granting PERMISSION_CONSULTATION_READ
+    visit = await _make_visit(reception_service, doctor, "RxSlipNoPerm")
+    consultation_id = await _start_consultation_id(api_client, access_token, visit)
+
+    resp = await api_client.get(
+        f"/api/v1/consultations/{consultation_id}/slip/print",
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_print_prescription_slip_renders_sections_and_patient(
+    api_client, real_session, grant_permission, reception_service
+):
+    doctor, access_token = await _create_and_login(api_client, real_session, "rx-slip-ok")
+    await grant_permission(doctor, PERMISSION_CONSULTATION_START)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_MANAGE)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_READ)
+    visit = await _make_visit(reception_service, doctor, "RxSlipOk")
+    consultation_id = await _start_consultation_id(api_client, access_token, visit)
+
+    complete_resp = await api_client.post(
+        f"/api/v1/consultations/{consultation_id}/complete",
+        json={
+            "history_of": "Gravida 2 Para 1",
+            "complaint_of": "Lower abdominal pain 3 days",
+            "advised": "USG pelvis; review in 1 week",
+            "diagnosis": "Threatened miscarriage",
+            "prescription": (
+                "Tab Folic Acid 5mg OD\n" "Tab Progesterone 200mg BD\n" "Inj Anti-D if indicated"
+            ),
+        },
+        headers=_auth_header(access_token),
+    )
+    assert complete_resp.status_code == 200
+    assert complete_resp.json()["data"]["history_of"] == "Gravida 2 Para 1"
+    assert complete_resp.json()["data"]["complaint_of"] == "Lower abdominal pain 3 days"
+    assert complete_resp.json()["data"]["advised"] == "USG pelvis; review in 1 week"
+
+    resp = await api_client.get(
+        f"/api/v1/consultations/{consultation_id}/slip/print",
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    body = resp.text
+
+    # Section labels are printed verbatim (never the expansions).
+    for label in (">H/O<", ">C/O<", ">Adv<", 'dx-label">Dx<', 'rx-label">Rx<'):
+        assert label in body
+    assert "Diagnosis" not in body and "Complaint of" not in body
+
+    # Header identifiers.
+    assert visit.queue_token in body
+    assert "RxSlipOk" in body  # patient full name contains the suffix
+    assert "33 yrs" in body  # _make_visit registers age_years=33
+
+    # Box + Dx content.
+    assert "Gravida 2 Para 1" in body
+    assert "Lower abdominal pain 3 days" in body
+    assert "USG pelvis; review in 1 week" in body
+    assert "Threatened miscarriage" in body
+
+    # Rx: one <li> per non-empty prescription line.
+    assert body.count("<li>") == 3
+    assert "<li>Tab Folic Acid 5mg OD</li>" in body
+    assert "<li>Inj Anti-D if indicated</li>" in body
+
+    # This layout overprints pre-printed letterhead — it must NOT draw
+    # the hospital identity block every other Central Print document does.
+    assert "report-header" not in body
+    assert 'class="logo"' not in body
+
+
+async def test_print_prescription_slip_empty_fields_still_renders_boxes(
+    api_client, real_session, grant_permission, reception_service
+):
+    doctor, access_token = await _create_and_login(api_client, real_session, "rx-slip-empty")
+    await grant_permission(doctor, PERMISSION_CONSULTATION_START)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_MANAGE)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_READ)
+    visit = await _make_visit(reception_service, doctor, "RxSlipEmpty")
+    consultation_id = await _start_consultation_id(api_client, access_token, visit)
+
+    complete_resp = await api_client.post(
+        f"/api/v1/consultations/{consultation_id}/complete",
+        json={},
+        headers=_auth_header(access_token),
+    )
+    assert complete_resp.status_code == 200
+
+    resp = await api_client.get(
+        f"/api/v1/consultations/{consultation_id}/slip/print",
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 200
+    body = resp.text
+    for label in (">H/O<", ">C/O<", ">Adv<", 'dx-label">Dx<', 'rx-label">Rx<'):
+        assert label in body
+    assert "<li>" not in body  # empty Rx -> em-dash placeholder, no list items
+    assert "rx-empty" in body

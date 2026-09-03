@@ -1726,15 +1726,15 @@ def render_vitals_daily_summary(
         f"<strong>{len(inventory_rows)}</strong> entr{'y' if len(inventory_rows) == 1 else 'ies'}"
     ]
     if inventory_total_quantity is not None:
-        inventory_summary_parts.append(f"<strong>Total Quantity:</strong> {inventory_total_quantity}")
+        inventory_summary_parts.append(
+            f"<strong>Total Quantity:</strong> {inventory_total_quantity}"
+        )
     inventory_summary_line = " &middot; ".join(inventory_summary_parts)
 
     vitals_table_html = _report_table_html(
         column_headers=vitals_column_headers, rows=vitals_rows, numeric_columns=set()
     )
-    vitals_summary_line = (
-        f"<strong>{len(vitals_rows)}</strong> patient{'s' if len(vitals_rows) != 1 else ''} recorded"
-    )
+    vitals_summary_line = f"<strong>{len(vitals_rows)}</strong> patient{'s' if len(vitals_rows) != 1 else ''} recorded"
 
     return _report_shell_html_sections(
         hospital_name=hospital_name,
@@ -1754,3 +1754,305 @@ def render_vitals_daily_summary(
             ),
         ],
     )
+
+
+# ---------------------------------------------------------------------
+# Prescription slip (2026-09-03 addition, Doctor module) — a full-page
+# layout that prints ONLY the doctor's structured clinical content,
+# positioned to land in the blank areas of paper that is ALREADY
+# pre-printed with the hospital's own logo/letterhead/footer. Unlike
+# every other document in this module it therefore renders NO hospital
+# identity block, NO logo, NO footer — that ink is physically on the
+# page before it enters the printer. It is also not an 80mm receipt
+# (`_RECEIPT_STYLE`) nor the letterhead A4 report (`_REPORT_STYLE`,
+# which draws its own header) — it needs its own style.
+#
+# Physical calibration: exact offsets/heights depend on the specific
+# pre-printed stationery, which has not been measured yet. Every
+# tunable dimension is a single named CSS custom property in the
+# `:root` block below, grouped and commented, so a physical test-print
+# feedback pass is "edit these values", never "hunt through markup".
+# The defaults here are a deliberate best guess for A4 letterhead with
+# a ~50mm top logo band.
+#
+# Section labels are the hospital's own shorthand and are printed
+# verbatim: H/O (history), C/O (complaint), Dx (diagnosis), Adv
+# (advised), Rx (treatment / medicines). The expansions are for code
+# readers only and never appear on the slip.
+# ---------------------------------------------------------------------
+
+_PRESCRIPTION_SLIP_STYLE = """
+  :root {
+    /* ---- Whole-page geometry -------------------------------------- */
+    --page-size: A4;
+    --page-margin-top: 0mm;       /* printer hardware margin — keep 0, tune --content-* instead */
+    --page-margin-x: 0mm;
+    --page-margin-bottom: 0mm;
+    --content-pad-x: 16mm;        /* left/right inset of ALL printed content */
+
+    /* ---- Header row (Token / Name / Age) ------------------------- */
+    --header-offset-top: 52mm;    /* space reserved for the pre-printed logo/letterhead band */
+    --header-to-boxes-gap: 8mm;   /* header row -> boxes row */
+    --header-font-size: 11pt;
+    --header-label-weight: 700;
+
+    /* ---- H/O . C/O . Adv boxes row ------------------------------ */
+    --box-gap: 5mm;               /* horizontal gap between the three boxes */
+    --box-min-height: 40mm;
+    --box-padding: 3mm;
+    --box-border: 0.3mm solid #000;
+    --box-label-font-size: 9pt;
+    --box-label-weight: 700;
+    --box-body-font-size: 10pt;
+    --box-body-line-height: 1.5;
+
+    /* ---- Dx line (under the C/O box only) ----------------------- */
+    --dx-offset-top: 3mm;         /* boxes row -> Dx line */
+    --dx-height: 8mm;             /* single line ONLY — do not grow into a paragraph box */
+    --dx-padding: 2mm;
+    --dx-border: 0.3mm solid #000;
+    --dx-label-font-size: 9pt;
+    --dx-font-size: 10pt;
+
+    /* ---- Rx section --------------------------------------------- */
+    --rx-offset-top: 7mm;         /* Dx line -> Rx */
+    --rx-label-font-size: 11pt;
+    --rx-font-size: 10.5pt;
+    --rx-line-height: 1.9;
+    --rx-item-gap: 1mm;
+
+    --ink: #000000;
+    --content-font: 'Inter', -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: var(--content-font);
+    color: var(--ink);
+    background: #eeeeee;
+  }
+
+  /* On screen: show an A4-proportioned sheet so the layout can be
+     eyeballed before a real print. @page + @media print below strip
+     all of this framing for the actual print. */
+  .sheet {
+    width: 210mm;
+    min-height: 297mm;
+    margin: 12px auto;
+    background: #ffffff;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+    padding: var(--page-margin-top) var(--page-margin-x) var(--page-margin-bottom);
+  }
+
+  .content {
+    padding-left: var(--content-pad-x);
+    padding-right: var(--content-pad-x);
+  }
+
+  .rx-header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4mm 12mm;
+    padding-top: var(--header-offset-top);
+    font-size: var(--header-font-size);
+  }
+  .rx-header .field { white-space: nowrap; }
+  .rx-header .field .label {
+    font-weight: var(--header-label-weight);
+    margin-right: 2mm;
+  }
+
+  /* One 3-column grid holds both the boxes row and the Dx row, so the
+     Dx line stays locked to the C/O (middle) column's own width. */
+  .clinical-grid {
+    margin-top: var(--header-to-boxes-gap);
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    column-gap: var(--box-gap);
+    row-gap: 0;
+  }
+  .box {
+    border: var(--box-border);
+    padding: var(--box-padding);
+    min-height: var(--box-min-height);
+  }
+  .box .box-label {
+    font-size: var(--box-label-font-size);
+    font-weight: var(--box-label-weight);
+    margin-bottom: 1.5mm;
+  }
+  .box .box-body {
+    font-size: var(--box-body-font-size);
+    line-height: var(--box-body-line-height);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .dx-row-spacer { }             /* empty grid cells flanking the Dx line */
+  .dx {
+    grid-column: 2;             /* directly beneath the C/O box ONLY */
+    margin-top: var(--dx-offset-top);
+    height: var(--dx-height);
+    border: var(--dx-border);
+    padding: var(--dx-padding);
+    display: flex;
+    align-items: center;
+    gap: 2mm;
+    overflow: hidden;
+  }
+  .dx .dx-label {
+    font-size: var(--dx-label-font-size);
+    font-weight: 700;
+    flex: 0 0 auto;
+  }
+  .dx .dx-value {
+    font-size: var(--dx-font-size);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .rx {
+    margin-top: var(--rx-offset-top);
+  }
+  .rx .rx-label {
+    font-size: var(--rx-label-font-size);
+    font-weight: 700;
+    margin-bottom: 2mm;
+  }
+  .rx ol {
+    margin: 0;
+    padding-left: 8mm;
+    font-size: var(--rx-font-size);
+    line-height: var(--rx-line-height);
+  }
+  .rx ol li { margin-bottom: var(--rx-item-gap); }
+  .rx .rx-empty {
+    font-size: var(--rx-font-size);
+    color: #666666;
+  }
+
+  @page {
+    size: var(--page-size);
+    margin: var(--page-margin-top) var(--page-margin-x) var(--page-margin-bottom);
+  }
+  @media print {
+    * { print-color-adjust: exact !important; -webkit-print-color-adjust: exact !important; }
+    html, body { background: #ffffff !important; }
+    .sheet {
+      width: auto;
+      min-height: 0;
+      margin: 0;
+      box-shadow: none;
+      padding: 0;
+    }
+  }
+"""
+
+
+def _prescription_box_html(label: str, body: str | None) -> str:
+    return (
+        '<div class="box">'
+        f'<div class="box-label">{_escape(label)}</div>'
+        f'<div class="box-body">{_escape(body or "")}</div>'
+        "</div>"
+    )
+
+
+def _rx_header_field_html(label: str, value: str) -> str:
+    return (
+        '<div class="field">'
+        f'<span class="label">{_escape(label)}</span>'
+        f'<span class="value">{_escape(value)}</span>'
+        "</div>"
+    )
+
+
+def render_prescription_slip(
+    *,
+    hospital_name: str,
+    visit_queue_token: str,
+    patient_full_name: str,
+    patient_age_years: int,
+    history_of: str | None,
+    complaint_of: str | None,
+    advised: str | None,
+    diagnosis: str | None,
+    prescription: str | None,
+) -> str:
+    """Renders the doctor's prescription slip for printing onto paper
+    that is ALREADY pre-printed with the hospital's letterhead — so this
+    template draws none of that itself (no logo, no identity block, no
+    footer), only the structured clinical content, offset down the page
+    to clear the physical letterhead band.
+
+    Layout, top to bottom (see `_PRESCRIPTION_SLIP_STYLE` for the named,
+    physically-calibratable CSS variables controlling every offset and
+    size):
+      1. A header row — Token / Patient Name / Age.
+      2. Three side-by-side bordered boxes — `H/O`, `C/O`, `Adv`.
+      3. A single-line `Dx` box directly beneath the `C/O` box only.
+      4. An `Rx` section — `prescription` split one medicine per line
+         into a numbered list.
+
+    Every clinical field is optional; a missing one renders as an empty
+    box / empty Rx state (never hidden — the empty geometry still needs
+    to be visible for physical calibration and for hand-writing on).
+
+    `hospital_name` is accepted for call-site parity with every other
+    `render_*` in this module and is used only in the document
+    `<title>`-adjacent metadata, never drawn on the page itself."""
+    rx_lines = [line.strip() for line in (prescription or "").splitlines() if line.strip()]
+    if rx_lines:
+        rx_body = "<ol>" + "".join(f"<li>{_escape(line)}</li>" for line in rx_lines) + "</ol>"
+    else:
+        rx_body = '<div class="rx-empty">&mdash;</div>'
+
+    _ = hospital_name  # see docstring — not rendered on the pre-printed page
+
+    header_fields = "".join(
+        [
+            _rx_header_field_html("Token", visit_queue_token),
+            _rx_header_field_html("Name", patient_full_name),
+            _rx_header_field_html("Age", f"{patient_age_years} yrs"),
+        ]
+    )
+
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Prescription &mdash; {_escape(visit_queue_token)}</title>
+<style>
+{_PRESCRIPTION_SLIP_STYLE}
+</style>
+</head>
+<body>
+  <div class="sheet">
+    <div class="content">
+      <div class="rx-header">
+        {header_fields}
+      </div>
+
+      <div class="clinical-grid">
+        {_prescription_box_html("H/O", history_of)}
+        {_prescription_box_html("C/O", complaint_of)}
+        {_prescription_box_html("Adv", advised)}
+        <div class="dx-row-spacer"></div>
+        <div class="dx">
+          <span class="dx-label">Dx</span>
+          <span class="dx-value">{_escape(diagnosis or "")}</span>
+        </div>
+        <div class="dx-row-spacer"></div>
+      </div>
+
+      <div class="rx">
+        <div class="rx-label">Rx</div>
+        {rx_body}
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+"""

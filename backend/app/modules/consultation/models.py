@@ -60,4 +60,14 @@ class Consultation(BaseEntity):
     notes: Mapped[str | None] = mapped_column(Text())
     diagnosis: Mapped[str | None] = mapped_column(Text())
     prescription: Mapped[str | None] = mapped_column(Text())
+    # H/O / C/O / Adv boxes of the doctor's prescription slip (2026-09-03
+    # addition — the pre-printed-letterhead print layout). All three are
+    # optional per-consultation free text, exactly like `notes`/
+    # `diagnosis`/`prescription` above; `diagnosis`/`prescription` map
+    # 1:1 to that slip's Dx/Rx sections and need no new column. `notes`
+    # stays the general clinical-notes field and is deliberately not
+    # printed on the slip.
+    history_of: Mapped[str | None] = mapped_column(Text())
+    complaint_of: Mapped[str | None] = mapped_column(Text())
+    advised: Mapped[str | None] = mapped_column(Text())
     completed_at: Mapped[datetime | None] = mapped_column()

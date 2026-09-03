@@ -33,4 +33,13 @@ export const consultationService = {
   fetchRegistrationSlipHtml(visitId) {
     return httpClient.get(`/reception/visits/${visitId}/slip/print`, { responseType: 'text' });
   },
+
+  // "Print Prescription" (2026-09-03) — the doctor's prescription slip,
+  // a full-page layout meant to overprint paper already bearing the
+  // hospital's letterhead (see backend render_prescription_slip). Same
+  // raw-HTML shape as fetchRegistrationSlipHtml above; gated server-side
+  // on `consultation:read`, which every Doctor already holds.
+  fetchPrescriptionSlipHtml(consultationId) {
+    return httpClient.get(`/consultations/${consultationId}/slip/print`, { responseType: 'text' });
+  },
 };

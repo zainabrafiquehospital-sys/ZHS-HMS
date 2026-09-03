@@ -4,25 +4,18 @@ import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
-import { HeartPulse, CheckCircle2, ReceiptText, History } from 'lucide-react';
+import { HeartPulse, CheckCircle2, ReceiptText, History, Printer } from 'lucide-react';
 import {
   useActiveConsultation,
   useConsultationById,
   useSendToVitals,
   useCompleteConsultation,
+  usePrintPrescriptionSlip,
   usePatientsForVisits,
 } from '@/features/consultation/hooks/useConsultation';
 import { useVisitsByIds, useVitalsForVisit } from '@/features/vitals/hooks/useVitals';
 import { VitalsHistoryDialog } from '@/features/vitals/components/VitalsHistoryDialog';
-import {
-  ALL_VITALS_FIELDS,
-  VITAL_FIELD_LABELS,
-  vitalFieldUnit,
-  VITALS_FIELDS_WITH_SEVERITY,
-  SEVERITY_BADGE_VARIANT,
-  SEVERITY_LABEL,
-  getVitalSeverity,
-} from '@/features/vitals/utils/vitalsSeverity';
+import { VitalsRecordList } from '@/features/vitals/components/VitalsRecordList';
 import { useSubmitPendingItem } from '@/features/billing/hooks/useBilling';
 import { submitPendingItemSchema } from '@/features/billing/schemas/billingSchemas';
 import { useAuth } from '@/features/auth/hooks/useAuth';
@@ -33,67 +26,25 @@ import { Label } from '@/shared/components/ui/Label';
 import { Textarea } from '@/shared/components/ui/Textarea';
 import { Badge } from '@/shared/components/ui/Badge';
 import { PageLoader } from '@/shared/components/PageLoader';
-import { formatDisplayDate, formatDisplayTime, displayDayKey } from '@/utils/timezone';
 
 /** Read-only display of everything recorded for this visit — the same
- * severity badges the nurse saw while recording (see
- * RecordVitalsForm.jsx's `VitalField`), so the doctor gets the exact
- * same signal, not a re-derived or simplified one. Shows every
- * recorded reading (not just the latest) since a doctor-requested
- * detour (see VitalsService.record_vitals' docstring on the
- * "doctor-requested detour" scope) can add a second, later reading to
- * the same visit — both are clinically relevant, not just the last. */
+ * severity badges the nurse saw while recording, via the shared
+ * `VitalsRecordList` (extracted 2026-09-03; ConsultationPanel, the
+ * cross-visit history dialog, and the Doctor dashboard's detail dialog
+ * all render it now). Shows every recorded reading, not just the latest
+ * — a doctor-requested detour can add a second, later reading to the
+ * same visit and both are clinically relevant. */
 function RecordedVitals({ visitId, ageYears }) {
   const { data: records, isLoading } = useVitalsForVisit(visitId);
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading vitals…</p>;
-  if (!records || records.length === 0) {
-    return <p className="text-sm text-muted-foreground">No vitals recorded for this visit yet.</p>;
-  }
 
   return (
-    <div className="flex flex-col gap-3">
-      {records.map((record) => (
-        <div key={record.id} className="rounded-md border border-border p-3">
-          <p className="mb-2 text-xs text-muted-foreground">
-            Recorded {formatDisplayDate(displayDayKey(record.created_at))} at{' '}
-            {formatDisplayTime(record.created_at)}
-          </p>
-          <div className="flex flex-wrap gap-x-5 gap-y-2">
-            {ALL_VITALS_FIELDS.filter(
-              (field) => record[field] !== null && record[field] !== undefined,
-            ).map((field) => {
-              // This record's temperature may be a historical
-              // Celsius-tagged reading — always classify/label it
-              // against its own stored unit, never a global assumption
-              // (a consultation's own vitals list can span both eras).
-              const severity = VITALS_FIELDS_WITH_SEVERITY.includes(field)
-                ? getVitalSeverity(field, record[field], {
-                    ageYears,
-                    temperatureUnit: record.temperature_unit,
-                  })
-                : { level: null };
-              return (
-                <div key={field} className="flex items-center gap-1.5 text-sm">
-                  <span className="text-muted-foreground">{VITAL_FIELD_LABELS[field]}:</span>
-                  <span className="font-medium text-foreground">
-                    {record[field]} {vitalFieldUnit(field, record.temperature_unit)}
-                  </span>
-                  {severity.level && severity.level !== 'normal' ? (
-                    <Badge variant={SEVERITY_BADGE_VARIANT[severity.level]} className="text-[10px]">
-                      {SEVERITY_LABEL[severity.level]}
-                    </Badge>
-                  ) : null}
-                </div>
-              );
-            })}
-          </div>
-          {record.notes ? (
-            <p className="mt-2 text-sm text-muted-foreground">Notes: {record.notes}</p>
-          ) : null}
-        </div>
-      ))}
-    </div>
+    <VitalsRecordList
+      records={records}
+      ageYears={ageYears}
+      emptyLabel="No vitals recorded for this visit yet."
+    />
   );
 }
 
@@ -143,10 +94,13 @@ function SubmitChargeRequestForm({ visitId, disabled }) {
         Request Additional Charge
       </Label>
       <p className="text-xs text-muted-foreground">
-        Sends a request to Reception to add a charge to this visit&apos;s bill — Reception
-        reviews and approves it before it&apos;s billed.
+        Sends a request to Reception to add a charge to this visit&apos;s bill — Reception reviews
+        and approves it before it&apos;s billed.
       </p>
-      <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-2 sm:flex-row sm:items-start">
+      <form
+        onSubmit={handleSubmit(onSubmit)}
+        className="flex flex-col gap-2 sm:flex-row sm:items-start"
+      >
         <div className="flex flex-1 flex-col gap-1.5">
           <Input
             aria-label="Charge description"
@@ -167,7 +121,9 @@ function SubmitChargeRequestForm({ visitId, disabled }) {
             disabled={disabled}
             {...register('amount')}
           />
-          {errors.amount ? <p className="text-xs text-destructive">{errors.amount.message}</p> : null}
+          {errors.amount ? (
+            <p className="text-xs text-destructive">{errors.amount.message}</p>
+          ) : null}
         </div>
         <Button type="submit" variant="outline" disabled={disabled || isSubmitting}>
           <ReceiptText className="h-4 w-4" />
@@ -179,6 +135,112 @@ function SubmitChargeRequestForm({ visitId, disabled }) {
       ) : null}
       {submitError ? <p className="text-xs text-destructive">{submitError}</p> : null}
     </div>
+  );
+}
+
+// The five clinical free-text fields that appear on the printed
+// prescription slip, in slip order (see backend render_prescription_slip):
+// History (H/O) · Complaint (C/O) · Advised (Adv) · Diagnosis (Dx) ·
+// Prescription (Rx). `notes` is a sixth, general clinical-notes field
+// that is deliberately NOT printed on the slip.
+const SLIP_FIELDS = [
+  { name: 'history_of', label: 'History (H/O)', rows: 3 },
+  { name: 'complaint_of', label: 'Complaint (C/O)', rows: 3 },
+  { name: 'advised', label: 'Advised (Adv)', rows: 3 },
+  { name: 'diagnosis', label: 'Diagnosis (Dx)', rows: 2 },
+  {
+    name: 'prescription',
+    label: 'Prescription (Rx)',
+    rows: 4,
+    placeholder: 'One medicine per line',
+  },
+];
+
+const EMPTY_CONSULTATION_FORM = {
+  history_of: '',
+  complaint_of: '',
+  advised: '',
+  diagnosis: '',
+  prescription: '',
+  notes: '',
+};
+
+const COMPLETED_SUMMARY_FIELDS = [
+  { name: 'history_of', label: 'History (H/O)' },
+  { name: 'complaint_of', label: 'Complaint (C/O)' },
+  { name: 'advised', label: 'Advised (Adv)' },
+  { name: 'diagnosis', label: 'Diagnosis (Dx)' },
+  { name: 'prescription', label: 'Prescription (Rx)' },
+  { name: 'notes', label: 'Clinical Notes' },
+];
+
+/** Shown in place of the editable form once the consultation is
+ * completed (2026-09-03) — the panel no longer navigates straight back
+ * to the queue on Complete, so the doctor can print the prescription
+ * slip (which reads the just-persisted consultation) before leaving. */
+function CompletedConsultationView({
+  consultation,
+  visitId,
+  ageYears,
+  onPrint,
+  isPrinting,
+  onBack,
+}) {
+  const filled = COMPLETED_SUMMARY_FIELDS.filter(
+    (field) => consultation[field.name] && consultation[field.name].trim() !== '',
+  );
+
+  return (
+    <Card>
+      <CardHeader className="flex-row items-center justify-between">
+        <CardTitle>Consultation</CardTitle>
+        <Badge variant="success" className="capitalize">
+          completed
+        </Badge>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-5">
+        <div className="flex items-center gap-2 rounded-md bg-emerald-600/10 px-3 py-2 text-sm text-emerald-700">
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          Consultation completed. Print the prescription slip below, then return to your queue.
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Vitals
+          </span>
+          <RecordedVitals visitId={visitId} ageYears={ageYears} />
+        </div>
+
+        <div className="flex flex-col gap-3">
+          {filled.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No clinical notes, diagnosis, or prescription were entered for this consultation.
+            </p>
+          ) : (
+            filled.map((field) => (
+              <div key={field.name} className="flex flex-col gap-1">
+                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {field.label}
+                </span>
+                <p className="whitespace-pre-wrap text-sm text-foreground">
+                  {consultation[field.name]}
+                </p>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="flex flex-col gap-2 border-t border-border pt-4 sm:flex-row">
+          <Button type="button" onClick={onPrint} disabled={isPrinting}>
+            <Printer className="h-4 w-4" />
+            {isPrinting ? 'Preparing…' : 'Print Prescription'}
+          </Button>
+          <Button type="button" variant="outline" onClick={onBack}>
+            Back to Queue
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -197,15 +259,15 @@ export function ConsultationPanel({ visitId }) {
   const [vitalsReason, setVitalsReason] = useState('');
   const sendToVitals = useSendToVitals();
   const completeConsultation = useCompleteConsultation();
+  const printPrescription = usePrintPrescriptionSlip();
   const [actionError, setActionError] = useState(null);
-  // "Show Details" (2026-08-28 addition, Step 4) — the patient's full
-  // cross-visit vitals history, a superset of RecordedVitals below
-  // (which only shows this one visit's own readings).
   const [showHistory, setShowHistory] = useState(false);
+  // The freshly-completed ConsultationOut (from the complete mutation's
+  // own response) — set once Complete succeeds so the panel can show
+  // the print-and-leave view without another fetch or a redirect.
+  const [completedConsultation, setCompletedConsultation] = useState(null);
 
-  const { register, getValues } = useForm({
-    defaultValues: { notes: '', diagnosis: '', prescription: '' },
-  });
+  const { register, getValues } = useForm({ defaultValues: EMPTY_CONSULTATION_FORM });
 
   const status = consultation?.status ?? activeSummary?.status;
 
@@ -222,11 +284,43 @@ export function ConsultationPanel({ visitId }) {
   async function handleComplete() {
     setActionError(null);
     try {
-      await completeConsultation.mutateAsync({ consultationId, updates: getValues() });
-      router.push('/doctor');
+      const response = await completeConsultation.mutateAsync({
+        consultationId,
+        updates: getValues(),
+      });
+      setCompletedConsultation(response.data);
     } catch (error) {
       setActionError(error.message);
     }
+  }
+
+  async function handlePrintPrescription() {
+    setActionError(null);
+    try {
+      await printPrescription.mutateAsync(completedConsultation.id);
+    } catch (error) {
+      setActionError(error.message || 'Unable to open the prescription slip.');
+    }
+  }
+
+  if (completedConsultation) {
+    return (
+      <>
+        <CompletedConsultationView
+          consultation={completedConsultation}
+          visitId={visitId}
+          ageYears={patient?.age_years}
+          onPrint={handlePrintPrescription}
+          isPrinting={printPrescription.isPending}
+          onBack={() => router.push('/doctor')}
+        />
+        {actionError ? (
+          <p className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {actionError}
+          </p>
+        ) : null}
+      </>
+    );
   }
 
   if (isLoadingActive) return <PageLoader label="Loading consultation" />;
@@ -245,7 +339,10 @@ export function ConsultationPanel({ visitId }) {
     <Card>
       <CardHeader className="flex-row items-center justify-between">
         <CardTitle>Consultation</CardTitle>
-        <Badge variant={status === 'awaiting_vitals' ? 'warning' : 'secondary'} className="capitalize">
+        <Badge
+          variant={status === 'awaiting_vitals' ? 'warning' : 'secondary'}
+          className="capitalize"
+        >
           {status?.replaceAll('_', ' ')}
         </Badge>
       </CardHeader>
@@ -282,25 +379,24 @@ export function ConsultationPanel({ visitId }) {
           onClose={() => setShowHistory(false)}
         />
 
+        {SLIP_FIELDS.map((field) => (
+          <div key={field.name} className="flex flex-col gap-1.5">
+            <Label htmlFor={field.name}>{field.label}</Label>
+            <Textarea
+              id={field.name}
+              rows={field.rows}
+              placeholder={field.placeholder}
+              {...register(field.name)}
+              disabled={status !== 'in_progress'}
+            />
+          </div>
+        ))}
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="notes">Clinical Notes</Label>
-          <Textarea id="notes" rows={4} {...register('notes')} disabled={status !== 'in_progress'} />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="diagnosis">Diagnosis</Label>
           <Textarea
-            id="diagnosis"
-            rows={2}
-            {...register('diagnosis')}
-            disabled={status !== 'in_progress'}
-          />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="prescription">Prescription</Label>
-          <Textarea
-            id="prescription"
+            id="notes"
             rows={3}
-            {...register('prescription')}
+            {...register('notes')}
             disabled={status !== 'in_progress'}
           />
         </div>

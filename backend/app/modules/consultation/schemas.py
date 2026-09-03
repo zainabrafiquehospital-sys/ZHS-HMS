@@ -27,6 +27,12 @@ class CompleteConsultationRequest(BaseModel):
     notes: str | None = Field(default=None, max_length=5000)
     diagnosis: str | None = Field(default=None, max_length=2000)
     prescription: str | None = Field(default=None, max_length=5000)
+    # H/O / C/O / Adv sections of the prescription slip (2026-09-03) —
+    # every field on this request is optional; the doctor fills whichever
+    # apply, exactly as with notes/diagnosis/prescription above.
+    history_of: str | None = Field(default=None, max_length=5000)
+    complaint_of: str | None = Field(default=None, max_length=5000)
+    advised: str | None = Field(default=None, max_length=5000)
 
 
 class ConsultationOut(BaseModel):
@@ -39,6 +45,9 @@ class ConsultationOut(BaseModel):
     notes: str | None
     diagnosis: str | None
     prescription: str | None
+    history_of: str | None
+    complaint_of: str | None
+    advised: str | None
     created_at: datetime
     completed_at: datetime | None
 
@@ -52,6 +61,9 @@ class ConsultationOut(BaseModel):
             notes=consultation.notes,
             diagnosis=consultation.diagnosis,
             prescription=consultation.prescription,
+            history_of=consultation.history_of,
+            complaint_of=consultation.complaint_of,
+            advised=consultation.advised,
             created_at=consultation.created_at,
             completed_at=consultation.completed_at,
         )

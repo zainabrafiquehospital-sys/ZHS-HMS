@@ -228,7 +228,14 @@ class ConsultationService:
                 consultation.status.value, ConsultationStatus.COMPLETED.value
             )
 
-        for field in ("notes", "diagnosis", "prescription"):
+        for field in (
+            "notes",
+            "diagnosis",
+            "prescription",
+            "history_of",
+            "complaint_of",
+            "advised",
+        ):
             if field in updates:
                 setattr(consultation, field, updates[field])
 
