@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse
 
 from app.core.config import Settings, get_settings
@@ -27,6 +27,7 @@ from app.modules.patients.service import PatientService
 from app.modules.visits.dependencies import get_visit_service
 from app.modules.visits.service import VisitService
 from app.shared.envelope import success_envelope
+from app.shared.pagination import PaginationMeta
 from app.shared.printing.service import render_prescription_slip
 
 router = APIRouter(prefix="/consultations", tags=["consultations"])
@@ -61,6 +62,39 @@ async def get_consultation_stats_by_doctor(
         for user_id, count in counts.items()
     ]
     return success_envelope(body)
+
+
+@router.get("/mine")
+async def list_my_consultations(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    consultation_service: ConsultationService = Depends(get_consultation_service),
+    actor: User = Depends(require_permission(PERMISSION_CONSULTATION_READ)),
+) -> dict:
+    """The calling doctor's own "My Consultations" — every consultation
+    they have personally completed, newest first, real server-side
+    pagination, no date restriction (2026-09-03 addition — the Doctor
+    sibling of `GET /vitals/records/mine` and Reception's "My
+    Registrations"). Declared before `GET /{consultation_id}` so the
+    literal `mine` segment is never captured as a UUID path param, the
+    same ordering `GET /stats/by-doctor` above already relies on.
+
+    Always `actor.id`, never a request-suppliable user id — the same
+    hard server-side "your own work only" scoping every other `mine`
+    endpoint in this app establishes; there is structurally no way to
+    ask for a colleague's consultations through this endpoint. Rows are
+    the plain `ConsultationOut` (which already carries `visit_id` and
+    every clinical field); the caller joins visit -> patient itself, the
+    same client-side join `MyVitalsRecords.jsx` already does."""
+    consultations, total = await consultation_service.list_completed_for_doctor(
+        actor.id, page=page, page_size=page_size
+    )
+    body = [
+        ConsultationOut.from_consultation(consultation).model_dump(mode="json")
+        for consultation in consultations
+    ]
+    meta = PaginationMeta(page=page, page_size=page_size, total=total).model_dump(mode="json")
+    return success_envelope(body, meta)
 
 
 @router.get("/{consultation_id}")

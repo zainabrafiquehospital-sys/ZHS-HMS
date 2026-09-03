@@ -43,6 +43,44 @@ class ConsultationRepository(BaseRepository[Consultation]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_completed_for_doctor(
+        self, doctor_user_id: UUID, *, page: int, page_size: int
+    ) -> tuple[list[Consultation], int]:
+        """Real, paginated server-side "every consultation this doctor
+        has personally completed" (2026-09-03 addition) — the Doctor
+        sibling of `VitalsRecordRepository.list_for_creator` /
+        `MedicineBillRepository.list_for_creator`, backing the Doctor
+        dashboard's "My Consultations" screen the same way those back
+        Vitals' and Pharmacy's own "my records" lists. Newest first by
+        `completed_at`, no date restriction — a real server-side filter,
+        never a client-side "fetch N most recent" approximation.
+
+        Scoped by `doctor_user_id` (the doctor who ran the consultation),
+        not `created_by` — for a Consultation those are always the same
+        actor in practice (only the assigned doctor may start one), but
+        `doctor_user_id` is the semantically correct column, matching
+        `count_completed_by_doctor` below. `status == COMPLETED` only:
+        an in-progress / awaiting-vitals / cancelled consultation is not
+        a browsable record."""
+        stmt = self._exclude_soft_deleted(
+            select(Consultation).where(
+                Consultation.doctor_user_id == doctor_user_id,
+                Consultation.status == ConsultationStatus.COMPLETED,
+            ),
+            include_deleted=False,
+        )
+        total = (
+            await self.session.execute(select(func.count()).select_from(stmt.subquery()))
+        ).scalar_one()
+
+        stmt = (
+            stmt.order_by(Consultation.completed_at.desc())
+            .limit(page_size)
+            .offset((page - 1) * page_size)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all()), total
+
     async def count_completed_by_doctor(self) -> dict[UUID, int]:
         """Backs the Admin "Employee Accounts & Stats" page's per-doctor
         "consultations completed" figure — one `GROUP BY` query for

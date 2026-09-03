@@ -16,6 +16,7 @@ import {
 import { useVisitsByIds, useVitalsForVisit } from '@/features/vitals/hooks/useVitals';
 import { VitalsHistoryDialog } from '@/features/vitals/components/VitalsHistoryDialog';
 import { VitalsRecordList } from '@/features/vitals/components/VitalsRecordList';
+import { ConsultationClinicalDetails } from '@/features/consultation/components/ConsultationClinicalDetails';
 import { useSubmitPendingItem } from '@/features/billing/hooks/useBilling';
 import { submitPendingItemSchema } from '@/features/billing/schemas/billingSchemas';
 import { useAuth } from '@/features/auth/hooks/useAuth';
@@ -165,15 +166,6 @@ const EMPTY_CONSULTATION_FORM = {
   notes: '',
 };
 
-const COMPLETED_SUMMARY_FIELDS = [
-  { name: 'history_of', label: 'History (H/O)' },
-  { name: 'complaint_of', label: 'Complaint (C/O)' },
-  { name: 'advised', label: 'Advised (Adv)' },
-  { name: 'diagnosis', label: 'Diagnosis (Dx)' },
-  { name: 'prescription', label: 'Prescription (Rx)' },
-  { name: 'notes', label: 'Clinical Notes' },
-];
-
 /** Shown in place of the editable form once the consultation is
  * completed (2026-09-03) — the panel no longer navigates straight back
  * to the queue on Complete, so the doctor can print the prescription
@@ -186,10 +178,6 @@ function CompletedConsultationView({
   isPrinting,
   onBack,
 }) {
-  const filled = COMPLETED_SUMMARY_FIELDS.filter(
-    (field) => consultation[field.name] && consultation[field.name].trim() !== '',
-  );
-
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between">
@@ -211,24 +199,7 @@ function CompletedConsultationView({
           <RecordedVitals visitId={visitId} ageYears={ageYears} />
         </div>
 
-        <div className="flex flex-col gap-3">
-          {filled.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No clinical notes, diagnosis, or prescription were entered for this consultation.
-            </p>
-          ) : (
-            filled.map((field) => (
-              <div key={field.name} className="flex flex-col gap-1">
-                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  {field.label}
-                </span>
-                <p className="whitespace-pre-wrap text-sm text-foreground">
-                  {consultation[field.name]}
-                </p>
-              </div>
-            ))
-          )}
-        </div>
+        <ConsultationClinicalDetails consultation={consultation} />
 
         <div className="flex flex-col gap-2 border-t border-border pt-4 sm:flex-row">
           <Button type="button" onClick={onPrint} disabled={isPrinting}>

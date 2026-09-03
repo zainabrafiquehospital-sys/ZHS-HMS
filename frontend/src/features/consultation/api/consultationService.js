@@ -13,6 +13,14 @@ export const consultationService = {
     return httpClient.get(`/consultations/${consultationId}`);
   },
 
+  // "My Consultations" (2026-09-03) — every consultation the calling
+  // doctor has completed, newest first, real server-side pagination
+  // (GET /consultations/mine, hard-scoped to the actor). Same shape as
+  // vitalsService.listMine / the "My Registrations" endpoint.
+  listMine({ page = 1, pageSize = 20 } = {}) {
+    return httpClient.get('/consultations/mine', { params: { page, page_size: pageSize } });
+  },
+
   sendToVitals(consultationId, reason) {
     return httpClient.post(`/consultations/${consultationId}/send-to-vitals`, {
       reason: reason || null,

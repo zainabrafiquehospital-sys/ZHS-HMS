@@ -325,3 +325,167 @@ async def test_print_prescription_slip_empty_fields_still_renders_boxes(
         assert label in body
     assert "<li>" not in body  # empty Rx -> em-dash placeholder, no list items
     assert "rx-empty" in body
+
+
+async def _complete_consultation(
+    api_client, access_token, reception_service, doctor, suffix, **fields
+):
+    visit = await _make_visit(reception_service, doctor, suffix)
+    consultation_id = await _start_consultation_id(api_client, access_token, visit)
+    complete_resp = await api_client.post(
+        f"/api/v1/consultations/{consultation_id}/complete",
+        json=fields,
+        headers=_auth_header(access_token),
+    )
+    assert complete_resp.status_code == 200, complete_resp.text
+    return consultation_id, visit
+
+
+async def test_list_my_consultations_requires_consultation_read(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "mycons-no-perm")
+    # no consultation:read granted
+    resp = await api_client.get("/api/v1/consultations/mine", headers=_auth_header(access_token))
+    assert resp.status_code == 403
+
+
+async def test_list_my_consultations_returns_only_own(
+    api_client, real_session, grant_permission, reception_service
+):
+    """Doctor A's "My Consultations" must never include Doctor B's,
+    even though both completed consultations in the same database — the
+    Consultation sibling of test_list_my_vitals_records_returns_only_own_records."""
+    doctor_a, token_a = await _create_and_login(api_client, real_session, "mycons-a")
+    doctor_b, token_b = await _create_and_login(api_client, real_session, "mycons-b")
+    for actor in (doctor_a, doctor_b):
+        await grant_permission(actor, PERMISSION_CONSULTATION_START)
+        await grant_permission(actor, PERMISSION_CONSULTATION_MANAGE)
+        await grant_permission(actor, PERMISSION_CONSULTATION_READ)
+
+    id_a, _ = await _complete_consultation(
+        api_client, token_a, reception_service, doctor_a, "MyConsA", diagnosis="A dx"
+    )
+    id_b, _ = await _complete_consultation(
+        api_client, token_b, reception_service, doctor_b, "MyConsB", diagnosis="B dx"
+    )
+
+    resp_a = await api_client.get("/api/v1/consultations/mine", headers=_auth_header(token_a))
+    assert resp_a.status_code == 200
+    ids_a = [row["id"] for row in resp_a.json()["data"]]
+    assert id_a in ids_a
+    assert id_b not in ids_a
+
+    resp_b = await api_client.get("/api/v1/consultations/mine", headers=_auth_header(token_b))
+    assert resp_b.status_code == 200
+    ids_b = [row["id"] for row in resp_b.json()["data"]]
+    assert id_b in ids_b
+    assert id_a not in ids_b
+
+
+async def test_list_my_consultations_completed_only_newest_first(
+    api_client, real_session, grant_permission, reception_service
+):
+    doctor, access_token = await _create_and_login(api_client, real_session, "mycons-order")
+    await grant_permission(doctor, PERMISSION_CONSULTATION_START)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_MANAGE)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_READ)
+
+    first_id, _ = await _complete_consultation(
+        api_client, access_token, reception_service, doctor, "Order1", diagnosis="first"
+    )
+    second_id, _ = await _complete_consultation(
+        api_client, access_token, reception_service, doctor, "Order2", diagnosis="second"
+    )
+
+    # A third consultation that is started but NOT completed — must not appear.
+    open_visit = await _make_visit(reception_service, doctor, "OrderOpen")
+    open_id = await _start_consultation_id(api_client, access_token, open_visit)
+
+    resp = await api_client.get("/api/v1/consultations/mine", headers=_auth_header(access_token))
+    assert resp.status_code == 200
+    payload = resp.json()
+    rows = payload["data"]
+    returned_ids = [row["id"] for row in rows]
+
+    assert open_id not in returned_ids  # in-progress is not a browsable record
+    assert first_id in returned_ids and second_id in returned_ids
+    # Newest completed first.
+    assert returned_ids.index(second_id) < returned_ids.index(first_id)
+    for row in rows:
+        assert row["status"] == "completed"
+    assert payload["meta"]["total"] >= 2
+
+
+async def test_list_my_consultations_pagination(
+    api_client, real_session, grant_permission, reception_service
+):
+    doctor, access_token = await _create_and_login(api_client, real_session, "mycons-page")
+    await grant_permission(doctor, PERMISSION_CONSULTATION_START)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_MANAGE)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_READ)
+
+    completed_ids = []
+    for i in range(3):
+        cid, _ = await _complete_consultation(
+            api_client, access_token, reception_service, doctor, f"Page{i}", diagnosis=f"dx {i}"
+        )
+        completed_ids.append(cid)
+
+    page1 = await api_client.get(
+        "/api/v1/consultations/mine",
+        params={"page": 1, "page_size": 1},
+        headers=_auth_header(access_token),
+    )
+    assert page1.status_code == 200
+    p1 = page1.json()
+    assert len(p1["data"]) == 1
+    assert p1["meta"]["total"] >= 3
+    assert p1["meta"]["page"] == 1 and p1["meta"]["page_size"] == 1
+
+    page2 = await api_client.get(
+        "/api/v1/consultations/mine",
+        params={"page": 2, "page_size": 1},
+        headers=_auth_header(access_token),
+    )
+    assert page2.status_code == 200
+    p2 = page2.json()
+    assert len(p2["data"]) == 1
+    assert p2["data"][0]["id"] != p1["data"][0]["id"]
+
+
+async def test_prescription_slip_reprintable_for_older_completed_consultation(
+    api_client, real_session, grant_permission, reception_service
+):
+    """The slip endpoint reads persisted fields via get_consultation(id) —
+    it must work for any completed consultation, not only one 'just
+    completed in this session'. Here a second consultation is completed
+    after the first, then the FIRST one's slip is re-fetched."""
+    doctor, access_token = await _create_and_login(api_client, real_session, "mycons-reprint")
+    await grant_permission(doctor, PERMISSION_CONSULTATION_START)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_MANAGE)
+    await grant_permission(doctor, PERMISSION_CONSULTATION_READ)
+
+    old_id, _ = await _complete_consultation(
+        api_client,
+        access_token,
+        reception_service,
+        doctor,
+        "Reprint1",
+        history_of="Old H/O",
+        diagnosis="Old diagnosis",
+        prescription="Tab Old 1mg OD",
+    )
+    # A newer, unrelated completed consultation.
+    await _complete_consultation(
+        api_client, access_token, reception_service, doctor, "Reprint2", diagnosis="Newer"
+    )
+
+    resp = await api_client.get(
+        f"/api/v1/consultations/{old_id}/slip/print", headers=_auth_header(access_token)
+    )
+    assert resp.status_code == 200
+    body = resp.text
+    assert "Old H/O" in body
+    assert "Old diagnosis" in body
+    assert "<li>Tab Old 1mg OD</li>" in body

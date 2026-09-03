@@ -1,12 +1,20 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  keepPreviousData,
+  useQuery,
+  useQueries,
+  useMutation,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { consultationService } from '@/features/consultation/api/consultationService';
 import { visitsService } from '@/features/visits/api/visitsService';
+import { useAuth } from '@/features/auth/hooks/useAuth';
 import { openAndPrintHtml } from '@/utils/printWindow';
 
 export { usePatientsForVisits } from '@/features/patients/hooks/usePatientsForVisits';
+export { useVisitsByIds } from '@/features/vitals/hooks/useVitals';
 
 /** `refetchIntervalInBackground: true` (2026-08-30 addition) — this
  * hook's only consumers are the Doctor Queue page itself
@@ -196,6 +204,30 @@ export function useConsultationById(consultationId) {
   }, [consultationId, query.data?.status, query.data?.visit_id, queryClient]);
 
   return query;
+}
+
+/** "My Consultations" — every consultation the calling doctor has
+ * completed, newest first, real server-side pagination (2026-09-03).
+ * The Doctor sibling of useMyVitalsRecords / useMyMedicineBills: same
+ * `keepPreviousData` + `{ consultations, meta }` shape. `queryKey` is
+ * scoped to `user.id` so one doctor's cache never bleeds into another's
+ * on the same browser. */
+export function useMyConsultations({ page, pageSize }) {
+  const { user } = useAuth();
+  const query = useQuery({
+    queryKey: ['consultations', 'mine', user?.id, { page, pageSize }],
+    queryFn: () =>
+      consultationService
+        .listMine({ page, pageSize })
+        .then((res) => ({ consultations: res.data, meta: res.meta })),
+    enabled: Boolean(user?.id),
+    placeholderData: keepPreviousData,
+  });
+  return {
+    ...query,
+    consultations: query.data?.consultations ?? [],
+    meta: query.data?.meta ?? null,
+  };
 }
 
 export function useStartConsultation() {

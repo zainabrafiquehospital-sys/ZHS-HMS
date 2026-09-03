@@ -293,22 +293,43 @@ function ConsultationsSection({ consultations }) {
                 {consultation.status.replaceAll('_', ' ')}
               </Badge>
             </div>
+            {/* Ordered to match the prescription slip: History, Complaint,
+                Advised, Diagnosis, Prescription — then Notes (a general
+                clinical-notes field that is not on the slip). */}
+            {consultation.history_of ? (
+              <p className="whitespace-pre-wrap text-sm">
+                <span className="text-muted-foreground">History (H/O): </span>
+                {consultation.history_of}
+              </p>
+            ) : null}
+            {consultation.complaint_of ? (
+              <p className="whitespace-pre-wrap text-sm">
+                <span className="text-muted-foreground">Complaint (C/O): </span>
+                {consultation.complaint_of}
+              </p>
+            ) : null}
+            {consultation.advised ? (
+              <p className="whitespace-pre-wrap text-sm">
+                <span className="text-muted-foreground">Advised (Adv): </span>
+                {consultation.advised}
+              </p>
+            ) : null}
             {consultation.diagnosis ? (
-              <p className="text-sm">
-                <span className="text-muted-foreground">Diagnosis: </span>
+              <p className="whitespace-pre-wrap text-sm">
+                <span className="text-muted-foreground">Diagnosis (Dx): </span>
                 {consultation.diagnosis}
               </p>
             ) : null}
-            {consultation.notes ? (
-              <p className="text-sm">
-                <span className="text-muted-foreground">Notes: </span>
-                {consultation.notes}
+            {consultation.prescription ? (
+              <p className="whitespace-pre-wrap text-sm">
+                <span className="text-muted-foreground">Prescription (Rx): </span>
+                {consultation.prescription}
               </p>
             ) : null}
-            {consultation.prescription ? (
-              <p className="text-sm">
-                <span className="text-muted-foreground">Prescription: </span>
-                {consultation.prescription}
+            {consultation.notes ? (
+              <p className="whitespace-pre-wrap text-sm">
+                <span className="text-muted-foreground">Notes: </span>
+                {consultation.notes}
               </p>
             ) : null}
           </div>
@@ -505,8 +526,10 @@ function RecordDescriptionCell({ record }) {
           <VisitProcedureDisplay visit={record.visit} className="truncate" />
         ) : (
           <span className="truncate text-muted-foreground">
-            {(record.record_type === 'medicine_bill' ? record.medicine_bill : record.lab_bill)
-              .item_count}{' '}
+            {
+              (record.record_type === 'medicine_bill' ? record.medicine_bill : record.lab_bill)
+                .item_count
+            }{' '}
             item
             {(record.record_type === 'medicine_bill' ? record.medicine_bill : record.lab_bill)
               .item_count === 1

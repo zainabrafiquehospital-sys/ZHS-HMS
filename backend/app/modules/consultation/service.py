@@ -272,6 +272,17 @@ class ConsultationService:
         see that method's own docstring."""
         return await self._consultation_repo.list_for_visit_ids(visit_ids)
 
+    async def list_completed_for_doctor(
+        self, doctor_user_id: UUID, *, page: int, page_size: int
+    ) -> tuple[list[Consultation], int]:
+        """Backs the Doctor dashboard's "My Consultations" screen — see
+        ConsultationRepository.list_completed_for_doctor. Thin passthrough;
+        `doctor_user_id` is always the calling actor's own id (hard-scoped
+        in the router), never request-suppliable."""
+        return await self._consultation_repo.list_completed_for_doctor(
+            doctor_user_id, page=page, page_size=page_size
+        )
+
     async def count_completed_by_doctor(self) -> dict[UUID, int]:
         """Read-only aggregate added for the Admin "Employee Accounts &
         Stats" page — see ConsultationRepository.count_completed_by_doctor."""
