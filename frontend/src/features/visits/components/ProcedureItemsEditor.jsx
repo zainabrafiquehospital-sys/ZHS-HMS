@@ -82,16 +82,29 @@ export function ProcedureItemsEditor({ items, onChange }) {
 
   const total = items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
-  /** Lab-test guardrail (2026-09-04): a lab test typed/selected as a
-   * plain Visit procedure never produces a Lab Bill (its own token,
-   * payment ledger, print slip). Reception already holds `lab:read`,
-   * so this checks the active lab_test catalog by name at Add time —
-   * cached per name via React Query (never per keystroke). Fails OPEN
-   * on any lookup failure: a network blip must not block a legitimate
-   * registration. Does not change the catalog-linked vs manual
-   * dual-entry shape — it is purely a gate before either Add pushes an
-   * item into the list. */
-  async function matchesActiveLabTest(name) {
+  /** Lab-test guardrail (2026-09-04, narrowed same-day — see this
+   * function's own fix note below): a *pathology* lab test typed/
+   * selected as a plain Visit procedure never produces a Lab Bill (its
+   * own token, payment ledger, print slip). Reception already holds
+   * `lab:read`, so this checks the active lab_test catalog by name at
+   * Add time — cached per name via React Query (never per keystroke).
+   * Fails OPEN on any lookup failure: a network blip must not block a
+   * legitimate registration. Does not change the catalog-linked vs
+   * manual dual-entry shape — it is purely a gate before either Add
+   * pushes an item into the list.
+   *
+   * Scoped to `category === 'pathology'` only (fix, same day as the
+   * original guardrail, commit 4f719fb) — that first version matched
+   * ANY active lab_test regardless of category, which also caught every
+   * radiology/imaging entry (DIRECT SCAN, PELVIC SCAN, ABD SCAN,
+   * ANOMALY SCAN, OBS SCAN, KUB, COLOR DOPPLER). Confirmed: a scan/
+   * ultrasound is correctly billed as a Visit procedure (its slip
+   * prints from the registration/Visit flow, not a Lab Bill) — only a
+   * genuine pathology test (blood/urine/serology) belongs in the
+   * Laboratory module. `LabTestOut.category` was already on
+   * `GET /lab/tests/search`'s response (backend/app/modules/lab/
+   * schemas.py) — no schema change needed here, only this filter. */
+  async function matchesActivePathologyTest(name) {
     const trimmed = name.trim();
     if (!trimmed) return false;
     try {
@@ -101,7 +114,9 @@ export function ProcedureItemsEditor({ items, onChange }) {
         staleTime: 5 * 60 * 1000,
       });
       const target = labNameKey(trimmed);
-      return (tests ?? []).some((test) => labNameKey(test.name) === target);
+      return (tests ?? []).some(
+        (test) => test.category === 'pathology' && labNameKey(test.name) === target,
+      );
     } catch {
       return false;
     }
@@ -112,7 +127,7 @@ export function ProcedureItemsEditor({ items, onChange }) {
     setAddError(null);
     setIsChecking(true);
     try {
-      if (await matchesActiveLabTest(selectedProcedure.name)) {
+      if (await matchesActivePathologyTest(selectedProcedure.name)) {
         setAddError(labRedirectMessage(selectedProcedure.name));
         return;
       }
@@ -146,7 +161,7 @@ export function ProcedureItemsEditor({ items, onChange }) {
     }
     setIsChecking(true);
     try {
-      if (await matchesActiveLabTest(trimmedName)) {
+      if (await matchesActivePathologyTest(trimmedName)) {
         setAddError(labRedirectMessage(trimmedName));
         return;
       }
