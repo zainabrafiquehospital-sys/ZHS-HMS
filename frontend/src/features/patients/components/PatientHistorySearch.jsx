@@ -463,11 +463,12 @@ function BillsSection({ title, bills, printLabel, printMutateAsync }) {
  * states, told apart by `patientId` vs. `patient`: a real, already-
  * resolved Patient (full row); `patientId` set but `patient` not yet
  * loaded (`usePatientsForVisits`'s own per-id fetch still in flight —
- * "…", never misread as "no patient"); and no `patientId` at all (a
- * manual name if the underlying bill has one, else "Anonymous" — the
- * remaining columns dashed out either way, since a manual walk-in
- * entry never has a real MR number/age/gender/phone on file, only
- * whatever name was typed on the slip). */
+ * "…", never misread as "no patient"); and no `patientId` at all — a
+ * counter walk-in (a MedicineBill/LabBill with only a `manual_patient_name`,
+ * or no patient name at all). For that last case there is genuinely no
+ * `Patient` row, so no MR number/age/gender/phone exists — a "Walk-in"
+ * badge marks the dashed-out columns as *expected*, not a failed join
+ * (the reported "blank MR#/Age/Phone" confusion). */
 function PatientCells({ patientId, patient, manualName }) {
   if (patientId && !patient) {
     return (
@@ -497,12 +498,23 @@ function PatientCells({ patientId, patient, manualName }) {
   }
   return (
     <>
-      <TableCell className="max-w-[160px] truncate text-muted-foreground">
-        {manualName || 'Anonymous'}
+      <TableCell className="max-w-[180px]">
+        <div className="flex items-center gap-1.5">
+          <span className="truncate text-muted-foreground">{manualName || 'Anonymous'}</span>
+          <Badge variant="outline" className="shrink-0 text-[10px]">
+            Walk-in
+          </Badge>
+        </div>
       </TableCell>
-      <TableCell className="text-muted-foreground">—</TableCell>
-      <TableCell className="text-muted-foreground">—</TableCell>
-      <TableCell className="text-muted-foreground">—</TableCell>
+      <TableCell className="text-muted-foreground" title="No patient record — counter walk-in">
+        —
+      </TableCell>
+      <TableCell className="text-muted-foreground" title="No patient record — counter walk-in">
+        —
+      </TableCell>
+      <TableCell className="text-muted-foreground" title="No patient record — counter walk-in">
+        —
+      </TableCell>
     </>
   );
 }

@@ -1,8 +1,10 @@
 'use client';
 
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Plus, Trash2 } from 'lucide-react';
 import { proceduresService } from '@/features/visits/api/proceduresService';
+import { labService } from '@/features/lab/api/labService';
 import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
 import { Label } from '@/shared/components/ui/Label';
@@ -24,6 +26,25 @@ let _nextKey = 0;
 function nextItemKey() {
   _nextKey += 1;
   return `procedure-item-${_nextKey}`;
+}
+
+/** Case-insensitive comparison key for a procedure/test name, with a
+ * trailing "(...)" qualifier stripped — so "THYROID FUNCTIONAL TEST"
+ * still matches the catalog's "THYROID FUNCTIONAL TEST (T3,T4,TSH)". */
+function labNameKey(value) {
+  return value
+    .trim()
+    .replace(/\s*\([^)]*\)\s*$/, '')
+    .trim()
+    .toLowerCase();
+}
+
+function labRedirectMessage(name) {
+  return (
+    `"${name}" is a laboratory test — add it through the Laboratory Billing screen ` +
+    `(Lab module) instead, so it produces a proper Lab Bill with its own token and ` +
+    `payment tracking.`
+  );
 }
 
 /** Shared procedure line-item editor for a Visit (2026-08-21 addition)
@@ -52,28 +73,66 @@ function nextItemKey() {
  * validation needed ("at least one procedure") belongs to whichever
  * parent form is submitting this list, not to each row individually. */
 export function ProcedureItemsEditor({ items, onChange }) {
+  const queryClient = useQueryClient();
   const [selectedProcedure, setSelectedProcedure] = useState(null);
   const [manualName, setManualName] = useState('');
   const [manualAmount, setManualAmount] = useState('');
   const [addError, setAddError] = useState(null);
+  const [isChecking, setIsChecking] = useState(false);
 
   const total = items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
-  function handleAddCatalog() {
-    if (!selectedProcedure) return;
-    onChange([
-      ...items,
-      {
-        key: nextItemKey(),
-        procedure_id: selectedProcedure.id,
-        name: selectedProcedure.name,
-        amount: selectedProcedure.price,
-      },
-    ]);
-    setSelectedProcedure(null);
+  /** Lab-test guardrail (2026-09-04): a lab test typed/selected as a
+   * plain Visit procedure never produces a Lab Bill (its own token,
+   * payment ledger, print slip). Reception already holds `lab:read`,
+   * so this checks the active lab_test catalog by name at Add time —
+   * cached per name via React Query (never per keystroke). Fails OPEN
+   * on any lookup failure: a network blip must not block a legitimate
+   * registration. Does not change the catalog-linked vs manual
+   * dual-entry shape — it is purely a gate before either Add pushes an
+   * item into the list. */
+  async function matchesActiveLabTest(name) {
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+    try {
+      const tests = await queryClient.fetchQuery({
+        queryKey: ['lab', 'tests', 'search', trimmed.toLowerCase()],
+        queryFn: () => labService.searchTests(trimmed).then((res) => res.data),
+        staleTime: 5 * 60 * 1000,
+      });
+      const target = labNameKey(trimmed);
+      return (tests ?? []).some((test) => labNameKey(test.name) === target);
+    } catch {
+      return false;
+    }
   }
 
-  function handleAddManual() {
+  async function handleAddCatalog() {
+    if (!selectedProcedure || isChecking) return;
+    setAddError(null);
+    setIsChecking(true);
+    try {
+      if (await matchesActiveLabTest(selectedProcedure.name)) {
+        setAddError(labRedirectMessage(selectedProcedure.name));
+        return;
+      }
+      onChange([
+        ...items,
+        {
+          key: nextItemKey(),
+          procedure_id: selectedProcedure.id,
+          name: selectedProcedure.name,
+          amount: selectedProcedure.price,
+        },
+      ]);
+      setSelectedProcedure(null);
+    } finally {
+      setIsChecking(false);
+    }
+  }
+
+  async function handleAddManual() {
+    if (isChecking) return;
     setAddError(null);
     const trimmedName = manualName.trim();
     const amountNumber = Number(manualAmount);
@@ -85,12 +144,21 @@ export function ProcedureItemsEditor({ items, onChange }) {
       setAddError('Enter an amount greater than 0.');
       return;
     }
-    onChange([
-      ...items,
-      { key: nextItemKey(), procedure_id: null, name: trimmedName, amount: amountNumber },
-    ]);
-    setManualName('');
-    setManualAmount('');
+    setIsChecking(true);
+    try {
+      if (await matchesActiveLabTest(trimmedName)) {
+        setAddError(labRedirectMessage(trimmedName));
+        return;
+      }
+      onChange([
+        ...items,
+        { key: nextItemKey(), procedure_id: null, name: trimmedName, amount: amountNumber },
+      ]);
+      setManualName('');
+      setManualAmount('');
+    } finally {
+      setIsChecking(false);
+    }
   }
 
   function handleRemove(key) {
@@ -105,9 +173,7 @@ export function ProcedureItemsEditor({ items, onChange }) {
           <div className="flex-1">
             <SearchSelect
               queryKey={['visits', 'procedures', 'search']}
-              queryFn={(term) =>
-                proceduresService.searchProcedures(term).then((res) => res.data)
-              }
+              queryFn={(term) => proceduresService.searchProcedures(term).then((res) => res.data)}
               getLabel={(procedure) => procedure.name}
               getDescription={(procedure) => money(procedure.price)}
               placeholder="Search procedure by name"
@@ -115,7 +181,11 @@ export function ProcedureItemsEditor({ items, onChange }) {
               onSelect={(procedure) => setSelectedProcedure(procedure)}
             />
           </div>
-          <Button type="button" onClick={handleAddCatalog} disabled={!selectedProcedure}>
+          <Button
+            type="button"
+            onClick={handleAddCatalog}
+            disabled={!selectedProcedure || isChecking}
+          >
             <Plus className="h-4 w-4" />
             Add
           </Button>
@@ -146,7 +216,7 @@ export function ProcedureItemsEditor({ items, onChange }) {
             onChange={(event) => setManualAmount(event.target.value)}
           />
         </div>
-        <Button type="button" variant="outline" onClick={handleAddManual}>
+        <Button type="button" variant="outline" onClick={handleAddManual} disabled={isChecking}>
           <Plus className="h-4 w-4" />
           Add Another Procedure
         </Button>
