@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
-import { HeartPulse, CheckCircle2, ReceiptText, History, Printer } from 'lucide-react';
+import { HeartPulse, CheckCircle2, ReceiptText, History, Printer, Pencil } from 'lucide-react';
 import {
   useActiveConsultation,
   useConsultationById,
@@ -16,7 +16,11 @@ import {
 import { useVisitsByIds, useVitalsForVisit } from '@/features/vitals/hooks/useVitals';
 import { VitalsHistoryDialog } from '@/features/vitals/components/VitalsHistoryDialog';
 import { VitalsRecordList } from '@/features/vitals/components/VitalsRecordList';
-import { ConsultationClinicalDetails } from '@/features/consultation/components/ConsultationClinicalDetails';
+import {
+  ConsultationClinicalDetails,
+  SLIP_FIELDS,
+} from '@/features/consultation/components/ConsultationClinicalDetails';
+import { ConsultationCorrectionForm } from '@/features/consultation/components/ConsultationCorrectionForm';
 import { useSubmitPendingItem } from '@/features/billing/hooks/useBilling';
 import { submitPendingItemSchema } from '@/features/billing/schemas/billingSchemas';
 import { useAuth } from '@/features/auth/hooks/useAuth';
@@ -139,23 +143,10 @@ function SubmitChargeRequestForm({ visitId, disabled }) {
   );
 }
 
-// The five clinical free-text fields that appear on the printed
-// prescription slip, in slip order (see backend render_prescription_slip):
-// History (H/O) · Complaint (C/O) · Advised (Adv) · Diagnosis (Dx) ·
-// Prescription (Rx). `notes` is a sixth, general clinical-notes field
-// that is deliberately NOT printed on the slip.
-const SLIP_FIELDS = [
-  { name: 'history_of', label: 'History (H/O)', rows: 3 },
-  { name: 'complaint_of', label: 'Complaint (C/O)', rows: 3 },
-  { name: 'advised', label: 'Advised (Adv)', rows: 3 },
-  { name: 'diagnosis', label: 'Diagnosis (Dx)', rows: 2 },
-  {
-    name: 'prescription',
-    label: 'Prescription (Rx)',
-    rows: 4,
-    placeholder: 'One medicine per line',
-  },
-];
+// SLIP_FIELDS (the five printed clinical fields, in slip order) is
+// imported from ConsultationClinicalDetails — shared with the
+// post-completion ConsultationCorrectionForm. `notes` is the sixth,
+// general, NOT-printed field, rendered here as its own textarea below.
 
 const EMPTY_CONSULTATION_FORM = {
   history_of: '',
@@ -169,13 +160,15 @@ const EMPTY_CONSULTATION_FORM = {
 /** Shown in place of the editable form once the consultation is
  * completed (2026-09-03) — the panel no longer navigates straight back
  * to the queue on Complete, so the doctor can print the prescription
- * slip (which reads the just-persisted consultation) before leaving. */
+ * slip (which reads the just-persisted consultation) and, if they spot
+ * a mistake, correct it (2026-09-04) before leaving. */
 function CompletedConsultationView({
   consultation,
   visitId,
   ageYears,
   onPrint,
   isPrinting,
+  onEdit,
   onBack,
 }) {
   return (
@@ -189,7 +182,8 @@ function CompletedConsultationView({
       <CardContent className="flex flex-col gap-5">
         <div className="flex items-center gap-2 rounded-md bg-emerald-600/10 px-3 py-2 text-sm text-emerald-700">
           <CheckCircle2 className="h-4 w-4 shrink-0" />
-          Consultation completed. Print the prescription slip below, then return to your queue.
+          Consultation completed. Print the prescription slip below, or correct a mistake, then
+          return to your queue.
         </div>
 
         <div className="flex flex-col gap-2">
@@ -206,7 +200,11 @@ function CompletedConsultationView({
             <Printer className="h-4 w-4" />
             {isPrinting ? 'Preparing…' : 'Print Prescription'}
           </Button>
-          <Button type="button" variant="outline" onClick={onBack}>
+          <Button type="button" variant="outline" onClick={onEdit}>
+            <Pencil className="h-4 w-4" />
+            Edit / Correct
+          </Button>
+          <Button type="button" variant="ghost" onClick={onBack}>
             Back to Queue
           </Button>
         </div>
@@ -237,6 +235,7 @@ export function ConsultationPanel({ visitId }) {
   // own response) — set once Complete succeeds so the panel can show
   // the print-and-leave view without another fetch or a redirect.
   const [completedConsultation, setCompletedConsultation] = useState(null);
+  const [isCorrecting, setIsCorrecting] = useState(false);
 
   const { register, getValues } = useForm({ defaultValues: EMPTY_CONSULTATION_FORM });
 
@@ -277,14 +276,36 @@ export function ConsultationPanel({ visitId }) {
   if (completedConsultation) {
     return (
       <>
-        <CompletedConsultationView
-          consultation={completedConsultation}
-          visitId={visitId}
-          ageYears={patient?.age_years}
-          onPrint={handlePrintPrescription}
-          isPrinting={printPrescription.isPending}
-          onBack={() => router.push('/doctor')}
-        />
+        {isCorrecting ? (
+          <Card>
+            <CardHeader className="flex-row items-center justify-between">
+              <CardTitle>Correct Consultation</CardTitle>
+              <Badge variant="success" className="capitalize">
+                completed
+              </Badge>
+            </CardHeader>
+            <CardContent>
+              <ConsultationCorrectionForm
+                consultation={completedConsultation}
+                onSaved={(updated) => {
+                  setCompletedConsultation(updated);
+                  setIsCorrecting(false);
+                }}
+                onCancel={() => setIsCorrecting(false)}
+              />
+            </CardContent>
+          </Card>
+        ) : (
+          <CompletedConsultationView
+            consultation={completedConsultation}
+            visitId={visitId}
+            ageYears={patient?.age_years}
+            onPrint={handlePrintPrescription}
+            isPrinting={printPrescription.isPending}
+            onEdit={() => setIsCorrecting(true)}
+            onBack={() => router.push('/doctor')}
+          />
+        )}
         {actionError ? (
           <p className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {actionError}

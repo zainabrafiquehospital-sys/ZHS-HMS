@@ -1,11 +1,12 @@
 'use client';
 
-import { useState } from 'react';
-import { Printer } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Pencil, Printer } from 'lucide-react';
 import { usePrintPrescriptionSlip } from '@/features/consultation/hooks/useConsultation';
 import { useVitalsForVisit } from '@/features/vitals/hooks/useVitals';
 import { VitalsRecordList } from '@/features/vitals/components/VitalsRecordList';
 import { ConsultationClinicalDetails } from '@/features/consultation/components/ConsultationClinicalDetails';
+import { ConsultationCorrectionForm } from '@/features/consultation/components/ConsultationCorrectionForm';
 import { DetailsDialog } from '@/shared/components/ui/DetailsDialog';
 import { Button } from '@/shared/components/ui/Button';
 import { PageLoader } from '@/shared/components/PageLoader';
@@ -22,6 +23,23 @@ import { formatDisplayDate, formatDisplayTime, displayDayKey } from '@/utils/tim
 export function ConsultationRecordDialog({ consultation, patient, visit, open, onClose }) {
   const printPrescription = usePrintPrescriptionSlip();
   const [printError, setPrintError] = useState(null);
+  const [isCorrecting, setIsCorrecting] = useState(false);
+  // A correction saved from inside this dialog — shown in place of the
+  // `consultation` prop until the dialog closes (the parent list is
+  // invalidated separately and will have the fresh row on next open).
+  const [corrected, setCorrected] = useState(null);
+
+  // Reset the local edit/correction state whenever a different record
+  // is opened or the dialog is closed.
+  useEffect(() => {
+    if (!open) {
+      setIsCorrecting(false);
+      setCorrected(null);
+      setPrintError(null);
+    }
+  }, [open, consultation?.id]);
+
+  const record = corrected ?? consultation;
 
   const {
     data: records,
@@ -29,18 +47,18 @@ export function ConsultationRecordDialog({ consultation, patient, visit, open, o
     isError: isVitalsError,
     error: vitalsError,
     refetch: refetchVitals,
-  } = useVitalsForVisit(open ? consultation?.visit_id : undefined);
+  } = useVitalsForVisit(open ? record?.visit_id : undefined);
 
   async function handlePrint() {
     setPrintError(null);
     try {
-      await printPrescription.mutateAsync(consultation.id);
+      await printPrescription.mutateAsync(record.id);
     } catch (err) {
       setPrintError(err.message || 'Unable to open the prescription slip.');
     }
   }
 
-  const completedAt = consultation?.completed_at ?? consultation?.created_at;
+  const completedAt = record?.completed_at ?? record?.created_at;
 
   return (
     <DetailsDialog
@@ -84,19 +102,36 @@ export function ConsultationRecordDialog({ consultation, patient, visit, open, o
           )}
         </div>
 
-        <ConsultationClinicalDetails consultation={consultation} />
+        {isCorrecting ? (
+          <ConsultationCorrectionForm
+            consultation={record}
+            onSaved={(updated) => {
+              setCorrected(updated);
+              setIsCorrecting(false);
+            }}
+            onCancel={() => setIsCorrecting(false)}
+          />
+        ) : (
+          <>
+            <ConsultationClinicalDetails consultation={record} />
 
-        <div className="flex flex-col gap-2 border-t border-border pt-4 sm:flex-row">
-          <Button type="button" onClick={handlePrint} disabled={printPrescription.isPending}>
-            <Printer className="h-4 w-4" />
-            {printPrescription.isPending ? 'Preparing…' : 'Print Prescription'}
-          </Button>
-        </div>
-        {printError ? (
-          <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {printError}
-          </p>
-        ) : null}
+            <div className="flex flex-col gap-2 border-t border-border pt-4 sm:flex-row">
+              <Button type="button" onClick={handlePrint} disabled={printPrescription.isPending}>
+                <Printer className="h-4 w-4" />
+                {printPrescription.isPending ? 'Preparing…' : 'Print Prescription'}
+              </Button>
+              <Button type="button" variant="outline" onClick={() => setIsCorrecting(true)}>
+                <Pencil className="h-4 w-4" />
+                Edit / Correct
+              </Button>
+            </div>
+            {printError ? (
+              <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {printError}
+              </p>
+            ) : null}
+          </>
+        )}
       </div>
     </DetailsDialog>
   );

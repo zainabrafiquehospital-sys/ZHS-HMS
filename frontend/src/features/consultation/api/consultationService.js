@@ -31,6 +31,14 @@ export const consultationService = {
     return httpClient.post(`/consultations/${consultationId}/complete`, updates);
   },
 
+  // Post-completion clinical-content correction (2026-09-04) — the
+  // doctor amending a mistake in their own already-completed
+  // consultation. PATCH, gated server-side on `consultation:manage`
+  // with a same-doctor ownership check + "only when completed" guard.
+  correct(consultationId, updates) {
+    return httpClient.patch(`/consultations/${consultationId}`, updates);
+  },
+
   // "View Slip" (2026-08-25 addition) — DoctorQueueList.jsx's own
   // registration-slip button, reusing Reception's exact print endpoint
   // (`reception:view_slip` now satisfies its permission gate alongside

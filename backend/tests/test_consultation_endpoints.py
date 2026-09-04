@@ -271,7 +271,7 @@ async def test_print_prescription_slip_renders_sections_and_patient(
     body = resp.text
 
     # Section labels are printed verbatim (never the expansions).
-    for label in (">H/O<", ">C/O<", ">Adv<", 'dx-label">Dx<', 'rx-label">Rx<'):
+    for label in (">H/O<", ">C/O<", ">Adv<", ">Dx<", 'rx-label">Rx<'):
         assert label in body
     assert "Diagnosis" not in body and "Complaint of" not in body
 
@@ -280,7 +280,7 @@ async def test_print_prescription_slip_renders_sections_and_patient(
     assert "RxSlipOk" in body  # patient full name contains the suffix
     assert "33 yrs" in body  # _make_visit registers age_years=33
 
-    # Box + Dx content.
+    # Section + Dx content.
     assert "Gravida 2 Para 1" in body
     assert "Lower abdominal pain 3 days" in body
     assert "USG pelvis; review in 1 week" in body
@@ -297,7 +297,7 @@ async def test_print_prescription_slip_renders_sections_and_patient(
     assert 'class="logo"' not in body
 
 
-async def test_print_prescription_slip_empty_fields_still_renders_boxes(
+async def test_print_prescription_slip_empty_fields_still_renders_sections(
     api_client, real_session, grant_permission, reception_service
 ):
     doctor, access_token = await _create_and_login(api_client, real_session, "rx-slip-empty")
@@ -321,7 +321,7 @@ async def test_print_prescription_slip_empty_fields_still_renders_boxes(
 
     assert resp.status_code == 200
     body = resp.text
-    for label in (">H/O<", ">C/O<", ">Adv<", 'dx-label">Dx<', 'rx-label">Rx<'):
+    for label in (">H/O<", ">C/O<", ">Adv<", ">Dx<", 'rx-label">Rx<'):
         assert label in body
     assert "<li>" not in body  # empty Rx -> em-dash placeholder, no list items
     assert "rx-empty" in body
@@ -489,3 +489,237 @@ async def test_prescription_slip_reprintable_for_older_completed_consultation(
     assert "Old H/O" in body
     assert "Old diagnosis" in body
     assert "<li>Tab Old 1mg OD</li>" in body
+
+
+# ---------------------------------------------------------------------
+# Post-completion clinical-content correction — PATCH /consultations/{id}
+# ---------------------------------------------------------------------
+
+
+async def test_correct_consultation_requires_consultation_manage(
+    api_client, real_session, grant_permission, reception_service
+):
+    doctor, doctor_token = await _create_and_login(api_client, real_session, "corr-perm-doc")
+    for code in (
+        PERMISSION_CONSULTATION_START,
+        PERMISSION_CONSULTATION_MANAGE,
+        PERMISSION_CONSULTATION_READ,
+    ):
+        await grant_permission(doctor, code)
+    consultation_id, _ = await _complete_consultation(
+        api_client, doctor_token, reception_service, doctor, "CorrPerm", diagnosis="dx"
+    )
+
+    # A different actor holding only consultation:read — no manage.
+    _other, other_token = await _create_and_login(api_client, real_session, "corr-perm-reader")
+    await grant_permission(_other, PERMISSION_CONSULTATION_READ)
+
+    resp = await api_client.patch(
+        f"/api/v1/consultations/{consultation_id}",
+        json={"diagnosis": "hijacked"},
+        headers=_auth_header(other_token),
+    )
+    assert resp.status_code == 403
+
+
+async def test_correct_consultation_ownership_enforced(
+    api_client, real_session, grant_permission, reception_service
+):
+    """Doctor B (who DOES hold consultation:manage) still cannot correct
+    Doctor A's consultation — same same-doctor ownership rule
+    start/send-to-vitals/complete enforce."""
+    doctor_a, token_a = await _create_and_login(api_client, real_session, "corr-own-a")
+    doctor_b, token_b = await _create_and_login(api_client, real_session, "corr-own-b")
+    for actor in (doctor_a, doctor_b):
+        for code in (
+            PERMISSION_CONSULTATION_START,
+            PERMISSION_CONSULTATION_MANAGE,
+            PERMISSION_CONSULTATION_READ,
+        ):
+            await grant_permission(actor, code)
+
+    consultation_id, _ = await _complete_consultation(
+        api_client, token_a, reception_service, doctor_a, "CorrOwnA", diagnosis="A original dx"
+    )
+
+    resp = await api_client.patch(
+        f"/api/v1/consultations/{consultation_id}",
+        json={"diagnosis": "B tampered"},
+        headers=_auth_header(token_b),
+    )
+    assert resp.status_code == 403
+
+    # A's record is untouched.
+    check = await api_client.get(
+        f"/api/v1/consultations/{consultation_id}", headers=_auth_header(token_a)
+    )
+    assert check.json()["data"]["diagnosis"] == "A original dx"
+
+
+async def test_correct_consultation_updates_fields_and_writes_audit(
+    api_client, real_session, grant_permission, reception_service
+):
+    from sqlalchemy import select
+
+    from app.shared.audit.models import AuditEntry
+
+    doctor, token = await _create_and_login(api_client, real_session, "corr-audit")
+    for code in (
+        PERMISSION_CONSULTATION_START,
+        PERMISSION_CONSULTATION_MANAGE,
+        PERMISSION_CONSULTATION_READ,
+    ):
+        await grant_permission(doctor, code)
+    consultation_id, visit = await _complete_consultation(
+        api_client,
+        token,
+        reception_service,
+        doctor,
+        "CorrAudit",
+        history_of="orig H/O",
+        diagnosis="orig dx",
+        prescription="Tab Orig 1mg OD",
+        notes="orig notes",
+    )
+
+    resp = await api_client.patch(
+        f"/api/v1/consultations/{consultation_id}",
+        json={
+            "diagnosis": "corrected dx",
+            "prescription": "Tab Corrected 2mg BD",
+            "notes": "corrected notes",
+            # re-submitted unchanged — must NOT be logged as a change
+            "history_of": "orig H/O",
+        },
+        headers=_auth_header(token),
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["diagnosis"] == "corrected dx"
+    assert data["prescription"] == "Tab Corrected 2mg BD"
+    assert data["notes"] == "corrected notes"
+    assert data["history_of"] == "orig H/O"
+
+    # persisted
+    fresh = await api_client.get(
+        f"/api/v1/consultations/{consultation_id}", headers=_auth_header(token)
+    )
+    assert fresh.json()["data"]["diagnosis"] == "corrected dx"
+
+    rows = (
+        (
+            await real_session.execute(
+                select(AuditEntry).where(
+                    AuditEntry.action == "consultation.corrected",
+                    AuditEntry.entity_id == consultation_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    entry = rows[0]
+    assert entry.actor_user_id == doctor.id
+    assert entry.entity_type == "consultation"
+    assert entry.metadata_["visit_id"] == str(visit.id)
+    # only the three fields whose value actually changed
+    assert entry.metadata_["fields"] == ["diagnosis", "notes", "prescription"]
+
+
+async def test_correct_consultation_only_when_completed(
+    api_client, real_session, grant_permission, reception_service
+):
+    doctor, token = await _create_and_login(api_client, real_session, "corr-notdone")
+    for code in (PERMISSION_CONSULTATION_START, PERMISSION_CONSULTATION_MANAGE):
+        await grant_permission(doctor, code)
+    visit = await _make_visit(reception_service, doctor, "CorrNotDone")
+    consultation_id = await _start_consultation_id(api_client, token, visit)  # IN_PROGRESS
+
+    resp = await api_client.patch(
+        f"/api/v1/consultations/{consultation_id}",
+        json={"diagnosis": "too soon"},
+        headers=_auth_header(token),
+    )
+    assert resp.status_code == 422
+
+
+async def test_correct_consultation_ignores_structural_fields(
+    api_client, real_session, grant_permission, reception_service
+):
+    doctor, token = await _create_and_login(api_client, real_session, "corr-struct")
+    for code in (
+        PERMISSION_CONSULTATION_START,
+        PERMISSION_CONSULTATION_MANAGE,
+        PERMISSION_CONSULTATION_READ,
+    ):
+        await grant_permission(doctor, code)
+    consultation_id, _ = await _complete_consultation(
+        api_client, token, reception_service, doctor, "CorrStruct", diagnosis="orig"
+    )
+    before = (
+        await api_client.get(
+            f"/api/v1/consultations/{consultation_id}", headers=_auth_header(token)
+        )
+    ).json()["data"]
+
+    resp = await api_client.patch(
+        f"/api/v1/consultations/{consultation_id}",
+        json={
+            "diagnosis": "new dx",
+            "status": "cancelled",
+            "doctor_user_id": "00000000-0000-0000-0000-000000000000",
+            "visit_id": "00000000-0000-0000-0000-000000000000",
+            "completed_at": "2020-01-01T00:00:00Z",
+        },
+        headers=_auth_header(token),
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["diagnosis"] == "new dx"
+    assert data["status"] == "completed"
+    assert data["doctor_user_id"] == before["doctor_user_id"] == str(doctor.id)
+    assert data["visit_id"] == before["visit_id"]
+    assert data["completed_at"] == before["completed_at"]
+
+
+async def test_prescription_slip_reflects_correction(
+    api_client, real_session, grant_permission, reception_service
+):
+    doctor, token = await _create_and_login(api_client, real_session, "corr-slip")
+    for code in (
+        PERMISSION_CONSULTATION_START,
+        PERMISSION_CONSULTATION_MANAGE,
+        PERMISSION_CONSULTATION_READ,
+    ):
+        await grant_permission(doctor, code)
+    consultation_id, _ = await _complete_consultation(
+        api_client,
+        token,
+        reception_service,
+        doctor,
+        "CorrSlip",
+        diagnosis="Original diagnosis text",
+        prescription="Tab Wrong 1mg OD",
+    )
+
+    first = await api_client.get(
+        f"/api/v1/consultations/{consultation_id}/slip/print", headers=_auth_header(token)
+    )
+    assert "Original diagnosis text" in first.text
+    assert "<li>Tab Wrong 1mg OD</li>" in first.text
+
+    patch = await api_client.patch(
+        f"/api/v1/consultations/{consultation_id}",
+        json={"diagnosis": "Amended diagnosis text", "prescription": "Tab Right 2mg BD"},
+        headers=_auth_header(token),
+    )
+    assert patch.status_code == 200
+
+    second = await api_client.get(
+        f"/api/v1/consultations/{consultation_id}/slip/print", headers=_auth_header(token)
+    )
+    assert "Amended diagnosis text" in second.text
+    assert "Original diagnosis text" not in second.text
+    assert "<li>Tab Right 2mg BD</li>" in second.text
+    assert "Tab Wrong 1mg OD" not in second.text

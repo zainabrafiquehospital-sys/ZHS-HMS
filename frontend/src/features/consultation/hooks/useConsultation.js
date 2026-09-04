@@ -272,6 +272,26 @@ export function useCompleteConsultation() {
   });
 }
 
+/** Post-completion clinical-content correction (2026-09-04) — a doctor
+ * amending a mistake in their own completed consultation. Invalidates
+ * every surface that renders a consultation's clinical fields so a
+ * correction shows immediately: the single-consultation cache, "My
+ * Consultations", and Patient History's Consultations section. The
+ * prescription-slip print endpoint re-reads persisted fields live, so
+ * it needs no invalidation. */
+export function useCorrectConsultation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ consultationId, updates }) =>
+      consultationService.correct(consultationId, updates),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['consultations', variables.consultationId] });
+      queryClient.invalidateQueries({ queryKey: ['consultations', 'mine'] });
+      queryClient.invalidateQueries({ queryKey: ['patients', 'history'] });
+    },
+  });
+}
+
 /** "View Slip" (2026-08-25 addition) — DoctorQueueList.jsx's own button,
  * mirroring Reception's usePrintRegistrationSlip exactly (same fetch +
  * openAndPrintHtml pipeline, same hidden-iframe print mechanism,

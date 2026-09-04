@@ -18,6 +18,7 @@ from app.modules.consultation.schemas import (
     CompleteConsultationRequest,
     ConsultationDoctorStatOut,
     ConsultationOut,
+    CorrectConsultationRequest,
     SendToVitalsRequest,
     StartConsultationRequest,
 )
@@ -143,6 +144,30 @@ async def complete_consultation(
     actor: User = Depends(require_permission(PERMISSION_CONSULTATION_MANAGE)),
 ) -> dict:
     consultation = await consultation_service.complete_consultation(
+        actor=actor,
+        consultation_id=consultation_id,
+        updates=payload.model_dump(exclude_unset=True),
+    )
+    return success_envelope(ConsultationOut.from_consultation(consultation).model_dump(mode="json"))
+
+
+@router.patch("/{consultation_id}")
+async def correct_consultation(
+    consultation_id: UUID,
+    payload: CorrectConsultationRequest,
+    consultation_service: ConsultationService = Depends(get_consultation_service),
+    actor: User = Depends(require_permission(PERMISSION_CONSULTATION_MANAGE)),
+) -> dict:
+    """Post-completion clinical-content correction — the doctor amending
+    a mistake in *their own* already-completed consultation (2026-09-04).
+    Gated on `consultation:manage`, the same permission `complete` and
+    `send-to-vitals` use; the same-doctor ownership check and the
+    "only when COMPLETED" precondition live in
+    `ConsultationService.correct_consultation`. Only the six clinical
+    free-text fields are writable — never `status`/`doctor_user_id`/
+    `visit_id`/`completed_at`. Each call is audited as
+    `consultation.corrected`."""
+    consultation = await consultation_service.correct_consultation(
         actor=actor,
         consultation_id=consultation_id,
         updates=payload.model_dump(exclude_unset=True),

@@ -51,6 +51,20 @@ from app.shared.db_errors import unique_violation_constraint_name
 # (see app/shared/db_errors.py's module docstring).
 _CONSULTATION_ACTIVE_CONSTRAINT = "ix_consultation_visit_id_active"
 
+# The clinical free-text fields a doctor fills in — the only fields
+# `complete_consultation` writes and the only fields `correct_consultation`
+# lets a doctor amend afterwards. `status`/`doctor_user_id`/`visit_id`/
+# `completed_at` are structural facts about who/when and are never in
+# this set.
+_CLINICAL_FIELDS = (
+    "notes",
+    "diagnosis",
+    "prescription",
+    "history_of",
+    "complaint_of",
+    "advised",
+)
+
 
 class ConsultationService:
     def __init__(
@@ -228,14 +242,7 @@ class ConsultationService:
                 consultation.status.value, ConsultationStatus.COMPLETED.value
             )
 
-        for field in (
-            "notes",
-            "diagnosis",
-            "prescription",
-            "history_of",
-            "complaint_of",
-            "advised",
-        ):
+        for field in _CLINICAL_FIELDS:
             if field in updates:
                 setattr(consultation, field, updates[field])
 
@@ -254,6 +261,77 @@ class ConsultationService:
             entity_id=consultation.id,
             actor_user_id=actor.id,
             metadata={"visit_id": str(consultation.visit_id)},
+        )
+        await self._session.commit()
+        return await self._consultation_repo.get_by_id(consultation.id)
+
+    async def correct_consultation(
+        self,
+        *,
+        actor: User,
+        consultation_id: UUID,
+        updates: dict[str, Any],
+    ) -> Consultation:
+        """Amends the clinical free-text fields of an already-`COMPLETED`
+        consultation — a doctor fixing a data-entry mistake (wrong
+        diagnosis, typo in H/O/C/O/Adv/Dx/Rx/notes) after finalizing it.
+
+        Same ownership rule every other write on this module enforces:
+        only the consultation's own `doctor_user_id` may correct it
+        (§5.2's "always the same doctor"). Only applies once `COMPLETED`
+        — while `IN_PROGRESS` the normal editable form + `complete`
+        covers it, and `AWAITING_VITALS` is a mid-detour state, so
+        `InvalidConsultationStatusTransitionError` is raised otherwise.
+
+        Never a full field-level PATCH: only `_CLINICAL_FIELDS` are
+        writable — `status`, `doctor_user_id`, `visit_id` and
+        `completed_at` are structural facts about who ran the
+        consultation and when it finished, and are not on
+        `CorrectConsultationRequest` at all. No `VisitService` /
+        `QueueService` calls: correcting a note never moves the Visit or
+        the queue (both already left this module's control at
+        completion). Audited as `consultation.corrected`, logging which
+        fields changed — the same `{"fields": [...]}` shape
+        `visits.updated_by_admin` / `pharmacy.bill_updated_by_admin`
+        already use for their own corrections."""
+        consultation = await self.get_consultation(consultation_id)
+        if consultation.doctor_user_id != actor.id:
+            raise PermissionDeniedError("This consultation is not assigned to you.")
+        if consultation.status != ConsultationStatus.COMPLETED:
+            raise InvalidConsultationStatusTransitionError(consultation.status.value, "corrected")
+
+        # Only fields whose value actually differs are written and
+        # audited — a client that re-submits the whole form (as the UI
+        # does) must not log every field as "changed" every time. Empty
+        # string and NULL are treated as the same "not recorded" state
+        # for this comparison, so switching a blank field between the two
+        # is a no-op, not a correction.
+        def _norm(value: str | None) -> str | None:
+            return value or None
+
+        changed = [
+            field
+            for field in _CLINICAL_FIELDS
+            if field in updates and _norm(updates[field]) != _norm(getattr(consultation, field))
+        ]
+        if not changed:
+            return consultation
+
+        for field in changed:
+            setattr(consultation, field, updates[field])
+        consultation.updated_by = actor.id
+        await self._consultation_repo.add(consultation)
+
+        await self._audit_repo.record(
+            module="consultation",
+            action="consultation.corrected",
+            entity_type="consultation",
+            entity_id=consultation.id,
+            actor_user_id=actor.id,
+            metadata={
+                "visit_id": str(consultation.visit_id),
+                "fields": sorted(changed),
+            },
         )
         await self._session.commit()
         return await self._consultation_repo.get_by_id(consultation.id)

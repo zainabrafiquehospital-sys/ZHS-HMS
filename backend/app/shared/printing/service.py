@@ -1792,34 +1792,33 @@ _PRESCRIPTION_SLIP_STYLE = """
 
     /* ---- Header row (Token / Name / Age) ------------------------- */
     --header-offset-top: 52mm;    /* space reserved for the pre-printed logo/letterhead band */
-    --header-to-boxes-gap: 8mm;   /* header row -> boxes row */
+    --header-to-body-gap: 8mm;    /* header row -> the two-column body */
     --header-font-size: 11pt;
     --header-label-weight: 700;
 
-    /* ---- H/O . C/O . Adv boxes row ------------------------------ */
-    --box-gap: 5mm;               /* horizontal gap between the three boxes */
-    --box-min-height: 40mm;
-    --box-padding: 3mm;
-    --box-border: 0.3mm solid #000;
-    --box-label-font-size: 9pt;
-    --box-label-weight: 700;
-    --box-body-font-size: 10pt;
-    --box-body-line-height: 1.5;
+    /* ---- Two-column body split --------------------------------- */
+    --rx-col-width: 62%;          /* left (Rx) column width — the dominant area */
+    --col-gap: 12mm;              /* gap between the Rx column and the sections column */
+    --body-min-height: 200mm;     /* both columns reserve at least this much page height */
 
-    /* ---- Dx line (under the C/O box only) ----------------------- */
-    --dx-offset-top: 3mm;         /* boxes row -> Dx line */
-    --dx-height: 8mm;             /* single line ONLY — do not grow into a paragraph box */
-    --dx-padding: 2mm;
-    --dx-border: 0.3mm solid #000;
-    --dx-label-font-size: 9pt;
-    --dx-font-size: 10pt;
+    /* ---- Right column: stacked H/O -> C/O -> Dx -> Adv sections - */
+    --section-gap: 11mm;          /* vertical gap between one section and the next */
+    --section-min-height: 26mm;   /* writing space reserved above the rule for H/O / C/O / Adv */
+    --dx-min-height: 12mm;        /* Dx reserves LESS — a diagnosis is typically one short line */
+    --section-label-font-size: 9.5pt;
+    --section-label-weight: 700;
+    --section-body-font-size: 10pt;
+    --section-body-line-height: 1.5;
+    --rule-thickness: 0.35mm;     /* the thin "write here" underline beneath each section */
+    --rule-color: #000000;
 
-    /* ---- Rx section --------------------------------------------- */
-    --rx-offset-top: 7mm;         /* Dx line -> Rx */
-    --rx-label-font-size: 11pt;
+    /* ---- Left column: Rx (prescription) ------------------------ */
+    --rx-label-font-size: 12pt;
+    --rx-label-weight: 700;
     --rx-font-size: 10.5pt;
-    --rx-line-height: 1.9;
-    --rx-item-gap: 1mm;
+    --rx-line-height: 2.0;
+    --rx-item-gap: 1.5mm;
+    --rx-list-indent: 8mm;
 
     --ink: #000000;
     --content-font: 'Inter', -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
@@ -1863,93 +1862,71 @@ _PRESCRIPTION_SLIP_STYLE = """
     margin-right: 2mm;
   }
 
-  /* Two flex rows sharing one 3-track shape: the boxes row (H/O / C/O /
-     Adv) and, directly beneath it, the Dx row whose middle cell holds
-     the Dx line so it stays locked to the C/O column's own width.
-     Deliberately flexbox, NOT `display: grid` — Chromium's Windows GDI
-     physical-print path (direct-to-printer, as opposed to Save-as-PDF /
-     preview, which both go through the Skia/PDF compositor) has a long
-     history of failing to paint grid containers, and every other
-     document in this module already prints reliably through the same
-     `openAndPrintHtml` pipeline using only flex/block/table. `flex: 1 1
-     0` + `gap` yields the exact same three equal columns `1fr 1fr 1fr`
-     + `column-gap` did; `align-items: stretch` (the flex default) keeps
-     the three boxes the same height, as the grid row did. */
-  .clinical-grid {
-    margin-top: var(--header-to-boxes-gap);
-  }
-  .boxes-row {
+  /* Two columns side by side, spanning the page below the header.
+     Deliberately flexbox — CSS Grid is banned in this file: Chromium's
+     Windows GDI direct-to-physical-printer path (as opposed to
+     Save-as-PDF / preview, which go through the Skia/PDF compositor)
+     has a documented history of failing to paint grid containers, and
+     every other document in this module prints reliably through the
+     same `openAndPrintHtml` pipeline using only flex/block/table. */
+  .body-columns {
     display: flex;
-    gap: var(--box-gap);
+    gap: var(--col-gap);
+    margin-top: var(--header-to-body-gap);
+    align-items: stretch;
   }
-  .dx-row {
-    display: flex;
-    gap: var(--box-gap);
-  }
-  .boxes-row > .box,
-  .dx-row > .dx-cell {
-    flex: 1 1 0;
+  /* LEFT — Rx, the primary prescription-pad area: a fixed width basis,
+     full page height, a label + a numbered medicine list, and NO
+     bottom rule (a numbered list needs no "write here" line). */
+  .rx-col {
+    flex: 0 0 var(--rx-col-width);
     min-width: 0;
+    min-height: var(--body-min-height);
   }
-  .box {
-    border: var(--box-border);
-    padding: var(--box-padding);
-    min-height: var(--box-min-height);
-  }
-  .box .box-label {
-    font-size: var(--box-label-font-size);
-    font-weight: var(--box-label-weight);
-    margin-bottom: 1.5mm;
-  }
-  .box .box-body {
-    font-size: var(--box-body-font-size);
-    line-height: var(--box-body-line-height);
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-
-  /* The two flanking `.dx-cell`s are empty — they only reserve the H/O
-     and Adv columns so the Dx line sits under the C/O (middle) box. */
-  .dx {
-    margin-top: var(--dx-offset-top);
-    height: var(--dx-height);
-    border: var(--dx-border);
-    padding: var(--dx-padding);
-    display: flex;
-    align-items: center;
-    gap: 2mm;
-    overflow: hidden;
-  }
-  .dx .dx-label {
-    font-size: var(--dx-label-font-size);
-    font-weight: 700;
-    flex: 0 0 auto;
-  }
-  .dx .dx-value {
-    font-size: var(--dx-font-size);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .rx {
-    margin-top: var(--rx-offset-top);
-  }
-  .rx .rx-label {
+  .rx-col .rx-label {
     font-size: var(--rx-label-font-size);
-    font-weight: 700;
-    margin-bottom: 2mm;
+    font-weight: var(--rx-label-weight);
+    margin-bottom: 3mm;
   }
-  .rx ol {
+  .rx-col ol {
     margin: 0;
-    padding-left: 8mm;
+    padding-left: var(--rx-list-indent);
     font-size: var(--rx-font-size);
     line-height: var(--rx-line-height);
   }
-  .rx ol li { margin-bottom: var(--rx-item-gap); }
-  .rx .rx-empty {
+  .rx-col ol li { margin-bottom: var(--rx-item-gap); }
+  .rx-col .rx-empty {
     font-size: var(--rx-font-size);
     color: #666666;
+  }
+
+  /* RIGHT — H/O, C/O, Dx, Adv stacked top to bottom. No bordered
+     boxes anywhere: each section is a bold label, the content directly
+     beneath it in normal weight, then one thin horizontal rule
+     (border-bottom) as the "write here" line. `min-height` reserves
+     the writing space above that rule. */
+  .sections-col {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: var(--body-min-height);
+  }
+  .section {
+    min-height: var(--section-min-height);
+    padding-bottom: 1mm;
+    border-bottom: var(--rule-thickness) solid var(--rule-color);
+  }
+  .section + .section { margin-top: var(--section-gap); }
+  .section.section--dx { min-height: var(--dx-min-height); }
+  .section .section-label {
+    font-size: var(--section-label-font-size);
+    font-weight: var(--section-label-weight);
+    margin-bottom: 1.5mm;
+  }
+  .section .section-body {
+    font-size: var(--section-body-font-size);
+    line-height: var(--section-body-line-height);
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 
   @page {
@@ -1970,11 +1947,18 @@ _PRESCRIPTION_SLIP_STYLE = """
 """
 
 
-def _prescription_box_html(label: str, body: str | None) -> str:
+def _prescription_section_html(label: str, body: str | None, *, is_dx: bool = False) -> str:
+    """One right-column section: a bold label, the content directly
+    beneath it, and a thin bottom rule as the write-here line (drawn by
+    `.section`'s `border-bottom`, not a box). Renders even when `body`
+    is empty — the label + reserved space + rule must still be visible
+    for hand-writing on and for physical calibration. `is_dx` swaps in
+    the shorter `--dx-min-height`."""
+    css_class = "section section--dx" if is_dx else "section"
     return (
-        '<div class="box">'
-        f'<div class="box-label">{_escape(label)}</div>'
-        f'<div class="box-body">{_escape(body or "")}</div>'
+        f'<div class="{css_class}">'
+        f'<div class="section-label">{_escape(label)}</div>'
+        f'<div class="section-body">{_escape(body or "")}</div>'
         "</div>"
     )
 
@@ -2006,18 +1990,21 @@ def render_prescription_slip(
     footer), only the structured clinical content, offset down the page
     to clear the physical letterhead band.
 
-    Layout, top to bottom (see `_PRESCRIPTION_SLIP_STYLE` for the named,
-    physically-calibratable CSS variables controlling every offset and
-    size):
-      1. A header row — Token / Patient Name / Age.
-      2. Three side-by-side bordered boxes — `H/O`, `C/O`, `Adv`.
-      3. A single-line `Dx` box directly beneath the `C/O` box only.
-      4. An `Rx` section — `prescription` split one medicine per line
-         into a numbered list.
+    Layout (see `_PRESCRIPTION_SLIP_STYLE` for the named, physically-
+    calibratable CSS variables controlling every width / offset / size):
+      1. A full-width header row — Token / Patient Name / Age.
+      2. Below it, two flex columns spanning the page:
+         - LEFT (dominant): `Rx` — a label plus `prescription` split one
+           medicine per line into a numbered list. No bottom rule.
+         - RIGHT: `H/O`, `C/O`, `Dx`, `Adv` stacked top to bottom. Each
+           is a bold label + content + one thin horizontal rule
+           beneath it as a "write here" line — no bordered boxes. `Dx`
+           reserves less vertical space than the other three.
 
-    Every clinical field is optional; a missing one renders as an empty
-    box / empty Rx state (never hidden — the empty geometry still needs
-    to be visible for physical calibration and for hand-writing on).
+    Every clinical field is optional; a missing one still renders its
+    label + empty write-here line (never hidden — the empty geometry
+    must be visible for physical calibration and for hand-writing on).
+    `Rx` with no lines renders an em-dash placeholder.
 
     `hospital_name` is accepted for call-site parity with every other
     `render_*` in this module and is used only in the document
@@ -2038,6 +2025,15 @@ def render_prescription_slip(
         ]
     )
 
+    right_sections = "".join(
+        [
+            _prescription_section_html("H/O", history_of),
+            _prescription_section_html("C/O", complaint_of),
+            _prescription_section_html("Dx", diagnosis, is_dx=True),
+            _prescription_section_html("Adv", advised),
+        ]
+    )
+
     return f"""<!doctype html>
 <html>
 <head>
@@ -2054,27 +2050,14 @@ def render_prescription_slip(
         {header_fields}
       </div>
 
-      <div class="clinical-grid">
-        <div class="boxes-row">
-          {_prescription_box_html("H/O", history_of)}
-          {_prescription_box_html("C/O", complaint_of)}
-          {_prescription_box_html("Adv", advised)}
+      <div class="body-columns">
+        <div class="rx-col">
+          <div class="rx-label">Rx</div>
+          {rx_body}
         </div>
-        <div class="dx-row">
-          <div class="dx-cell"></div>
-          <div class="dx-cell">
-            <div class="dx">
-              <span class="dx-label">Dx</span>
-              <span class="dx-value">{_escape(diagnosis or "")}</span>
-            </div>
-          </div>
-          <div class="dx-cell"></div>
+        <div class="sections-col">
+          {right_sections}
         </div>
-      </div>
-
-      <div class="rx">
-        <div class="rx-label">Rx</div>
-        {rx_body}
       </div>
     </div>
   </div>

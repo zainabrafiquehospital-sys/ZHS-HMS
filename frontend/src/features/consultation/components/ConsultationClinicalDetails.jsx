@@ -12,6 +12,26 @@ export const CONSULTATION_CLINICAL_FIELDS = [
   { name: 'notes', label: 'Clinical Notes' },
 ];
 
+// The five prescription-slip clinical fields as editable textareas, in
+// slip order — shared single source of truth for ConsultationPanel's
+// in-progress form and the post-completion ConsultationCorrectionForm.
+// Lives here (not in ConsultationPanel) so the correction form can
+// import it without a circular dependency. `notes` (the sixth, general,
+// non-printed field) is rendered by each consumer as its own textarea,
+// not part of this list.
+export const SLIP_FIELDS = [
+  { name: 'history_of', label: 'History (H/O)', rows: 3 },
+  { name: 'complaint_of', label: 'Complaint (C/O)', rows: 3 },
+  { name: 'advised', label: 'Advised (Adv)', rows: 3 },
+  { name: 'diagnosis', label: 'Diagnosis (Dx)', rows: 2 },
+  {
+    name: 'prescription',
+    label: 'Prescription (Rx)',
+    rows: 4,
+    placeholder: 'One medicine per line',
+  },
+];
+
 /** Read-only, full (never truncated) render of a consultation's
  * clinical free-text fields — shared by ConsultationPanel's
  * post-Complete view and "My Consultations"' record dialog (2026-09-03

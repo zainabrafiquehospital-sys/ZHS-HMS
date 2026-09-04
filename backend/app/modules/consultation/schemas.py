@@ -35,6 +35,26 @@ class CompleteConsultationRequest(BaseModel):
     advised: str | None = Field(default=None, max_length=5000)
 
 
+class CorrectConsultationRequest(BaseModel):
+    """Post-completion clinical-content correction (2026-09-04) — the
+    doctor amending a typo/mistake in *their own* already-completed
+    consultation. Identical field set to `CompleteConsultationRequest`
+    (the same six free-text clinical fields), partial: only the keys
+    actually sent are written (`model_dump(exclude_unset=True)` at the
+    call site). Structural facts (`status`, `doctor_user_id`,
+    `visit_id`, `completed_at`) are deliberately absent — a correction
+    never changes who ran the consultation or when it finished."""
+
+    model_config = ConfigDict(strict=True)
+
+    notes: str | None = Field(default=None, max_length=5000)
+    diagnosis: str | None = Field(default=None, max_length=2000)
+    prescription: str | None = Field(default=None, max_length=5000)
+    history_of: str | None = Field(default=None, max_length=5000)
+    complaint_of: str | None = Field(default=None, max_length=5000)
+    advised: str | None = Field(default=None, max_length=5000)
+
+
 class ConsultationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
