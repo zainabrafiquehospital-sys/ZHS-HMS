@@ -11,6 +11,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.modules.auth.models import User
 from app.modules.inventory.models import (
     InventoryCategory,
     InventoryItem,
@@ -296,10 +297,28 @@ class InventoryUsageEntryOut(BaseModel):
     # the print log has always used). Callers that can't resolve a
     # patient (none currently) just pass `patient=None`.
     patient_display_name: str | None
+    # The recording staff member's own display name (2026-09-04 addition,
+    # Daily Usage view) - resolved the identical way patient_display_name
+    # already is, and by the same router.py caller that already does this
+    # exact UserService.list_by_ids batch join for print_history_log's
+    # own "Recorded By" column. Added here (not left print-only) because
+    # this endpoint is shared cross-role (inventory:read - Inventory
+    # Manager, Admin, and Vitals), and Vitals holds no users:read to
+    # resolve a colleague's name itself via GET /users/{id} the way an
+    # Admin screen's own useUsersForLabBills-style join does - resolving
+    # it here, once, server-side, is the only way every holder of
+    # inventory:read can see who recorded an entry without a new
+    # permission grant. None when the creator is unknown/unresolved, the
+    # same "let the frontend render its own dash" convention
+    # patient_display_name already establishes.
+    created_by_display_name: str | None
 
     @classmethod
     def from_entry(
-        cls, entry: InventoryUsageEntry, patient: Patient | None = None
+        cls,
+        entry: InventoryUsageEntry,
+        patient: Patient | None = None,
+        creator: User | None = None,
     ) -> "InventoryUsageEntryOut":
         if entry.manual_patient_name:
             patient_display_name = entry.manual_patient_name
@@ -320,6 +339,7 @@ class InventoryUsageEntryOut(BaseModel):
             created_by=entry.created_by,
             created_at=entry.created_at,
             patient_display_name=patient_display_name,
+            created_by_display_name=creator.full_name if creator is not None else None,
         )
 
 

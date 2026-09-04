@@ -305,17 +305,25 @@ async def list_usage_entries(
     end_date: date_type | None = Query(default=None),
     inventory_service: InventoryService = Depends(get_inventory_service),
     patient_service: PatientService = Depends(get_patient_service),
+    user_service: UserService = Depends(get_user_service),
     _actor: User = Depends(require_permission(PERMISSION_INVENTORY_READ)),
 ) -> dict:
-    """Backs the on-screen History panel's Usage tab — shared wholesale
-    by both the Inventory Manager's own History tab and Admin's Inventory
-    History tab (see `InventoryHistoryPanel.jsx`). Resolves `patient_id`
-    to a real display name here (2026-08-28 fix), the identical
-    `PatientService.list_by_ids` batch-join `print_history_log` below has
-    always used for its own printed version of this same log — this
-    endpoint used to leave that resolution to the frontend, which had no
-    join to do it with and fell back to showing a raw id fragment for
-    every search-linked patient."""
+    """Backs the on-screen History panel's Usage tab (shared wholesale by
+    both the Inventory Manager's own History tab and Admin's Inventory
+    History tab, see `InventoryHistoryPanel.jsx`), Vitals' own "My
+    Inventory Usage" (`created_by` scoped to the caller), and the
+    cross-role Daily Usage view (2026-09-04 addition, date-range scoped,
+    no `created_by`). Resolves `patient_id` to a real display name here
+    (2026-08-28 fix) and `created_by` to the recording staff member's own
+    display name (2026-09-04 addition) — the identical
+    `PatientService.list_by_ids`/`UserService.list_by_ids` batch joins
+    `print_history_log` below has always used for its own printed
+    version of this same log. The creator join in particular matters
+    here specifically because this endpoint is held by all three
+    `inventory:read` roles, and only Admin also holds `users:read` to
+    resolve a colleague's name itself — resolving it server-side once,
+    regardless of the caller's own permissions, is what lets Vitals and
+    the Inventory Manager see "who recorded this" without a new grant."""
     entries, total = await inventory_service.list_usage_entries(
         item_id=item_id,
         created_by=created_by,
@@ -328,9 +336,13 @@ async def list_usage_entries(
     patients_by_id = {
         patient.id: patient for patient in await patient_service.list_by_ids(patient_ids)
     }
+    creator_ids = list({entry.created_by for entry in entries if entry.created_by is not None})
+    creators_by_id = {user.id: user for user in await user_service.list_by_ids(creator_ids)}
     body = [
         InventoryUsageEntryOut.from_entry(
-            entry, patients_by_id.get(entry.patient_id) if entry.patient_id else None
+            entry,
+            patients_by_id.get(entry.patient_id) if entry.patient_id else None,
+            creators_by_id.get(entry.created_by) if entry.created_by else None,
         ).model_dump(mode="json")
         for entry in entries
     ]
@@ -563,7 +575,14 @@ async def print_history_log(
         # this field existed (see InventoryTransfer.carried_by_name's own
         # docstring); shown as "—" the same as any other unresolved cell
         # in this report.
-        column_headers = ["Item", "Quantity", "Transferred On", "Carried By", "Recorded By", "Entered"]
+        column_headers = [
+            "Item",
+            "Quantity",
+            "Transferred On",
+            "Carried By",
+            "Recorded By",
+            "Entered",
+        ]
         numeric_columns = {1}
         rows = [
             [
@@ -619,6 +638,107 @@ async def print_history_log(
         item_name_filter=item_name_filter,
         start_date=start_date,
         end_date=end_date,
+        column_headers=column_headers,
+        numeric_columns=numeric_columns,
+        rows=rows,
+        total_quantity=total_quantity,
+    )
+    return HTMLResponse(content=html_document)
+
+
+@router.get("/usage/daily/print", response_class=HTMLResponse)
+async def print_daily_usage(
+    date: date_type = Query(description="Calendar day (UTC) to print the Daily Usage view for."),
+    inventory_service: InventoryService = Depends(get_inventory_service),
+    patient_service: PatientService = Depends(get_patient_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings),
+    _actor: User = Depends(require_permission(PERMISSION_INVENTORY_READ)),
+) -> HTMLResponse:
+    """The Daily Usage view's own day-wise export (2026-09-04 addition)
+    — a thin, `inventory:read`-gated wrapper around the exact same
+    `render_inventory_history_log` report `print_history_log` above
+    already uses for its own (Inventory-Manager-only) Usage sub-tab, not
+    a new print template. Two differences from that endpoint, both
+    deliberate:
+
+    - Gated on `inventory:read`, not `inventory:manage` — this view is
+      shared by Inventory Manager, Admin, *and* Vitals (see this
+      module's own top-level docstring), and Vitals never holds
+      `inventory:manage`. `print_history_log` stays `inventory:manage`-
+      gated unchanged; it also legitimately covers receipts/transfers,
+      which must stay Inventory-Manager-only data.
+    - Hospital-wide and single-day only (`created_by=None`, `start_date
+      == end_date == date`), never scoped to `item_id` or to the
+      on-screen text search the Daily Usage view's own patient/item
+      search box applies — this exports "every item used, on which
+      patient, at what time, that day" exactly as specified, independent
+      of whatever the viewer currently has filtered on screen.
+
+    Deliberately does NOT reuse either of the two now-orphaned per-actor
+    print endpoints below (`GET /inventory/usage/mine/print`, `GET
+    /vitals/daily-summary/print`) — both are hard-scoped to the calling
+    actor's own day, the opposite of "everyone's usage, hospital-wide,
+    for a given day" this view needs, and their frontend entry points
+    were removed as broken with no recorded root cause (see this
+    endpoint's own commit message); this reuses the render pipeline that
+    is verifiably still working today (`print_history_log`'s own tests,
+    and its live "Print" button on the Inventory History panel) rather
+    than resurrecting either of those two."""
+    entries, _total = await inventory_service.list_usage_entries(
+        item_id=None,
+        created_by=None,
+        start_date=date,
+        end_date=date,
+        page=1,
+        page_size=_ALL_ROWS_PAGE_SIZE,
+    )
+
+    items_by_id = await _load_items_by_id(inventory_service)
+    patient_ids = list({entry.patient_id for entry in entries if entry.patient_id is not None})
+    patients_by_id = {
+        patient.id: patient for patient in await patient_service.list_by_ids(patient_ids)
+    }
+    creator_ids = list({entry.created_by for entry in entries if entry.created_by is not None})
+    users_by_id = {user.id: user for user in await user_service.list_by_ids(creator_ids)}
+
+    def item_name(item_id: UUID) -> str:
+        item = items_by_id.get(item_id)
+        return item.name if item else "Unknown item"
+
+    def patient_display(entry) -> str:
+        if entry.manual_patient_name:
+            return entry.manual_patient_name
+        patient = patients_by_id.get(entry.patient_id) if entry.patient_id else None
+        return f"{patient.full_name} (MR: {patient.mr_number})" if patient else "—"
+
+    def recorded_by(created_by: UUID | None) -> str:
+        user = users_by_id.get(created_by) if created_by else None
+        return user.full_name if user else "—"
+
+    column_headers = ["Item", "Quantity", "Patient", "Reason", "Time", "Recorded By"]
+    numeric_columns = {1}
+    rows = [
+        [
+            item_name(entry.item_id),
+            str(entry.quantity),
+            patient_display(entry),
+            entry.reason_note or "—",
+            format_local_timestamp(entry.created_at, settings.display_timezone),
+            recorded_by(entry.created_by),
+        ]
+        for entry in entries
+    ]
+    total_quantity = sum((entry.quantity for entry in entries), Decimal("0")) if entries else None
+
+    html_document = render_inventory_history_log(
+        hospital_name=settings.app_name,
+        display_timezone=settings.display_timezone,
+        log_type="usage",
+        generated_at=datetime.now(UTC),
+        item_name_filter=None,
+        start_date=date,
+        end_date=date,
         column_headers=column_headers,
         numeric_columns=numeric_columns,
         rows=rows,

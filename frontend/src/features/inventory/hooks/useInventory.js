@@ -125,13 +125,37 @@ export function useInventoryTransfers({ itemId, startDate, endDate } = {}) {
   });
 }
 
-export function useInventoryUsageEntries({ itemId, createdBy, startDate, endDate } = {}) {
+/** `pageSize` (2026-09-04 addition) lets a caller widen the default
+ * page-1-of-50 fetch this endpoint otherwise uses — the Daily Usage view
+ * (DailyInventoryUsage.jsx) passes a generous bound (mirroring the
+ * backend's own `_ALL_ROWS_PAGE_SIZE` the print endpoint uses) since it
+ * needs one hospital-wide day's *entire* result set to group and search
+ * client-side, not one page of it.
+ *
+ * `isToday` (same addition) opts this query into the app's established
+ * `refetchInterval` + `refetchIntervalInBackground: true` live-polling
+ * convention (see useMyQueue/useUnassignedQueue/useVitalsForVisits for
+ * precedent, and QueryProvider.jsx's global `refetchOnWindowFocus:
+ * false` for why `refetchIntervalInBackground` specifically must be
+ * true — otherwise a backgrounded tab's poll silently pauses and never
+ * self-corrects). Deliberately never set for a past date: a past day's
+ * usage history is immutable, so polling it would just be wasted
+ * network traffic. */
+export function useInventoryUsageEntries({
+  itemId,
+  createdBy,
+  startDate,
+  endDate,
+  pageSize,
+  isToday,
+} = {}) {
   return useQuery({
-    queryKey: ['inventory', 'usage', { itemId, createdBy, startDate, endDate }],
+    queryKey: ['inventory', 'usage', { itemId, createdBy, startDate, endDate, pageSize }],
     queryFn: () =>
       inventoryService
-        .listUsageEntries({ itemId, createdBy, startDate, endDate })
+        .listUsageEntries({ itemId, createdBy, startDate, endDate, pageSize })
         .then((res) => res.data),
+    ...(isToday ? { refetchInterval: 15000, refetchIntervalInBackground: true } : {}),
   });
 }
 
@@ -278,6 +302,21 @@ export function usePrintInventoryHistoryLog() {
         startDate,
         endDate,
       });
+      await openAndPrintHtml(html);
+    },
+  });
+}
+
+/** The Daily Usage view's day-wise A4 print (2026-09-04 addition) —
+ * reuses this exact fetch-then-openAndPrintHtml shape, hitting the new
+ * thin `GET /inventory/usage/daily/print?date=` wrapper (see
+ * backend/app/modules/inventory/router.py's print_daily_usage docstring)
+ * rather than a second print mechanism. Independent of whatever the
+ * on-screen search box currently filters to — always the full day. */
+export function usePrintDailyInventoryUsage() {
+  return useMutation({
+    mutationFn: async ({ date }) => {
+      const html = await inventoryService.fetchDailyUsagePrintHtml(date);
       await openAndPrintHtml(html);
     },
   });

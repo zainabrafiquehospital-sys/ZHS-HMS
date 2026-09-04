@@ -145,4 +145,16 @@ export const inventoryService = {
       responseType: 'text',
     });
   },
+
+  // The hospital-wide Daily Usage view's day-wise print (2026-09-04
+  // addition) — gated `inventory:read` server-side (not
+  // `inventory:manage`, unlike fetchHistoryLogHtml above), since this is
+  // the one print action Vitals can also reach. See backend/app/modules/
+  // inventory/router.py's print_daily_usage docstring.
+  fetchDailyUsagePrintHtml(date) {
+    return httpClient.get('/inventory/usage/daily/print', {
+      params: { date },
+      responseType: 'text',
+    });
+  },
 };

@@ -18,6 +18,7 @@ import {
   ListChecks,
   Warehouse,
   History,
+  ClipboardCheck,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { ROUTES } from '@/core/constants/routes';
@@ -65,6 +66,19 @@ const NAV_ITEMS = [
     label: 'Inventory',
     icon: Warehouse,
     permission: 'inventory:manage',
+  },
+  // A genuinely shared screen (2026-09-04 addition), not an Inventory
+  // sub-screen — gated on `inventory:read`, the one permission Inventory
+  // Manager, Admin, and Vitals all three hold (confirmed against the
+  // actual grant migrations), which is exactly why this is its own
+  // top-level route rather than nested under /inventory above
+  // (`inventory:manage`-gated, unreachable for Vitals). See
+  // app/(dashboard)/daily-usage/layout.jsx's own docstring.
+  {
+    href: ROUTES.DAILY_INVENTORY_USAGE,
+    label: 'Daily Usage',
+    icon: ClipboardCheck,
+    permission: 'inventory:read',
   },
   // A genuinely shared screen, not an Admin sub-screen — gated purely on
   // `patients:read`, which both Admin (full catalog) and Receptionist

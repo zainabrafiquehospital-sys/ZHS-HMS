@@ -2,7 +2,7 @@
 Management module — see tests/test_pharmacy_endpoints.py's identical
 module docstring."""
 
-from datetime import date
+from datetime import date, timedelta
 
 from app.modules.auth.models import User, UserStatus
 from app.modules.auth.password_service import PasswordService
@@ -271,7 +271,9 @@ async def test_receive_then_transfer_moves_stock_between_tiers(
     assert transfer_resp.json()["data"][0]["emergency_stock_level"] == "30.00"
 
     list_resp = await api_client.get(
-        "/api/v1/inventory/transfers", params={"item_id": item_id}, headers=_auth_header(access_token)
+        "/api/v1/inventory/transfers",
+        params={"item_id": item_id},
+        headers=_auth_header(access_token),
     )
     assert list_resp.json()["data"][0]["carried_by_name"] == "Test Porter"
 
@@ -538,7 +540,9 @@ async def test_list_usage_entries_resolves_search_linked_patient_name(
         assert patient_name in row["patient_display_name"]
         assert "MR:" in row["patient_display_name"]
 
-    manual_row = next(row for row in rows if row["manual_patient_name"] == "Manual Fallback Patient")
+    manual_row = next(
+        row for row in rows if row["manual_patient_name"] == "Manual Fallback Patient"
+    )
     assert manual_row["patient_display_name"] == "Manual Fallback Patient"
 
 
@@ -1158,3 +1162,160 @@ async def test_print_daily_usage_slip_is_scoped_to_the_calling_actor(
     assert "Slip A Patient" in resp.text
     assert "Slip B Patient" not in resp.text
     assert vitals_a.full_name in resp.text  # "Vitals Staff:" header line
+
+
+async def test_print_daily_usage_requires_inventory_read_permission(
+    api_client, real_session, grant_permission
+):
+    """The 2026-09-04 Daily Usage view's print endpoint — gated
+    `inventory:read` (the one permission Inventory Manager, Admin, and
+    Vitals all share), not `inventory:manage`. An actor holding neither
+    must still be rejected."""
+    actor, access_token = await _create_and_login(api_client, real_session, "print-daily-no-perm")
+
+    resp = await api_client.get(
+        "/api/v1/inventory/usage/daily/print",
+        params={"date": _TODAY},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_print_daily_usage_is_hospital_wide_not_actor_scoped(
+    api_client, real_session, grant_permission
+):
+    """Unlike `GET /usage/mine/print` (hard-scoped to the calling actor),
+    the new hospital-wide Daily Usage view must show every actor's usage
+    entries for the day — two different Vitals staff members' entries on
+    the same item/day must both appear on one print for a third viewer
+    (Inventory Manager) who recorded neither."""
+    manager, manager_token = await _create_and_login(api_client, real_session, "print-daily-mgr")
+    await grant_permission(manager, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(manager, PERMISSION_INVENTORY_READ)
+    item_id = await _create_item(
+        api_client, manager_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}PrintDailyHospitalWide"
+    )
+    await api_client.post(
+        f"/api/v1/inventory/items/{item_id}/receive",
+        json={"quantity": "20", "received_on": _TODAY},
+        headers=_auth_header(manager_token),
+    )
+    await api_client.post(
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": item_id, "quantity": "20"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Test Porter",
+        },
+        headers=_auth_header(manager_token),
+    )
+
+    vitals_a, vitals_a_token = await _create_and_login(api_client, real_session, "print-daily-a")
+    await grant_permission(vitals_a, PERMISSION_INVENTORY_RECORD_USAGE)
+    vitals_b, vitals_b_token = await _create_and_login(api_client, real_session, "print-daily-b")
+    await grant_permission(vitals_b, PERMISSION_INVENTORY_RECORD_USAGE)
+
+    await api_client.post(
+        "/api/v1/inventory/usage",
+        json={
+            "items": [{"item_id": item_id, "quantity": "2"}],
+            "used_on": _TODAY,
+            "manual_patient_name": "Daily Print A Patient",
+            "manual_patient_age": 30,
+            "manual_patient_phone": "03001112222",
+        },
+        headers=_auth_header(vitals_a_token),
+    )
+    await api_client.post(
+        "/api/v1/inventory/usage",
+        json={
+            "items": [{"item_id": item_id, "quantity": "3"}],
+            "used_on": _TODAY,
+            "manual_patient_name": "Daily Print B Patient",
+            "manual_patient_age": 28,
+            "manual_patient_phone": "03003334444",
+        },
+        headers=_auth_header(vitals_b_token),
+    )
+
+    resp = await api_client.get(
+        "/api/v1/inventory/usage/daily/print",
+        params={"date": _TODAY},
+        headers=_auth_header(manager_token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert "Daily Print A Patient" in resp.text
+    assert "Daily Print B Patient" in resp.text
+    assert vitals_a.full_name in resp.text
+    assert vitals_b.full_name in resp.text
+
+
+async def test_print_daily_usage_is_scoped_to_the_given_date(
+    api_client, real_session, grant_permission
+):
+    """The print's whole reason for existing is a *day-wise* report —
+    an entry `used_on` a different day must never leak onto another
+    day's print, independent of when it was actually recorded."""
+    manager, manager_token = await _create_and_login(
+        api_client, real_session, "print-daily-date-mgr"
+    )
+    await grant_permission(manager, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(manager, PERMISSION_INVENTORY_READ)
+    item_id = await _create_item(
+        api_client, manager_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}PrintDailyDateScope"
+    )
+    await api_client.post(
+        f"/api/v1/inventory/items/{item_id}/receive",
+        json={"quantity": "20", "received_on": _TODAY},
+        headers=_auth_header(manager_token),
+    )
+    await api_client.post(
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": item_id, "quantity": "20"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Test Porter",
+        },
+        headers=_auth_header(manager_token),
+    )
+
+    vitals_actor, vitals_token = await _create_and_login(
+        api_client, real_session, "print-daily-date-v"
+    )
+    await grant_permission(vitals_actor, PERMISSION_INVENTORY_RECORD_USAGE)
+
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    await api_client.post(
+        "/api/v1/inventory/usage",
+        json={
+            "items": [{"item_id": item_id, "quantity": "1"}],
+            "used_on": yesterday,
+            "manual_patient_name": "Daily Print Yesterday Patient",
+            "manual_patient_age": 40,
+            "manual_patient_phone": "03005556666",
+        },
+        headers=_auth_header(vitals_token),
+    )
+    await api_client.post(
+        "/api/v1/inventory/usage",
+        json={
+            "items": [{"item_id": item_id, "quantity": "1"}],
+            "used_on": _TODAY,
+            "manual_patient_name": "Daily Print Today Patient",
+            "manual_patient_age": 40,
+            "manual_patient_phone": "03007778888",
+        },
+        headers=_auth_header(vitals_token),
+    )
+
+    resp = await api_client.get(
+        "/api/v1/inventory/usage/daily/print",
+        params={"date": _TODAY},
+        headers=_auth_header(manager_token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert "Daily Print Today Patient" in resp.text
+    assert "Daily Print Yesterday Patient" not in resp.text

@@ -42,4 +42,10 @@ export const ROUTES = {
   // layout.jsx's own docstring for why this is deliberately its own
   // permission/route, not folded into /patients above.
   PATIENT_HISTORY: '/patient-history',
+  // A top-level route, shared by Inventory Manager/Admin/Vitals (the
+  // only three roles holding `inventory:read`, confirmed against the
+  // actual grant migrations — not nested under /inventory, which is
+  // gated the stricter `inventory:manage` Vitals never holds) — see
+  // app/(dashboard)/daily-usage/layout.jsx's own docstring.
+  DAILY_INVENTORY_USAGE: '/daily-usage',
 };
