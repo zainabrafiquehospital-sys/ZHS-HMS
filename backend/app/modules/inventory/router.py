@@ -684,7 +684,15 @@ async def print_daily_usage(
     endpoint's own commit message); this reuses the render pipeline that
     is verifiably still working today (`print_history_log`'s own tests,
     and its live "Print" button on the Inventory History panel) rather
-    than resurrecting either of those two."""
+    than resurrecting either of those two.
+
+    Two sections in one document (2026-09-05 addition): a "Total Usage
+    Summary" — one line per distinct item, quantity summed across every
+    patient/submission that day — ahead of the existing per-entry detail
+    table, via `render_inventory_history_log`'s new optional
+    `summary_rows` (see that function's own docstring). Aggregated here
+    from the same `entries` list the detail table already uses — no
+    second query."""
     entries, _total = await inventory_service.list_usage_entries(
         item_id=None,
         created_by=None,
@@ -731,6 +739,27 @@ async def print_daily_usage(
     ]
     total_quantity = sum((entry.quantity for entry in entries), Decimal("0")) if entries else None
 
+    # Total Usage Summary (2026-09-05 addition) — one line per distinct
+    # item, the Decimal-exact sum of every entry against it that day
+    # across every patient/submission (Decimal + Decimal stays exact,
+    # e.g. 0.5 + 0.5 == 1.0 — never routed through float). Aggregated
+    # over this same already-fetched `entries` list, no second query.
+    # Sorted by total quantity descending (ties broken by name) rather
+    # than alphabetically — a reconciliation reader wants "what got used
+    # the most today" surfaced first, not buried in an alphabetical scan.
+    quantity_by_item: dict[UUID, Decimal] = {}
+    for entry in entries:
+        quantity_by_item[entry.item_id] = (
+            quantity_by_item.get(entry.item_id, Decimal("0")) + entry.quantity
+        )
+    summary_rows_data = sorted(
+        quantity_by_item.items(), key=lambda pair: (-pair[1], item_name(pair[0]))
+    )
+
+    def item_unit(item_id: UUID) -> str:
+        item = items_by_id.get(item_id)
+        return item.unit.value if item else "—"
+
     html_document = render_inventory_history_log(
         hospital_name=settings.app_name,
         display_timezone=settings.display_timezone,
@@ -743,6 +772,13 @@ async def print_daily_usage(
         numeric_columns=numeric_columns,
         rows=rows,
         total_quantity=total_quantity,
+        summary_title="Total Usage Summary",
+        summary_column_headers=["Item", "Unit", "Total Quantity"],
+        summary_numeric_columns={2},
+        summary_rows=[
+            [item_name(item_id), item_unit(item_id), str(total)]
+            for item_id, total in summary_rows_data
+        ],
     )
     return HTMLResponse(content=html_document)
 

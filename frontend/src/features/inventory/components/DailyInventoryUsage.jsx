@@ -48,6 +48,57 @@ function itemNamesForGroup(group, items) {
   return group.lines.map((line) => findItem(items, line.item_id)?.name ?? 'Unknown item');
 }
 
+// `InventoryUsageEntry.quantity` is a Decimal(12,2) column — the backend
+// always serializes it as a fixed two-decimal string (e.g. "0.50"), never
+// a bare JSON number. Summing those via plain float addition risks the
+// same binary-floating-point drift Decimal exists to avoid (0.1 + 0.2 is
+// not exactly 0.3 in a double) — so this parses each quantity into
+// integer hundredths first and sums *those* as integers (always exact,
+// and nowhere near JS's safe-integer ceiling for a single day's volume),
+// converting back to a fixed two-decimal string only at the end. Mirrors
+// backend/app/modules/inventory/router.py's own Decimal-exact sum in
+// `print_daily_usage` — the on-screen total and the printed total must
+// always agree.
+function toHundredths(quantityString) {
+  return Math.round(Number(quantityString) * 100);
+}
+
+function fromHundredths(hundredths) {
+  return (hundredths / 100).toFixed(2);
+}
+
+/** Per-item total across every patient/submission for the day —
+ * "Avil Injection given 0.5 to one patient and 0.5 to another" collapses
+ * to one "Avil Injection: 1.00" line, not two 0.50 lines. Deliberately
+ * aggregated from the *full* day's `entries` (not `visibleGroups`, the
+ * search-filtered set below) — the same "independent of whatever the
+ * viewer currently has filtered on screen" rule the print endpoint's own
+ * aggregation follows (see print_daily_usage's docstring), so this
+ * on-screen total always matches the printed one. Sorted by total
+ * quantity descending, item name ascending as a tie-break — a
+ * reconciliation reader wants "what got used the most today" surfaced
+ * first, not an alphabetical scan (same ordering the print's own summary
+ * section uses). */
+function summarizeByItem(entries, items) {
+  const hundredthsByItemId = new Map();
+  for (const entry of entries) {
+    const current = hundredthsByItemId.get(entry.item_id) ?? 0;
+    hundredthsByItemId.set(entry.item_id, current + toHundredths(entry.quantity));
+  }
+  return Array.from(hundredthsByItemId.entries())
+    .map(([itemId, hundredths]) => {
+      const item = findItem(items, itemId);
+      return {
+        itemId,
+        name: item?.name ?? 'Unknown item',
+        unit: item?.unit ?? '',
+        total: fromHundredths(hundredths),
+        totalHundredths: hundredths,
+      };
+    })
+    .sort((a, b) => b.totalHundredths - a.totalHundredths || a.name.localeCompare(b.name));
+}
+
 /** Patient name cell for one grouped row — same "Walk-in" badge
  * PatientHistorySearch.jsx's own `PatientCells` established for a
  * MedicineBill/LabBill row with no linked `Patient`: `patientId` unset
@@ -98,7 +149,17 @@ function PatientCell({ group }) {
  * exact same shared dialog MyInventoryUsage.jsx uses. Print is always
  * the *full* selected day, independent of whatever the on-screen search
  * currently filters to (see usePrintDailyInventoryUsage's own
- * docstring). */
+ * docstring).
+ *
+ * A "Total Usage Summary" card (2026-09-05 addition) sits above the
+ * per-submission table: one line per distinct item, its quantity summed
+ * across every patient/submission that day (see `summarizeByItem`'s own
+ * docstring) — the same aggregation `print_daily_usage`'s printed report
+ * now also shows, in the same order, so the on-screen total always
+ * matches the printed one. Derived from the exact same already-fetched
+ * `entries` the per-submission table below uses — no second fetch — so
+ * it automatically inherits the identical date-scoping and
+ * today-only-live-polling behavior for free. */
 export function DailyInventoryUsage() {
   const [date, setDate] = useState(todayDisplayDayKey());
   const [searchTerm, setSearchTerm] = useState('');
@@ -123,6 +184,7 @@ export function DailyInventoryUsage() {
   const [printError, setPrintError] = useState(null);
 
   const groups = useMemo(() => groupUsageEntries(entries ?? []), [entries]);
+  const itemTotals = useMemo(() => summarizeByItem(entries ?? [], items), [entries, items]);
 
   const visibleGroups = useMemo(() => {
     const term = debouncedSearch.trim().toLowerCase();
@@ -151,7 +213,43 @@ export function DailyInventoryUsage() {
   }
 
   return (
-    <>
+    <div className="flex flex-col gap-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Total Usage Summary</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {isLoading ? (
+            <PageLoader label="Loading Total Usage Summary" />
+          ) : isError ? (
+            <PageError error={error} reset={refetch} message="Couldn't load Total Usage Summary." />
+          ) : itemTotals.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              No inventory usage recorded for this day yet.
+            </p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Item</TableHead>
+                  <TableHead>Unit</TableHead>
+                  <TableHead className="text-right">Total Quantity Used</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {itemTotals.map((row) => (
+                  <TableRow key={row.itemId}>
+                    <TableCell className="font-medium text-foreground">{row.name}</TableCell>
+                    <TableCell className="text-muted-foreground">{row.unit}</TableCell>
+                    <TableCell className="text-right tabular-nums">{row.total}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -237,6 +335,6 @@ export function DailyInventoryUsage() {
         items={items}
         onClose={() => setDetailsGroup(null)}
       />
-    </>
+    </div>
   );
 }

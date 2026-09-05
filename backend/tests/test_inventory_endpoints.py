@@ -1319,3 +1319,83 @@ async def test_print_daily_usage_is_scoped_to_the_given_date(
     assert resp.status_code == 200, resp.text
     assert "Daily Print Today Patient" in resp.text
     assert "Daily Print Yesterday Patient" not in resp.text
+
+
+async def test_print_daily_usage_shows_one_summed_total_line_per_item(
+    api_client, real_session, grant_permission
+):
+    """The 2026-09-05 Total Usage Summary addition: the same item given
+    0.5 to one patient and 0.5 to a second patient (two different
+    submissions) on the same day must show up as ONE line reading
+    "1.00" in the per-item summary section — never two separate 0.5
+    lines — and via exact Decimal arithmetic (0.50 + 0.50 == 1.00, not
+    a float-drifted 0.4999999...). The existing per-entry detail table
+    stays untouched: both 0.50 lines must still appear there."""
+    manager, manager_token = await _create_and_login(
+        api_client, real_session, "print-daily-summary-mgr"
+    )
+    await grant_permission(manager, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(manager, PERMISSION_INVENTORY_READ)
+    item_id = await _create_item(
+        api_client, manager_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}PrintDailySummedTotal"
+    )
+    await api_client.post(
+        f"/api/v1/inventory/items/{item_id}/receive",
+        json={"quantity": "10", "received_on": _TODAY},
+        headers=_auth_header(manager_token),
+    )
+    await api_client.post(
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": item_id, "quantity": "10"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Test Porter",
+        },
+        headers=_auth_header(manager_token),
+    )
+
+    vitals_actor, vitals_token = await _create_and_login(
+        api_client, real_session, "print-daily-summary-v"
+    )
+    await grant_permission(vitals_actor, PERMISSION_INVENTORY_RECORD_USAGE)
+
+    for patient_name in ("Summary Patient One", "Summary Patient Two"):
+        await api_client.post(
+            "/api/v1/inventory/usage",
+            json={
+                "items": [{"item_id": item_id, "quantity": "0.5"}],
+                "used_on": _TODAY,
+                "manual_patient_name": patient_name,
+                "manual_patient_age": 30,
+                "manual_patient_phone": "03001112222",
+            },
+            headers=_auth_header(vitals_token),
+        )
+
+    resp = await api_client.get(
+        "/api/v1/inventory/usage/daily/print",
+        params={"date": _TODAY},
+        headers=_auth_header(manager_token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    item_name = f"{TEST_INVENTORY_ITEM_NAME_PREFIX}PrintDailySummedTotal"
+    assert "Total Usage Summary" in body
+
+    # The per-item summary table's one row: item, unit, exact summed
+    # total — never two separate 0.50 rows.
+    summary_row = (
+        f'<td class="">{item_name}</td><td class="">piece</td><td class="numeric">1.00</td>'
+    )
+    assert summary_row in body
+    summary_section_only = body.split("Total Usage Summary")[1].split("Emergency Stock Usage Log")[
+        0
+    ]
+    assert '<td class="numeric">0.50</td>' not in summary_section_only
+
+    # The pre-existing per-entry detail table is untouched: both 0.50
+    # submissions still show up individually there.
+    assert body.count("0.50") == 2
+    assert "Summary Patient One" in body
+    assert "Summary Patient Two" in body

@@ -1593,6 +1593,10 @@ def render_inventory_history_log(
     numeric_columns: set[int],
     rows: list[list[str]],
     total_quantity: Decimal | None,
+    summary_title: str | None = None,
+    summary_column_headers: list[str] | None = None,
+    summary_numeric_columns: set[int] | None = None,
+    summary_rows: list[list[str]] | None = None,
 ) -> str:
     """The Inventory Manager's own filterable history log — "print
     whichever sub-tab and filters are currently active" (confirmed
@@ -1604,7 +1608,20 @@ def render_inventory_history_log(
     meaningful) are all supplied by the caller — see this section's own
     top-level docstring for why this one function deliberately serves
     all three receipt/transfer/usage cases rather than three duplicated
-    ones."""
+    ones.
+
+    `summary_rows` (2026-09-05 addition, Daily Usage's per-item Total
+    Usage Summary) is `None` for every pre-existing caller — the exact
+    same single `_ReportSection` document as before, byte-for-byte. When
+    a caller *does* pass it (currently only `print_daily_usage`'s own
+    call for `log_type="usage"`), a second `_ReportSection` is appended
+    via `_report_shell_html_sections` — the identical multi-section shell
+    `render_vitals_daily_summary` already established for its own
+    two-section combined document, reused here rather than a new render
+    function or a second HTML document. Placed *first*, ahead of the
+    per-entry detail table: a stock-reconciliation reader wants the
+    per-item totals at a glance before the underlying per-patient detail
+    that backs them, not after."""
     title_text = _INVENTORY_LOG_TITLES[log_type]
     generated_line = f"Generated: {format_local_timestamp(generated_at, display_timezone)}"
     scope_line = f"<strong>Item:</strong> {_escape(item_name_filter or 'All Items')}"
@@ -1623,13 +1640,41 @@ def render_inventory_history_log(
         summary_parts.append(f"<strong>Total Quantity:</strong> {total_quantity}")
     summary_line = " &middot; ".join(summary_parts)
 
-    return _report_shell_html(
+    if summary_rows is None:
+        return _report_shell_html(
+            hospital_name=hospital_name,
+            document_title=title_text,
+            title_text=title_text,
+            meta_lines=meta_lines,
+            table_html=table_html,
+            summary_line=summary_line,
+        )
+
+    totals_table_html = _report_table_html(
+        column_headers=summary_column_headers or [],
+        rows=summary_rows,
+        numeric_columns=summary_numeric_columns or set(),
+    )
+    totals_summary_line = (
+        f"<strong>{len(summary_rows)}</strong> distinct item{'s' if len(summary_rows) != 1 else ''}"
+    )
+    return _report_shell_html_sections(
         hospital_name=hospital_name,
         document_title=title_text,
-        title_text=title_text,
-        meta_lines=meta_lines,
-        table_html=table_html,
-        summary_line=summary_line,
+        sections=[
+            _ReportSection(
+                title_text=summary_title or "Total Usage Summary",
+                meta_lines=meta_lines,
+                table_html=totals_table_html,
+                summary_line=totals_summary_line,
+            ),
+            _ReportSection(
+                title_text=title_text,
+                meta_lines=meta_lines,
+                table_html=table_html,
+                summary_line=summary_line,
+            ),
+        ],
     )
 
 
