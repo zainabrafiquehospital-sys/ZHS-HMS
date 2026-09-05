@@ -1801,6 +1801,72 @@ def render_vitals_daily_summary(
     )
 
 
+def render_inventory_requirement_list(
+    *,
+    hospital_name: str,
+    display_timezone: str,
+    generated_at: datetime,
+    column_headers: list[str],
+    numeric_columns: set[int],
+    rows: list[list[str]],
+) -> str:
+    """Vitals' "Build Requirement" checklist's own downloadable document
+    (2026-09 addition) — the first half of a two-step real-world cycle:
+    Vitals builds this list and shares the PDF to the hospital's
+    WhatsApp group, then whatever arrives gets logged by the Inventory
+    Manager via the "Receive to Emergency" checklist (see
+    `InventoryEmergencyDirectReceipt`'s own docstring), which auto-
+    resolves whichever of these items were also formally raised as
+    tracked `InventoryRestockRequest` rows.
+
+    Deliberately its own top-level function, built from the same shared
+    `_report_shell_html`/`_report_table_html` building blocks every
+    other report already uses, rather than shoehorned into
+    `render_inventory_history_log` — that function's shape (title
+    selected from `_INVENTORY_LOG_TITLES`, an "Item"/"Date Range" meta
+    pair) is tied to querying an already-persisted receipt/transfer/
+    usage log over a date range; this document has neither a log type
+    nor a date range — it is a point-in-time render of whatever the
+    caller's own in-progress checklist currently holds, most likely
+    before that list has even been submitted as tracked rows at all
+    (see app/modules/inventory/router.py's `print_requirement_list` for
+    the full "renders directly from the request payload, never a DB
+    query" rationale). Same "separate function sharing the plumbing"
+    precedent `render_inventory_daily_usage_slip`/
+    `render_vitals_daily_summary` above already establish.
+
+    `document_title` is set to exactly `"Requirement (YYYY-MM-DD,
+    HH:MM)"` — the browser's own Save-as-PDF destination suggests a
+    filename from a printed document's `<title>` (the same mechanism
+    every other document in this pipeline already relies on; see
+    `openAndPrintHtml`'s own docstring in frontend/src/utils/
+    printWindow.js for how `.print()` is invoked on this exact
+    document). This is only ever a *suggested* filename — a browser's
+    save dialog is the user's own OS chrome, not something a served
+    HTML document can force, and a literal `:` in "HH:MM" is not a
+    legal filename character on Windows, so the actual saved file will
+    likely have it auto-substituted (e.g. "14_30") by the browser/OS,
+    outside this app's control either way."""
+    local_now = _to_local_time(generated_at, display_timezone)
+    document_title = f"Requirement ({local_now.strftime('%Y-%m-%d, %H:%M')})"
+    title_text = "Restock Requirement List"
+    meta_lines = [f"Generated: {format_local_timestamp(generated_at, display_timezone)}"]
+
+    table_html = _report_table_html(
+        column_headers=column_headers, rows=rows, numeric_columns=numeric_columns
+    )
+    summary_line = f"<strong>{len(rows)}</strong> item{'s' if len(rows) != 1 else ''}"
+
+    return _report_shell_html(
+        hospital_name=hospital_name,
+        document_title=document_title,
+        title_text=title_text,
+        meta_lines=meta_lines,
+        table_html=table_html,
+        summary_line=summary_line,
+    )
+
+
 # ---------------------------------------------------------------------
 # Prescription slip (2026-09-03 addition, Doctor module) — a full-page
 # layout that prints ONLY the doctor's structured clinical content,

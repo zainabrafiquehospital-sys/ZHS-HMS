@@ -2,6 +2,7 @@
 Management module — see tests/test_pharmacy_endpoints.py's identical
 module docstring."""
 
+import re
 from datetime import date, timedelta
 
 from app.modules.auth.models import User, UserStatus
@@ -1755,3 +1756,77 @@ async def test_receive_directly_to_emergency_resolves_every_pending_request_for_
     # Both requests resolved by the *same* one receipt event.
     receipt_ids = {fulfilled_by_id[rid]["fulfilled_by_direct_receipt_id"] for rid in request_ids}
     assert len(receipt_ids) == 1
+
+
+# ----------------------------------------------------------------------
+# Requirement list print (2026-09 addition, Vitals' "Build Requirement"
+# checklist)
+# ----------------------------------------------------------------------
+
+
+async def test_print_requirement_list_requires_request_restock_permission(
+    api_client, real_session, grant_permission
+):
+    """Gated `inventory:request_restock` — the exact permission already
+    needed to raise a request — not the broader `inventory:read` shared
+    with Inventory Manager/Admin (see this endpoint's own docstring)."""
+    actor, access_token = await _create_and_login(
+        api_client, real_session, "print-requirement-noperm"
+    )
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
+
+    resp = await api_client.post(
+        "/api/v1/inventory/requests/print",
+        json={"items": [{"item_id": "00000000-0000-0000-0000-000000000000", "quantity": "5"}]},
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_print_requirement_list_renders_from_the_request_payload(
+    api_client, real_session, grant_permission
+):
+    """Renders directly from whatever the caller sends — never a
+    database query — so an item with a quantity and an item flagged
+    with none must both appear correctly in one document, and the
+    document's own `<title>` must be exactly
+    "Requirement (YYYY-MM-DD, HH:MM)" (the string the browser's own
+    Save-as-PDF destination reads its suggested filename from)."""
+    manager, manager_token = await _create_and_login(
+        api_client, real_session, "print-requirement-mgr"
+    )
+    await grant_permission(manager, PERMISSION_INVENTORY_MANAGE)
+    item_with_qty = await _create_item(
+        api_client, manager_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}RequirementWithQty"
+    )
+    item_flagged_low = await _create_item(
+        api_client, manager_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}RequirementFlaggedLow"
+    )
+
+    vitals_actor, vitals_token = await _create_and_login(
+        api_client, real_session, "print-requirement-v"
+    )
+    await grant_permission(vitals_actor, PERMISSION_INVENTORY_REQUEST_RESTOCK)
+
+    resp = await api_client.post(
+        "/api/v1/inventory/requests/print",
+        json={
+            "items": [
+                {"item_id": item_with_qty, "quantity": "12"},
+                {"item_id": item_flagged_low, "quantity": None},
+            ]
+        },
+        headers=_auth_header(vitals_token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert f"{TEST_INVENTORY_ITEM_NAME_PREFIX}RequirementWithQty" in body
+    assert f"{TEST_INVENTORY_ITEM_NAME_PREFIX}RequirementFlaggedLow" in body
+    assert "12.00" in body
+    assert "Flagged low — no specific quantity" in body
+
+    title_match = re.search(r"<title>Requirement \(\d{4}-\d{2}-\d{2}, \d{2}:\d{2}\)</title>", body)
+    assert title_match is not None, body[:400]
+    assert f">Requirement ({_TODAY}, " in title_match.group(0)

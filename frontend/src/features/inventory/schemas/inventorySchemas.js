@@ -118,13 +118,8 @@ export const usageLineItemSchema = z.object({
   reason_note: z.string().max(200).optional().or(z.literal('')),
 });
 
-export const raiseRestockRequestFormSchema = z.object({
-  item_id: z.string().min(1, 'Select an item'),
-  requested_quantity: z
-    .union([z.string(), z.number()])
-    .transform((value) => (value === '' || value === null || value === undefined ? null : Number(value)))
-    .refine((value) => value === null || (Number.isFinite(value) && value > 0), {
-      message: 'Requested quantity must be greater than 0',
-    }),
-  note: z.string().max(200).optional().or(z.literal('')),
-});
+// (raiseRestockRequestFormSchema removed 2026-09 — the one-item-at-a-
+// time RaiseRestockRequestForm.jsx it validated was replaced by the
+// checklist-batch VitalsBuildRequirementForm.jsx, which reuses the
+// shared InventoryStockChecklist's own per-row quantity handling and
+// needs no dedicated form schema of its own.)

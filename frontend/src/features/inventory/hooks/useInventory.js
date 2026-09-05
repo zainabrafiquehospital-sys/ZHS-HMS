@@ -310,10 +310,42 @@ export function useRecordInventoryUsage() {
   });
 }
 
-export function useRaiseInventoryRestockRequest() {
+/** Vitals' "Build Requirement" checklist's own submit action (2026-09
+ * addition) — fires one `POST /inventory/requests` per line
+ * *concurrently*, never a new atomic batch endpoint: raising a request
+ * is a bare insert with no shared mutable state to protect (no stock
+ * level, no lock — confirmed against `InventoryService.
+ * raise_restock_request`'s own implementation), unlike receive/
+ * transfer/usage, which genuinely need one all-or-nothing transaction.
+ * A partial failure here is a normal, recoverable outcome — whichever
+ * lines succeeded are already correctly flagged for the Inventory
+ * Manager regardless of the others — so this returns `{succeeded,
+ * failed}` rather than rejecting the instant any single line does;
+ * `VitalsBuildRequirementForm.jsx` decides what to tell the user from
+ * that (including which items, by name, still need a retry). */
+export function useRaiseInventoryRestockRequests() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload) => inventoryService.raiseRestockRequest(payload),
+    mutationFn: async (lines) => {
+      const results = await Promise.allSettled(
+        lines.map((line) =>
+          inventoryService.raiseRestockRequest({
+            item_id: line.item_id,
+            requested_quantity: line.quantity,
+          }),
+        ),
+      );
+      const succeeded = [];
+      const failed = [];
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          succeeded.push(lines[index]);
+        } else {
+          failed.push({ line: lines[index], error: result.reason });
+        }
+      });
+      return { succeeded, failed };
+    },
     onSuccess: () => invalidateRequests(queryClient),
   });
 }
@@ -365,6 +397,24 @@ export function usePrintDailyInventoryUsage() {
   return useMutation({
     mutationFn: async ({ date }) => {
       const html = await inventoryService.fetchDailyUsagePrintHtml(date);
+      await openAndPrintHtml(html);
+    },
+  });
+}
+
+/** Vitals' "Build Requirement" checklist's own downloadable PDF
+ * (2026-09 addition) — same fetch-then-openAndPrintHtml shape as every
+ * other print action, hitting the new `POST /inventory/requests/print`
+ * (see that endpoint's own docstring). Renders straight from `items`
+ * (the checklist's own current in-progress selection) — never a
+ * database query — and is a fully independent action from actually
+ * submitting those same items via `useRaiseInventoryRestockRequests`
+ * above: downloading the PDF never requires submission to have
+ * happened first, or vice versa. */
+export function usePrintRequirementList() {
+  return useMutation({
+    mutationFn: async (items) => {
+      const html = await inventoryService.fetchRequirementListPrintHtml(items);
       await openAndPrintHtml(html);
     },
   });

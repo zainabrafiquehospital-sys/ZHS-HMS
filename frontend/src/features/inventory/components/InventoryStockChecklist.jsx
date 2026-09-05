@@ -27,8 +27,18 @@ import { useDebouncedValue } from '@/shared/hooks/useDebouncedValue';
  * whose own upper bound (if any — Transfer's Main Stock ceiling) is
  * enforced server-side and surfaced as this batch's own submit error,
  * not a per-row client-side cap requiring the live level be re-checked
- * on every keystroke. */
-function parseLineQuantity(rawQuantity) {
+ * on every keystroke.
+ *
+ * `allowEmptyQuantity` (2026-09 addition, Vitals' "Build Requirement"
+ * screen) — a blank quantity parses to `null` rather than an error, the
+ * identical "just flag it low, manager's judgment" design
+ * `InventoryRestockRequest.requested_quantity` already allows server-
+ * side (see that model's own docstring); every other caller of this
+ * checklist requires a real positive quantity per row, unchanged. */
+function parseLineQuantity(rawQuantity, { allowEmptyQuantity = false } = {}) {
+  if (allowEmptyQuantity && String(rawQuantity).trim() === '') {
+    return { quantity: null };
+  }
   const parsed = stockBatchLineItemSchema.safeParse({ quantity: rawQuantity });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? 'Invalid quantity' };
@@ -65,7 +75,25 @@ function parseLineQuantity(rawQuantity) {
  * screen needs. `onSubmit(lines)` receives `[{item_id, quantity}]` and
  * is expected to throw (with a `.message`) on failure — this component
  * owns only the picker/recap/submit-button UI and its own error/success
- * banners, never the actual API call. */
+ * banners, never the actual API call.
+ *
+ * `allowEmptyQuantity` (2026-09 addition, Vitals' "Build Requirement"
+ * screen) — the other three screens select a row purely by typing a
+ * quantity into it; this mode adds a checkbox per row instead, since a
+ * restock requirement's own quantity is optional ("just flag it low").
+ * A row's inclusion is then governed by the checkbox alone — typing (or
+ * clearing) its quantity field never adds or removes it from the batch
+ * — matching `InventoryRestockRequest.requested_quantity`'s own
+ * optional design exactly (see `parseLineQuantity`'s own docstring).
+ *
+ * `secondaryActionLabel`/`secondaryActionIcon`/`onSecondaryAction`
+ * (2026-09 addition, same screen) — an optional second button rendered
+ * beside the primary submit button, reusing the identical validated
+ * `[{item_id, quantity}]` lines the primary action already computes
+ * (e.g. "Download Requirement PDF" alongside "Raise Requests" — two
+ * genuinely independent actions over the same in-progress selection,
+ * neither one a prerequisite for the other). Omitted entirely by every
+ * other caller. */
 export function InventoryStockChecklist({
   items,
   isLoading,
@@ -84,19 +112,27 @@ export function InventoryStockChecklist({
   submittingLabel,
   submitIcon: SubmitIcon,
   onSubmit,
+  allowEmptyQuantity = false,
+  secondaryActionLabel,
+  secondaryActionIcon: SecondaryActionIcon,
+  onSecondaryAction,
 }) {
   const { toast } = useToast();
   const [searchTerm, setSearchTerm] = useState('');
   const debouncedSearch = useDebouncedValue(searchTerm, 200);
-  // `{ [itemId]: quantityString }` — a key is present iff the user has
-  // typed something into that row's quantity input; a row counts toward
-  // the batch only once its quantity parses to a positive number, same
-  // "blank means not part of the batch" convention
-  // RecordInventoryUsageForm.jsx's own `selections` state establishes.
+  // `{ [itemId]: quantityString }` — in the default (required-quantity)
+  // mode, a key is present iff the user has typed something into that
+  // row's quantity input, and a row counts toward the batch only once
+  // its quantity parses to a positive number (the "blank means not part
+  // of the batch" convention RecordInventoryUsageForm.jsx's own
+  // `selections` state establishes). In `allowEmptyQuantity` mode, key
+  // presence alone means "included" — the checkbox adds/removes the
+  // key; the quantity string can legitimately stay `''` forever.
   const [selections, setSelections] = useState({});
   const [submitError, setSubmitError] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isRunningSecondaryAction, setIsRunningSecondaryAction] = useState(false);
 
   const visibleItems = useMemo(() => {
     const term = debouncedSearch.trim().toLowerCase();
@@ -119,12 +155,31 @@ export function InventoryStockChecklist({
 
   function setRowQuantity(itemId, quantity) {
     setSelections((current) => {
-      if (quantity === '') {
+      if (!allowEmptyQuantity && quantity === '') {
         const next = { ...current };
         delete next[itemId];
         return next;
       }
+      // allowEmptyQuantity: a blank quantity is a legitimate value here
+      // ("just flag it low") — never removes an already-included row.
+      // Typing into a not-yet-included row also includes it (the same
+      // one-step ergonomics the other three screens have), without
+      // requiring the checkbox to be clicked first.
       return { ...current, [itemId]: quantity };
+    });
+  }
+
+  // allowEmptyQuantity only — the checkbox is the sole source of truth
+  // for "is this item in my requirement list"; the quantity field is
+  // purely optional supplementary detail once checked.
+  function toggleRowIncluded(itemId) {
+    setSelections((current) => {
+      if (itemId in current) {
+        const next = { ...current };
+        delete next[itemId];
+        return next;
+      }
+      return { ...current, [itemId]: '' };
     });
   }
 
@@ -136,25 +191,43 @@ export function InventoryStockChecklist({
     });
   }
 
-  async function handleSubmit() {
+  /** Shared by both the primary submit action and the optional
+   * secondary action — validates the current selection and returns
+   * `[{item_id, quantity}]`, or `null` (having already set
+   * `submitError`) if nothing is ready to send. `quantity` is `null`
+   * for a flagged-but-unquantified row in `allowEmptyQuantity` mode,
+   * never for the other three (required-quantity) callers. */
+  function buildParsedLines() {
     setSubmitError(null);
     setSuccessMessage(null);
 
-    const activeRows = selectedRows.filter((row) => String(row.quantity).trim() !== '');
+    const activeRows = allowEmptyQuantity
+      ? selectedRows
+      : selectedRows.filter((row) => String(row.quantity).trim() !== '');
     if (activeRows.length === 0) {
-      setSubmitError('Enter a quantity for at least one item before submitting.');
-      return;
+      setSubmitError(
+        allowEmptyQuantity
+          ? 'Select at least one item before submitting.'
+          : 'Enter a quantity for at least one item before submitting.',
+      );
+      return null;
     }
 
     const parsedLines = [];
     for (const row of activeRows) {
-      const result = parseLineQuantity(row.quantity);
+      const result = parseLineQuantity(row.quantity, { allowEmptyQuantity });
       if (result.error) {
         setSubmitError(`${row.item.name}: ${result.error}`);
-        return;
+        return null;
       }
       parsedLines.push({ item_id: row.item.id, quantity: result.quantity });
     }
+    return parsedLines;
+  }
+
+  async function handleSubmit() {
+    const parsedLines = buildParsedLines();
+    if (!parsedLines) return;
 
     setIsSubmitting(true);
     try {
@@ -171,6 +244,23 @@ export function InventoryStockChecklist({
       toast.error({ title: 'Unable to submit', description: message });
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function handleSecondaryAction() {
+    const parsedLines = buildParsedLines();
+    if (!parsedLines) return;
+
+    setIsRunningSecondaryAction(true);
+    try {
+      await onSecondaryAction(parsedLines);
+      setSuccessMessage(null);
+    } catch (actionError) {
+      const message = actionError.message || `Unable to ${secondaryActionLabel?.toLowerCase()}.`;
+      setSubmitError(message);
+      toast.error({ title: `Unable to ${secondaryActionLabel?.toLowerCase()}`, description: message });
+    } finally {
+      setIsRunningSecondaryAction(false);
     }
   }
 
@@ -206,18 +296,34 @@ export function InventoryStockChecklist({
             <Table>
               <TableHeader>
                 <TableRow>
+                  {allowEmptyQuantity ? <TableHead className="w-10" /> : null}
                   <TableHead>Item</TableHead>
                   <TableHead className="text-right">{levelColumnLabel}</TableHead>
-                  <TableHead className="w-32">Quantity</TableHead>
+                  <TableHead className="w-32">
+                    {allowEmptyQuantity ? 'Quantity (optional)' : 'Quantity'}
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {visibleItems.map((item) => {
                   const quantity = selections[item.id] ?? '';
-                  const isSelected = String(quantity).trim() !== '';
+                  const isSelected = allowEmptyQuantity
+                    ? item.id in selections
+                    : String(quantity).trim() !== '';
                   const badge = renderBadge ? renderBadge(item) : null;
                   return (
                     <TableRow key={item.id} className={isSelected ? 'bg-muted/40' : undefined}>
+                      {allowEmptyQuantity ? (
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            aria-label={`Include ${item.name} in the requirement list`}
+                            checked={isSelected}
+                            onChange={() => toggleRowIncluded(item.id)}
+                            className="h-4 w-4"
+                          />
+                        </TableCell>
+                      ) : null}
                       <TableCell className="font-medium text-foreground">
                         <div className="flex items-center gap-2">
                           <span>
@@ -257,7 +363,9 @@ export function InventoryStockChecklist({
         <CardContent className="flex flex-col gap-4">
           {selectedRows.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No items selected yet — enter a quantity against an item above.
+              {allowEmptyQuantity
+                ? 'No items selected yet — check an item above to add it to the list.'
+                : 'No items selected yet — enter a quantity against an item above.'}
             </p>
           ) : (
             <>
@@ -277,7 +385,11 @@ export function InventoryStockChecklist({
                         <span className="text-muted-foreground">({row.item.unit})</span>
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
-                        {String(row.quantity).trim() === '' ? '—' : row.quantity}
+                        {String(row.quantity).trim() === ''
+                          ? allowEmptyQuantity
+                            ? 'Flagged (no qty)'
+                            : '—'
+                          : row.quantity}
                       </TableCell>
                       <TableCell>
                         <Button
@@ -294,11 +406,22 @@ export function InventoryStockChecklist({
                   ))}
                 </TableBody>
               </Table>
-              <div>
+              <div className="flex flex-wrap gap-2">
                 <Button type="button" onClick={handleSubmit} disabled={isSubmitting}>
                   {SubmitIcon ? <SubmitIcon className="h-4 w-4" /> : null}
                   {isSubmitting ? submittingLabel : submitLabel}
                 </Button>
+                {onSecondaryAction ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleSecondaryAction}
+                    disabled={isRunningSecondaryAction}
+                  >
+                    {SecondaryActionIcon ? <SecondaryActionIcon className="h-4 w-4" /> : null}
+                    {isRunningSecondaryAction ? 'Preparing…' : secondaryActionLabel}
+                  </Button>
+                ) : null}
               </div>
             </>
           )}

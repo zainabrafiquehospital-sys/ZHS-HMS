@@ -152,6 +152,21 @@ export const inventoryService = {
     return httpClient.post('/inventory/requests', payload);
   },
 
+  // Vitals' "Build Requirement" checklist's own downloadable PDF
+  // (2026-09 addition) — a POST, deliberately: this renders straight
+  // from the `items` the caller sends (the in-progress checklist's own
+  // current selection), never a query over already-saved requests. See
+  // backend/app/modules/inventory/router.py's print_requirement_list
+  // docstring. `items` is `[{item_id, quantity}]`, `quantity` may be
+  // `null` for a row flagged with no specific amount.
+  fetchRequirementListPrintHtml(items) {
+    return httpClient.post(
+      '/inventory/requests/print',
+      { items },
+      { responseType: 'text' },
+    );
+  },
+
   // The usage-entry screen's read-only "MR number + most recent
   // registered procedure" preview once a patient is picked — see
   // backend/app/modules/inventory/service.py's get_patient_context

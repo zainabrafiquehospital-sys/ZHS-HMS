@@ -27,7 +27,7 @@ what to render" boundary."""
 
 from datetime import UTC, datetime
 from datetime import date as date_type
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 from uuid import UUID
 
@@ -57,6 +57,7 @@ from app.modules.inventory.schemas import (
     InventoryRestockRequestOut,
     InventoryTransferOut,
     InventoryUsageEntryOut,
+    PrintRequirementListRequest,
     RaiseRestockRequestRequest,
     ReceiveDirectToEmergencyRequest,
     ReceiveStockBatchRequest,
@@ -75,6 +76,7 @@ from app.shared.printing.service import (
     format_local_timestamp,
     render_inventory_daily_usage_slip,
     render_inventory_history_log,
+    render_inventory_requirement_list,
 )
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
@@ -979,5 +981,82 @@ async def print_my_daily_usage_slip(
         numeric_columns=numeric_columns,
         rows=rows,
         total_quantity=total_quantity,
+    )
+    return HTMLResponse(content=html_document)
+
+
+@router.post("/requests/print", response_class=HTMLResponse)
+async def print_requirement_list(
+    payload: PrintRequirementListRequest,
+    inventory_service: InventoryService = Depends(get_inventory_service),
+    settings: Settings = Depends(get_settings),
+    _actor: User = Depends(require_permission(PERMISSION_INVENTORY_REQUEST_RESTOCK)),
+) -> HTMLResponse:
+    """Vitals' "Build Requirement" checklist's own downloadable PDF
+    (2026-09 addition) — the first half of a two-step real-world cycle:
+    Vitals builds this list and shares the PDF to the hospital's
+    WhatsApp group; whatever arrives gets logged by the Inventory
+    Manager via the "Receive to Emergency" checklist (2026-09,
+    `InventoryEmergencyDirectReceipt`), which auto-resolves whichever of
+    these items were also formally raised as tracked
+    `InventoryRestockRequest` rows through `POST /requests` — that
+    submission is a separate, independent action from this one.
+
+    Gated `inventory:request_restock` — the exact permission already
+    required to raise a request in the first place, not the broader
+    `inventory:read` shared with Inventory Manager/Admin: a not-yet-
+    submitted draft requirement list is Vitals' own in-progress work,
+    not a fact about the shared catalog worth exposing more widely.
+
+    Deliberately a POST, and deliberately renders straight from
+    `payload.items` — never a database query. This is a point-in-time
+    snapshot of whatever the caller's own in-progress checklist
+    currently holds (possibly not yet submitted as real
+    `InventoryRestockRequest` rows at all, and if it has been, there is
+    still no batch/session id to query them back by — the identical "no
+    parent batch entity" design this module already commits to for
+    usage/transfers/receipts). Rendering from the request body avoids
+    inventing a fake grouping concept purely to reconstruct "the list
+    that was just submitted"."""
+    items_by_id = await _load_items_by_id(inventory_service)
+
+    def item_name(item_id: UUID) -> str:
+        item = items_by_id.get(item_id)
+        return item.name if item else "Unknown item"
+
+    def item_unit(item_id: UUID) -> str:
+        item = items_by_id.get(item_id)
+        return item.unit.value if item else "—"
+
+    def quantity_display(quantity: Decimal | None) -> str:
+        if quantity is None:
+            return "Flagged low — no specific quantity"
+        # Same two-decimal-place quantization every persisted quantity in
+        # this module gets (`InventoryService._quantize_quantity`) — this
+        # endpoint never touches the service layer at all (it renders
+        # straight from the request payload, see this function's own
+        # docstring), so a raw "12" typed by the caller would otherwise
+        # print as "12" instead of the "12.00" every other quantity in
+        # this app is shown as.
+        return str(quantity.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+    column_headers = ["Item", "Unit", "Quantity Needed"]
+    numeric_columns: set[int] = set()
+    rows = [
+        [
+            item_name(line.item_id),
+            item_unit(line.item_id),
+            quantity_display(line.quantity),
+        ]
+        for line in payload.items
+    ]
+
+    html_document = render_inventory_requirement_list(
+        hospital_name=settings.app_name,
+        display_timezone=settings.display_timezone,
+        generated_at=datetime.now(UTC),
+        column_headers=column_headers,
+        numeric_columns=numeric_columns,
+        rows=rows,
     )
     return HTMLResponse(content=html_document)

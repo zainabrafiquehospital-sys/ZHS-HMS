@@ -210,6 +210,36 @@ class RaiseRestockRequestRequest(BaseModel):
     note: str | None = Field(default=None, max_length=200)
 
 
+class PrintRequirementLineItem(BaseModel):
+    """One line of a `PrintRequirementListRequest`'s `items` list —
+    `quantity` is optional (same "just flag it low" design as
+    `RaiseRestockRequestRequest.requested_quantity`, see
+    `InventoryRestockRequest`'s own docstring): the printed Requirement
+    document must be able to show an item with no specific number
+    attached just as legitimately as one with a number."""
+
+    model_config = ConfigDict(strict=True)
+
+    item_id: LaxUUID
+    quantity: LaxDecimal | None = Field(default=None, gt=0)
+
+
+class PrintRequirementListRequest(BaseModel):
+    """Vitals' "Build Requirement" checklist's own downloadable-PDF
+    request (2026-09 addition) — renders directly from whatever items/
+    quantities the caller's own in-progress checklist currently holds,
+    never a query over already-saved `InventoryRestockRequest` rows (see
+    `render_inventory_requirement_list`'s own docstring for the full
+    "point-in-time snapshot, not a historical query" rationale). No
+    `used_on`/date field at all — unlike every other batch request in
+    this module, this one has no effective date of its own; it is
+    rendered "as of now"."""
+
+    model_config = ConfigDict(strict=True)
+
+    items: list[PrintRequirementLineItem] = Field(min_length=1)
+
+
 class FulfillRestockRequestRequest(BaseModel):
     """Fulfilling a request performs a transfer internally (see
     `InventoryService.fulfill_request`'s own docstring) — `carried_by_name`
