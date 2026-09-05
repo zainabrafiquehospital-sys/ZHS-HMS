@@ -767,11 +767,19 @@ async def print_daily_usage(
 
     Two sections in one document (2026-09-05 addition): a "Total Usage
     Summary" — one line per distinct item, quantity summed across every
-    patient/submission that day — ahead of the existing per-entry detail
-    table, via `render_inventory_history_log`'s new optional
-    `summary_rows` (see that function's own docstring). Aggregated here
-    from the same `entries` list the detail table already uses — no
-    second query."""
+    patient/submission that day — ahead of the detail table, via
+    `render_inventory_history_log`'s optional `summary_rows` (see that
+    function's own docstring). Aggregated here from the same `entries`
+    list the detail table already uses — no second query.
+
+    The detail table itself is grouped one row per "Record Usage"
+    submission (2026-09 addition), not one row per item — matching the
+    on-screen Daily Usage table's own grouping exactly (identical
+    `created_at` + resolved-patient-display-name key as frontend/src/
+    features/inventory/utils/groupUsageEntries.js; see this function's
+    own `patient_display_key`/grouping code for the full rationale), so
+    a patient who received several items in one sitting prints as one
+    row instead of that many near-duplicate lines."""
     entries, _total = await inventory_service.list_usage_entries(
         item_id=None,
         created_by=None,
@@ -793,29 +801,83 @@ async def print_daily_usage(
         item = items_by_id.get(item_id)
         return item.name if item else "Unknown item"
 
-    def patient_display(entry) -> str:
-        if entry.manual_patient_name:
-            return entry.manual_patient_name
-        patient = patients_by_id.get(entry.patient_id) if entry.patient_id else None
-        return f"{patient.full_name} (MR: {patient.mr_number})" if patient else "—"
-
     def recorded_by(created_by: UUID | None) -> str:
         user = users_by_id.get(created_by) if created_by else None
         return user.full_name if user else "—"
 
-    column_headers = ["Item", "Quantity", "Patient", "Reason", "Time", "Recorded By"]
-    numeric_columns = {1}
-    rows = [
-        [
-            item_name(entry.item_id),
-            str(entry.quantity),
-            patient_display(entry),
-            entry.reason_note or "—",
-            format_local_timestamp(entry.created_at, settings.display_timezone),
-            recorded_by(entry.created_by),
-        ]
-        for entry in entries
-    ]
+    def patient_display_key(entry) -> str | None:
+        """The same display string `InventoryUsageEntryOut.from_entry`
+        resolves as `patient_display_name` — and therefore the exact
+        value frontend/src/features/inventory/utils/groupUsageEntries.js
+        groups by. `None` only for the fully-anonymous case (no linked
+        patient, no manual name), mirroring that field's own `None`
+        convention rather than substituting a display fallback here —
+        grouping needs the real value; the "—"/"(Walk-in)" display
+        fallbacks are applied separately, right where a group's own
+        Patient cell is built below."""
+        if entry.manual_patient_name:
+            return entry.manual_patient_name
+        patient = patients_by_id.get(entry.patient_id) if entry.patient_id else None
+        return f"{patient.full_name} (MR: {patient.mr_number})" if patient else None
+
+    # Group entries into one row per "Record Usage" submission — the
+    # identical grouping key frontend/src/features/inventory/utils/
+    # groupUsageEntries.js already established (created_at + resolved
+    # patient display name, `''` standing in for the anonymous `None`
+    # case on both sides), so this printed grouping can never disagree
+    # with what the on-screen Daily Usage table already groups into one
+    # row. There is no batch/session parent entity by design (see
+    # InventoryUsageEntry's own docstring) — `created_at` is reliable
+    # here because `record_usage` writes a whole submission's lines,
+    # then commits, in exactly one transaction, so every line shares the
+    # exact same timestamp down to the microsecond. `entries` already
+    # arrives newest-first (`list_for_range`'s own `created_at.desc()`
+    # ordering), and a plain dict preserves insertion order, so no
+    # separate sort is needed to keep groups newest-submission-first.
+    groups: dict[tuple[datetime, str], list] = {}
+    for entry in entries:
+        key = (entry.created_at, patient_display_key(entry) or "")
+        groups.setdefault(key, []).append(entry)
+
+    # One row per submission, not per item — the whole point of this
+    # grouping (2026-09 addition): a patient who received several items
+    # in one sitting used to print as that many separate, mostly-
+    # identical lines. "Item"/"Quantity"/"Reason" fold into one "Items
+    # Used" cell (each line rendered as "Name ×Qty (reason)", joined by
+    # "; ") rather than three separately-joined parallel columns, which
+    # would risk a reader misaligning which reason belongs to which item
+    # when only some lines carry one. A printed report has no "Show
+    # Details" drill-down the on-screen view can fall back on, so every
+    # line item is spelled out in full here — never truncated to a
+    # "+N more" teaser the way the on-screen summary cell is.
+    column_headers = ["Patient", "Items Used", "Time", "Recorded By"]
+    numeric_columns: set[int] = set()
+    rows = []
+    for (created_at, _patient_key), group_entries in groups.items():
+        first = group_entries[0]
+        if first.patient_id:
+            patient_cell = patient_display_key(first) or "—"
+        else:
+            # No linked patient — manual walk-in name, or genuinely
+            # anonymous — same "Walk-in" distinction PatientHistorySearch.
+            # jsx's own PatientCells and the on-screen Daily Usage table's
+            # PatientCell already apply, now applied here too.
+            patient_cell = f"{first.manual_patient_name or 'Anonymous'} (Walk-in)"
+        items_used_cell = "; ".join(
+            f"{item_name(line.item_id)} ×{line.quantity}"
+            + (f" ({line.reason_note})" if line.reason_note else "")
+            for line in group_entries
+        )
+        rows.append(
+            [
+                patient_cell,
+                items_used_cell,
+                format_local_timestamp(created_at, settings.display_timezone),
+                recorded_by(first.created_by),
+            ]
+        )
+    # Independent of how rows are grouped for display — still the exact
+    # Decimal-precise sum of every individual entry that day.
     total_quantity = sum((entry.quantity for entry in entries), Decimal("0")) if entries else None
 
     # Total Usage Summary (2026-09-05 addition) — one line per distinct

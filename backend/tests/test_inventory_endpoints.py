@@ -1400,6 +1400,95 @@ async def test_print_daily_usage_shows_one_summed_total_line_per_item(
     assert "Summary Patient One" in body
 
 
+async def test_print_daily_usage_groups_multi_item_submission_into_one_row(
+    api_client, real_session, grant_permission
+):
+    """The 2026-09 grouping addition: two items used for the same
+    patient in one 'Record Usage' submission must print as ONE row
+    (the patient's name shown once, both items listed together within
+    that row), never as two separate flat rows each repeating the
+    patient's name — matching the on-screen Daily Usage table's own
+    `groupUsageEntries` grouping exactly."""
+    manager, manager_token = await _create_and_login(
+        api_client, real_session, "print-daily-group-mgr"
+    )
+    await grant_permission(manager, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(manager, PERMISSION_INVENTORY_READ)
+    item_a = await _create_item(
+        api_client, manager_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}PrintGroupA"
+    )
+    item_b = await _create_item(
+        api_client, manager_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}PrintGroupB"
+    )
+    for item_id in (item_a, item_b):
+        await api_client.post(
+            f"/api/v1/inventory/items/{item_id}/receive",
+            json={"quantity": "10", "received_on": _TODAY},
+            headers=_auth_header(manager_token),
+        )
+    await api_client.post(
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [
+                {"item_id": item_a, "quantity": "10"},
+                {"item_id": item_b, "quantity": "10"},
+            ],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Test Porter",
+        },
+        headers=_auth_header(manager_token),
+    )
+
+    vitals_actor, vitals_token = await _create_and_login(
+        api_client, real_session, "print-daily-group-v"
+    )
+    await grant_permission(vitals_actor, PERMISSION_INVENTORY_RECORD_USAGE)
+
+    # One submission, two items, one (walk-in) patient — must land as
+    # exactly one printed row, not two.
+    await api_client.post(
+        "/api/v1/inventory/usage",
+        json={
+            "items": [
+                {"item_id": item_a, "quantity": "2"},
+                {"item_id": item_b, "quantity": "1"},
+            ],
+            "used_on": _TODAY,
+            "manual_patient_name": "Grouped Submission Patient",
+            "manual_patient_age": 35,
+            "manual_patient_phone": "03009998888",
+        },
+        headers=_auth_header(vitals_token),
+    )
+
+    resp = await api_client.get(
+        "/api/v1/inventory/usage/daily/print",
+        params={"date": _TODAY},
+        headers=_auth_header(manager_token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    item_a_name = f"{TEST_INVENTORY_ITEM_NAME_PREFIX}PrintGroupA"
+    item_b_name = f"{TEST_INVENTORY_ITEM_NAME_PREFIX}PrintGroupB"
+
+    # Exactly one row for this patient — the whole point of grouping —
+    # and it carries the same "(Walk-in)" distinction the on-screen
+    # table's own PatientCell already applies for an unlinked patient.
+    patient_cell = '<td class="">Grouped Submission Patient (Walk-in)</td>'
+    assert body.count(patient_cell) == 1
+
+    # Both items appear together within that one row (not split across
+    # two separate rows each carrying only one item).
+    row_start = body.index(patient_cell) + len(patient_cell)
+    row_end = body.index("</tr>", row_start)
+    row_html = body[row_start:row_end]
+    assert item_a_name in row_html
+    assert item_b_name in row_html
+    assert "×2.00" in row_html
+    assert "×1.00" in row_html
+
+
 # ----------------------------------------------------------------------
 # Batch Main Stock receiving (2026-09 addition, checklist-entry redesign)
 # ----------------------------------------------------------------------
