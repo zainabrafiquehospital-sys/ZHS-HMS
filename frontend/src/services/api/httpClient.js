@@ -42,7 +42,12 @@ let _refreshPromise = null;
 /** Coalesces concurrent 401s into a single `/auth/refresh` call — several
  * requests can legitimately be in flight the instant an access token
  * expires; without this they would each fire their own refresh call
- * and race to rotate the same refresh-token family. */
+ * and race to rotate the same refresh-token family. The `.finally()`
+ * below already resets `_refreshPromise` to `null` on *either* outcome
+ * (a successful rotation, a genuine 401/403, or a transient network
+ * failure) — so a failed-due-to-network attempt never leaves this
+ * singleton stuck; the very next 401 anywhere still starts a brand-new
+ * refresh attempt, no separate reset needed. */
 function _refreshAccessToken() {
   if (!_refreshPromise) {
     // See tokenStore.js's `userId` docstring — this lets the backend
@@ -95,10 +100,42 @@ httpClient.interceptors.response.use(
         const newToken = await _refreshAccessToken();
         originalRequest.headers.Authorization = `Bearer ${newToken}`;
         return httpClient(originalRequest);
-      } catch {
-        clearAccessToken();
-        clearUserId();
-        _onAuthFailure?.();
+      } catch (refreshError) {
+        // Only a definitive "this refresh token is actually invalid"
+        // answer from the server (401/403) means the session is really
+        // gone — clear it and force a fresh login. Any other failure
+        // shape (a timeout, a dropped connection, a request the browser
+        // deferred/aborted while the tab was backgrounded) is
+        // inconclusive, not proof the refresh cookie is bad — a
+        // backgrounded tab's own polling hooks (refetchIntervalInBackground:
+        // true, see useConsultation.js/useInventory.js/useVitals.js) keep
+        // firing while hidden, and a burst of them landing right as the
+        // tab regains connectivity can transiently time out. Treating
+        // that identically to a real invalid session was the root cause
+        // of a confirmed bug: users were force-logged-out after
+        // backgrounding/switching tabs even though their refresh cookie
+        // was still perfectly valid. Leaving the session intact here
+        // means the *next* request gets a fresh chance to refresh once
+        // connectivity is back — this request still fails normally for
+        // its own caller either way, via the fall-through below.
+        //
+        // `refreshError` here is NOT a raw axios error with a
+        // `.response` — `_refreshAccessToken()` makes its `/auth/refresh`
+        // call through this same shared `httpClient`, so it already
+        // passed through this very interceptor and was normalized to
+        // `{code, message, details, status}` below before ever reaching
+        // this catch (see the `normalized` rejection at the bottom of
+        // this handler: `/auth/refresh` is itself exempt from the
+        // retry-loop above, but not from that final normalization step).
+        // A real HTTP error status survives that normalization as
+        // `status`; a network/timeout failure normalizes to `status:
+        // null` (there was never an `error.response` to read a status
+        // from) — that's the exact signal this check relies on.
+        if (refreshError?.status === 401 || refreshError?.status === 403) {
+          clearAccessToken();
+          clearUserId();
+          _onAuthFailure?.();
+        }
         // fall through to the normalized rejection below using the
         // *original* 401, not the refresh call's own error shape.
       }
