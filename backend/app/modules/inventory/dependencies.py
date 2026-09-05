@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_db
 from app.modules.inventory.repository import (
+    InventoryEmergencyDirectReceiptRepository,
     InventoryItemRepository,
     InventoryMainStockReceiptRepository,
     InventoryRestockRequestRepository,
@@ -29,6 +30,12 @@ def get_inventory_main_stock_receipt_repository(
     db: AsyncSession = Depends(get_db),
 ) -> InventoryMainStockReceiptRepository:
     return InventoryMainStockReceiptRepository(db)
+
+
+def get_inventory_emergency_direct_receipt_repository(
+    db: AsyncSession = Depends(get_db),
+) -> InventoryEmergencyDirectReceiptRepository:
+    return InventoryEmergencyDirectReceiptRepository(db)
 
 
 def get_inventory_transfer_repository(
@@ -55,6 +62,9 @@ def get_inventory_service(
     receipt_repository: InventoryMainStockReceiptRepository = Depends(
         get_inventory_main_stock_receipt_repository
     ),
+    emergency_direct_receipt_repository: InventoryEmergencyDirectReceiptRepository = Depends(
+        get_inventory_emergency_direct_receipt_repository
+    ),
     transfer_repository: InventoryTransferRepository = Depends(get_inventory_transfer_repository),
     usage_repository: InventoryUsageEntryRepository = Depends(get_inventory_usage_entry_repository),
     request_repository: InventoryRestockRequestRepository = Depends(
@@ -68,6 +78,7 @@ def get_inventory_service(
         session=db,
         item_repository=item_repository,
         receipt_repository=receipt_repository,
+        emergency_direct_receipt_repository=emergency_direct_receipt_repository,
         transfer_repository=transfer_repository,
         usage_repository=usage_repository,
         request_repository=request_repository,

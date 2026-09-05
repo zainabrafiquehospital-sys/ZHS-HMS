@@ -28,17 +28,36 @@ backstops, not just service-layer discipline, mirroring every other
 non-negative-balance invariant in this codebase (e.g. `Invoice.
 amount_paid <= total_amount`).
 
-Three concrete ledger tables, not one polymorphic "movement" table with
+Four concrete ledger tables, not one polymorphic "movement" table with
 a type discriminator — `InventoryMainStockReceipt`, `InventoryTransfer`,
-`InventoryUsageEntry` each have genuinely different shapes (a usage
-entry alone carries patient/manual-entry/reason-note columns), and this
-codebase's own established idiom is concrete tables per concept, never
-a shared polymorphic ledger (see `MedicineBillPayment`/`InvoicePayment`,
+`InventoryUsageEntry`, `InventoryEmergencyDirectReceipt` each have
+genuinely different shapes (a usage entry alone carries patient/
+manual-entry/reason-note columns), and this codebase's own established
+idiom is concrete tables per concept, never a shared polymorphic ledger
+(see `MedicineBillPayment`/`InvoicePayment`,
 `MedicineBillItem`/`InvoiceLineItem`/`VisitProcedureItem` — always
 separate tables, never one generic "transaction" table with columns
 that are `NULL` by construction for most rows).
 
-All five tables use `BaseEntity` (not `TimestampedEntity`), matching
+`InventoryEmergencyDirectReceipt` (2026-09 addition) is the one
+deliberate crack in the "increased only by a transfer out of Main
+Stock" rule above: real-world operation at this hospital turned out to
+never actually route stock through a physical Main Stock warehouse at
+all — deliveries arrive addressed directly to Emergency Stock (e.g. a
+supplier's daily manifest), and the two-step Receive-then-Transfer
+flow was a forced extra step with no corresponding physical event
+behind it. Rather than deprecate Main Stock (kept exactly as-is —
+still the correct model for whichever items genuinely do pass through
+a real intermediate store, and every existing receipt/transfer row and
+screen keeps working unchanged), this table gives the Inventory
+Manager a second, equally legitimate way to increase
+`emergency_stock_level`: a direct receipt, own ledger, own audit
+action (`inventory.received_directly_to_emergency`), never touching
+`main_stock_level` at all. See `InventoryRestockRequest.
+fulfilled_by_direct_receipt_id`'s own docstring for how this
+interacts with the restock-request flow.
+
+All six tables use `BaseEntity` (not `TimestampedEntity`), matching
 `MedicineBillPayment`'s/`InvoicePayment`'s own choice: these rows are
 functionally immutable/append-only in practice (never edited, never
 soft-deleted by any code path here), but `BaseEntity`'s `created_by`/
@@ -248,6 +267,34 @@ class InventoryTransfer(BaseEntity):
     carried_by_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
 
 
+class InventoryEmergencyDirectReceipt(BaseEntity):
+    """One direct-to-Emergency-Stock receipt — a second, independent way
+    `emergency_stock_level` increases, alongside `InventoryTransfer`
+    (see this module's own top-level docstring for the real-world
+    workflow gap this closes). Deliberately its own concrete table, not
+    a variant/flag on `InventoryMainStockReceipt` or `InventoryTransfer`
+    — this module's own "concrete table per concept" convention — even
+    though its columns are identical to `InventoryMainStockReceipt`'s:
+    the two represent genuinely different real-world events (stock
+    entering the building at all, vs. stock arriving already destined
+    for Emergency), and keeping them as separate tables means neither
+    query ever needs a discriminator to tell them apart. `received_on`
+    mirrors `InventoryMainStockReceipt.received_on`'s identical
+    entered-vs-effective-date rationale."""
+
+    __tablename__ = "inventory_emergency_direct_receipt"
+    __table_args__ = (
+        Index("ix_inventory_emergency_direct_receipt_item_id", "item_id"),
+        CheckConstraint(
+            "quantity > 0", name="ck_inventory_emergency_direct_receipt_quantity_positive"
+        ),
+    )
+
+    item_id: Mapped[UUID] = mapped_column(ForeignKey("inventory_item.id"), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(_QUANTITY, nullable=False)
+    received_on: Mapped[date_type] = mapped_column(Date, nullable=False)
+
+
 class InventoryUsageEntry(BaseEntity):
     """One Emergency Stock usage entry — the only way
     `emergency_stock_level` decreases. Patient-linked, not visit-linked
@@ -309,16 +356,43 @@ class InventoryRestockRequest(BaseEntity):
     never by a DB constraint (the status transition itself, unlike a
     money-field invariant, has no natural CHECK-constraint expression).
 
-    `fulfilled_by_transfer_id` (set only when `status == FULFILLED`) is
-    a one-directional traceability link to the actual `InventoryTransfer`
-    row that satisfied this request — the identical shape
-    `InvoiceLineItem.pending_billing_item_id` already establishes for
-    "this billed line came from that approved request". Deliberately
-    one-directional only (`InventoryTransfer` carries no reverse column)
-    to avoid a circular FK between the two tables; the rare reverse
-    lookup ("was this transfer for a request?") is a cheap
+    `fulfilled_by_transfer_id` (set only when `status == FULFILLED` via
+    `InventoryService.fulfill_request`) is a one-directional
+    traceability link to the actual `InventoryTransfer` row that
+    satisfied this request — the identical shape `InvoiceLineItem.
+    pending_billing_item_id` already establishes for "this billed line
+    came from that approved request". Deliberately one-directional only
+    (`InventoryTransfer` carries no reverse column) to avoid a circular
+    FK between the two tables; the rare reverse lookup ("was this
+    transfer for a request?") is a cheap
     `WHERE fulfilled_by_transfer_id = :id` query when actually needed,
     not a column.
+
+    `fulfilled_by_direct_receipt_id` (2026-09 addition, nullable,
+    mutually exclusive with `fulfilled_by_transfer_id` — exactly one is
+    set whenever `status == FULFILLED`, never both, never neither) is
+    the identical traceability link for the other way a request can now
+    be resolved: `InventoryService.receive_directly_to_emergency`
+    auto-resolves every currently-PENDING request against an item the
+    moment a direct receipt lands for it — no separate "which request
+    does this satisfy" selection step in the UI, and no explicit
+    request_id the caller must pass. This is a deliberate design choice
+    (confirmed over requiring an explicit per-item request link):
+    `requested_quantity` is optional in the first place ("just flag it
+    low" has no number to match against), so an exact-amount pairing
+    between one receipt and one request was never meaningful to enforce
+    — once *any* quantity of an item is received into Emergency, every
+    open "this is running low" flag for that item is reasonably
+    considered addressed, the same judgment call `fulfill_request`'s own
+    arbitrary `transfer_quantity` (not required to match
+    `requested_quantity`) already makes. A single direct receipt can
+    therefore resolve more than one pending request for the same item
+    (each resolved request's own row points at the same receipt) —
+    two separate FK columns rather than one polymorphic "fulfilled_by"
+    column + a type discriminator, this module's own established
+    "concrete columns over polymorphism" convention (see this module's
+    top-level docstring) applied to a nullable link exactly the way it's
+    already applied to whole tables.
 
     `rejection_reason` is optional (confirmed design) — a rejection
     needs no mandatory justification, unlike e.g. `Invoice.
@@ -344,6 +418,9 @@ class InventoryRestockRequest(BaseEntity):
     )
     fulfilled_by_transfer_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("inventory_transfer.id")
+    )
+    fulfilled_by_direct_receipt_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("inventory_emergency_direct_receipt.id")
     )
     rejection_reason: Mapped[str | None] = mapped_column(String(200))
     resolved_by: Mapped[UUID | None] = mapped_column(ForeignKey("user.id", ondelete="SET NULL"))

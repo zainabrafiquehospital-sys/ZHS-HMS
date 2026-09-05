@@ -53,11 +53,15 @@ export const receiveStockFormSchema = z.object({
   received_on: z.string().min(1, 'Select a date'),
 });
 
-// One line being added to Transfer to Emergency's running list
-// (2026-08-28 batch redesign) — same shape as usageLineItemSchema
-// below, no per-line note (see TransferLineItemRequest's own backend
-// docstring for why "carried by" is batch-wide, not per-line).
-export const transferLineItemSchema = z.object({
+// One row's quantity in any of the three stock-movement checklists
+// (2026-09 redesign — InventoryStockChecklist.jsx, shared by Receive to
+// Main Stock, Transfer to Emergency, and Receive Directly to Emergency)
+// — same shape as usageLineItemSchema below, no per-line note (nothing
+// about "how much of this item moved" needs a per-line reason the way a
+// usage entry's reason_note does; the batch-wide context — received_on,
+// or transferred_on+carried_by_name — is validated separately by
+// whichever screen owns those fields).
+export const stockBatchLineItemSchema = z.object({
   quantity: positiveQuantity('Quantity must be greater than 0'),
 });
 

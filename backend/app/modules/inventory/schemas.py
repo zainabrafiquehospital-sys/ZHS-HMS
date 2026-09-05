@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.modules.auth.models import User
 from app.modules.inventory.models import (
     InventoryCategory,
+    InventoryEmergencyDirectReceipt,
     InventoryItem,
     InventoryMainStockReceipt,
     InventoryRestockRequest,
@@ -73,6 +74,55 @@ class ReceiveStockRequest(BaseModel):
     # has no native date representation; a real client always sends an
     # ISO string (e.g. "2026-08-26"), which `ConfigDict(strict=True)`
     # rejects outright for a plain `date` field without this.
+    received_on: date_type = Field(strict=False)
+
+
+class ReceiveLineItemRequest(BaseModel):
+    """One line of a batch receiving request's `items` list — same
+    `item_id`/`quantity` per-line shape as `TransferLineItemRequest`/
+    `UsageLineItemRequest` (nothing about "how much of this item
+    arrived" varies beyond the quantity itself), shared by both
+    `ReceiveStockBatchRequest` (Main Stock) and
+    `ReceiveDirectToEmergencyRequest` (Emergency Stock, 2026-09
+    addition) — receiving is the same shape regardless of which tier
+    it lands in."""
+
+    model_config = ConfigDict(strict=True)
+
+    item_id: LaxUUID
+    quantity: LaxDecimal = Field(gt=0)
+
+
+class ReceiveStockBatchRequest(BaseModel):
+    """Batch Main Stock receiving (2026-09 addition, the checklist-entry
+    redesign) — one `received_on` shared across one-or-more items,
+    submitted together the same shape `TransferStockRequest`/
+    `RecordUsageRequest` already established for their own `items`
+    batches. Backs the new `POST /inventory/receipts`; the original
+    single-item `POST /items/{item_id}/receive` (`ReceiveStockRequest`
+    above) is untouched and still works unchanged — see
+    `InventoryService.receive_stock_batch`'s own docstring for why both
+    exist side by side rather than one replacing the other."""
+
+    model_config = ConfigDict(strict=True)
+
+    items: list[ReceiveLineItemRequest] = Field(min_length=1)
+    received_on: date_type = Field(strict=False)
+
+
+class ReceiveDirectToEmergencyRequest(BaseModel):
+    """Batch direct-to-Emergency-Stock receiving (2026-09 addition) —
+    identical shape to `ReceiveStockBatchRequest` above, just landing in
+    `emergency_stock_level` instead of `main_stock_level` via
+    `InventoryService.receive_directly_to_emergency`, which also auto-
+    resolves any pending restock request for each item — see that
+    method's own docstring and `InventoryRestockRequest.
+    fulfilled_by_direct_receipt_id`'s docstring for the full "why
+    auto-resolve, no explicit request_id here" reasoning."""
+
+    model_config = ConfigDict(strict=True)
+
+    items: list[ReceiveLineItemRequest] = Field(min_length=1)
     received_on: date_type = Field(strict=False)
 
 
@@ -246,6 +296,34 @@ class InventoryMainStockReceiptOut(BaseModel):
         )
 
 
+class InventoryEmergencyDirectReceiptOut(BaseModel):
+    """Mirrors `InventoryMainStockReceiptOut` exactly — same fields, same
+    shape, a different ledger table underneath (see
+    `InventoryEmergencyDirectReceipt`'s own docstring)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    item_id: UUID
+    quantity: Decimal
+    received_on: date_type
+    created_by: UUID | None
+    created_at: datetime
+
+    @classmethod
+    def from_receipt(
+        cls, receipt: InventoryEmergencyDirectReceipt
+    ) -> "InventoryEmergencyDirectReceiptOut":
+        return cls(
+            id=receipt.id,
+            item_id=receipt.item_id,
+            quantity=receipt.quantity,
+            received_on=receipt.received_on,
+            created_by=receipt.created_by,
+            created_at=receipt.created_at,
+        )
+
+
 class InventoryTransferOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -352,6 +430,11 @@ class InventoryRestockRequestOut(BaseModel):
     note: str | None
     status: InventoryRestockRequestStatus
     fulfilled_by_transfer_id: UUID | None
+    # 2026-09 addition — set instead of `fulfilled_by_transfer_id` when a
+    # direct-to-Emergency receipt auto-resolved this request rather than
+    # a transfer; the two are mutually exclusive, see
+    # InventoryRestockRequest's own docstring.
+    fulfilled_by_direct_receipt_id: UUID | None
     rejection_reason: str | None
     resolved_by: UUID | None
     resolved_at: datetime | None
@@ -367,6 +450,7 @@ class InventoryRestockRequestOut(BaseModel):
             note=request.note,
             status=request.status,
             fulfilled_by_transfer_id=request.fulfilled_by_transfer_id,
+            fulfilled_by_direct_receipt_id=request.fulfilled_by_direct_receipt_id,
             rejection_reason=request.rejection_reason,
             resolved_by=request.resolved_by,
             resolved_at=request.resolved_at,

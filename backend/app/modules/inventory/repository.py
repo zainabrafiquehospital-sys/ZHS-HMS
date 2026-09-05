@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import InstrumentedAttribute
 
 from app.modules.inventory.models import (
+    InventoryEmergencyDirectReceipt,
     InventoryItem,
     InventoryMainStockReceipt,
     InventoryRestockRequest,
@@ -142,6 +143,42 @@ class InventoryMainStockReceiptRepository(BaseRepository[InventoryMainStockRecei
         return list(result.scalars().all()), total
 
 
+class InventoryEmergencyDirectReceiptRepository(BaseRepository[InventoryEmergencyDirectReceipt]):
+    model = InventoryEmergencyDirectReceipt
+
+    async def list_for_range(
+        self,
+        *,
+        item_id: UUID | None,
+        start_date: date_type | None,
+        end_date: date_type | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[InventoryEmergencyDirectReceipt], int]:
+        """Same shape as `InventoryMainStockReceiptRepository.
+        list_for_range` — the two ledgers are queried identically,
+        they just answer a different real-world question."""
+        conditions = [InventoryEmergencyDirectReceipt.deleted_at.is_(None)]
+        if item_id is not None:
+            conditions.append(InventoryEmergencyDirectReceipt.item_id == item_id)
+        if start_date is not None:
+            conditions.append(InventoryEmergencyDirectReceipt.received_on >= start_date)
+        if end_date is not None:
+            conditions.append(InventoryEmergencyDirectReceipt.received_on <= end_date)
+
+        stmt = select(InventoryEmergencyDirectReceipt).where(*conditions)
+        total = (
+            await self.session.execute(select(func.count()).select_from(stmt.subquery()))
+        ).scalar_one()
+        stmt = (
+            stmt.order_by(InventoryEmergencyDirectReceipt.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all()), total
+
+
 class InventoryTransferRepository(BaseRepository[InventoryTransfer]):
     model = InventoryTransfer
 
@@ -249,6 +286,31 @@ class InventoryRestockRequestRepository(BaseRepository[InventoryRestockRequest])
         ).with_for_update()
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def list_pending_for_item(self, item_id: UUID) -> list[InventoryRestockRequest]:
+        """Every currently-PENDING request against `item_id`, row-locked
+        (`FOR UPDATE`) — backs `InventoryService.
+        receive_directly_to_emergency`'s auto-resolution (see that
+        model's `fulfilled_by_direct_receipt_id` docstring for why a
+        direct receipt resolves *every* open request for the item, not
+        just one). Locked the same way `get_for_update` locks a single
+        request row, for the identical reason: two concurrent actions
+        against the same pending request(s) — this auto-resolution
+        racing a manual `fulfill_request`/`reject_request` call — must
+        never both succeed from the same stale snapshot. Order of
+        acquisition (these rows, then the item row) deliberately
+        matches `fulfill_request`'s own "request locked before item"
+        convention, so the two code paths can never deadlock against
+        each other."""
+        stmt = self._exclude_soft_deleted(
+            select(InventoryRestockRequest).where(
+                InventoryRestockRequest.item_id == item_id,
+                InventoryRestockRequest.status == InventoryRestockRequestStatus.PENDING,
+            ),
+            include_deleted=False,
+        ).with_for_update()
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
 
     async def list_all(
         self,

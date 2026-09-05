@@ -1,139 +1,64 @@
 'use client';
 
-import { useState } from 'react';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
+import { useMemo, useState } from 'react';
 import { PackagePlus } from 'lucide-react';
-import { inventoryService } from '@/features/inventory/api/inventoryService';
-import { useInventoryItems, useReceiveStock } from '@/features/inventory/hooks/useInventory';
-import { receiveStockFormSchema } from '@/features/inventory/schemas/inventorySchemas';
-import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
-import { Button } from '@/shared/components/ui/Button';
+import { useInventoryItems, useReceiveStockBatch } from '@/features/inventory/hooks/useInventory';
+import { InventoryStockChecklist } from '@/features/inventory/components/InventoryStockChecklist';
 import { Input } from '@/shared/components/ui/Input';
 import { Label } from '@/shared/components/ui/Label';
-import { SearchSelect } from '@/shared/components/SearchSelect';
-import { PageLoader } from '@/shared/components/PageLoader';
-import { PageError } from '@/shared/components/PageError';
-import { useToast } from '@/shared/components/toast/ToastProvider';
 import { todayDisplayDayKey } from '@/utils/timezone';
 
-/** Records a Main Stock receipt against an item — the only way
- * InventoryItem.main_stock_level ever increases (see backend/app/
- * modules/inventory/models.py's InventoryMainStockReceipt docstring).
- * Inactive items are excluded from the picker — receiving stock for an
- * item nobody can dispense makes no sense, and the backend rejects it
- * outright regardless (InventoryItemInactiveError). */
+/** Records one-or-more Main Stock receipts in a single batch — the only
+ * way `InventoryItem.main_stock_level` ever increases (see backend/app/
+ * modules/inventory/models.py's `InventoryMainStockReceipt` docstring).
+ *
+ * Checklist-batch shape (2026-09 redesign, replacing the earlier
+ * search-one-item-then-submit form): the whole active catalogue is
+ * shown as one filterable table via the shared `InventoryStockChecklist`
+ * — see that component's own docstring for why this one widget backs
+ * all three stock-movement screens instead of three bespoke forms.
+ * `POST /inventory/receipts` (batch) backs this now; the original
+ * single-item `POST /items/{item_id}/receive` stays available
+ * unchanged for any other caller. */
 export function InventoryReceivePanel() {
-  const { toast } = useToast();
   const { data: items, isLoading, isError, error, refetch } = useInventoryItems();
-  const receiveStock = useReceiveStock();
-  const [selectedItem, setSelectedItem] = useState(null);
-  const [submitError, setSubmitError] = useState(null);
-  const [successItemName, setSuccessItemName] = useState(null);
-  const {
-    register,
-    handleSubmit,
-    reset,
-    setValue,
-    formState: { errors, isSubmitting },
-  } = useForm({
-    resolver: zodResolver(receiveStockFormSchema),
-    defaultValues: { item_id: '', quantity: '', received_on: todayDisplayDayKey() },
-  });
+  const receiveStockBatch = useReceiveStockBatch();
+  const [receivedOn, setReceivedOn] = useState(todayDisplayDayKey());
 
-  const activeItems = (items ?? []).filter((item) => item.is_active);
+  const activeItems = useMemo(() => (items ?? []).filter((item) => item.is_active), [items]);
 
-  async function onSubmit(values) {
-    setSubmitError(null);
-    setSuccessItemName(null);
-    try {
-      const updatedItem = await receiveStock.mutateAsync({
-        itemId: values.item_id,
-        payload: { quantity: values.quantity, received_on: values.received_on },
-      });
-      setSuccessItemName(updatedItem.data.name);
-      toast.success({
-        title: 'Receipt recorded',
-        description: `${updatedItem.data.name} · +${values.quantity} to Main Stock`,
-      });
-      setSelectedItem(null);
-      reset({ item_id: '', quantity: '', received_on: values.received_on });
-    } catch (submitErr) {
-      const message = submitErr.message || 'Unable to record this receipt.';
-      setSubmitError(message);
-      toast.error({ title: 'Unable to record receipt', description: message });
-    }
-  }
-
-  if (isLoading) return <PageLoader label="Loading items" />;
-  if (isError) {
-    return <PageError error={error} reset={refetch} message="Couldn't load the item catalog." />;
+  async function handleSubmit(lines) {
+    await receiveStockBatch.mutateAsync({ items: lines, received_on: receivedOn });
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Record a Main Stock Receipt</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {activeItems.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No active items in the catalog yet — add one under Catalog first.
-          </p>
-        ) : (
-          <form
-            onSubmit={handleSubmit(onSubmit)}
-            className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end"
-          >
-            <div className="flex min-w-[220px] flex-1 flex-col gap-1.5">
-              <Label>Item</Label>
-              <SearchSelect
-                queryKey={['inventory', 'items', 'search']}
-                queryFn={(term) => inventoryService.searchItems(term).then((res) => res.data)}
-                getLabel={(item) => item.name}
-                getDescription={(item) => item.unit}
-                placeholder="Search item by name"
-                selectedLabel={selectedItem ? selectedItem.name : ''}
-                onSelect={(item) => {
-                  setSelectedItem(item);
-                  setValue('item_id', item.id, { shouldValidate: true });
-                }}
-              />
-              {errors.item_id ? (
-                <p className="text-xs text-destructive">{errors.item_id.message}</p>
-              ) : null}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="quantity">Quantity</Label>
-              <Input id="quantity" type="number" step="0.01" min="0" {...register('quantity')} />
-              {errors.quantity ? (
-                <p className="text-xs text-destructive">{errors.quantity.message}</p>
-              ) : null}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="received_on">Received On</Label>
-              <Input id="received_on" type="date" {...register('received_on')} />
-              {errors.received_on ? (
-                <p className="text-xs text-destructive">{errors.received_on.message}</p>
-              ) : null}
-            </div>
-            <Button type="submit" disabled={isSubmitting}>
-              <PackagePlus className="h-4 w-4" />
-              {isSubmitting ? 'Recording…' : 'Record Receipt'}
-            </Button>
-          </form>
-        )}
-        {submitError ? (
-          <p className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {submitError}
-          </p>
-        ) : null}
-        {successItemName ? (
-          <p className="mt-3 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-            Receipt recorded for {successItemName}.
-          </p>
-        ) : null}
-      </CardContent>
-    </Card>
+    <InventoryStockChecklist
+      items={activeItems}
+      isLoading={isLoading}
+      isError={isError}
+      error={error}
+      onRetry={refetch}
+      levelColumnLabel="Main Stock"
+      getLevel={(item) => item.main_stock_level}
+      pickerTitle="Select Items to Receive"
+      searchPlaceholder="Search item by name…"
+      emptyItemsMessage="No active items in the catalog yet — add one under Catalog first."
+      extraFields={
+        <div className="flex flex-col gap-1.5 sm:max-w-xs">
+          <Label htmlFor="receive_received_on">Received On</Label>
+          <Input
+            id="receive_received_on"
+            type="date"
+            value={receivedOn}
+            onChange={(event) => setReceivedOn(event.target.value)}
+          />
+        </div>
+      }
+      recapTitle="Items to Receive"
+      submitLabel="Record Receipt"
+      submittingLabel="Recording…"
+      submitIcon={PackagePlus}
+      onSubmit={handleSubmit}
+    />
   );
 }

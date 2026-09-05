@@ -1,7 +1,10 @@
 """HTTP endpoints for the Ward/Emergency Inventory Management module.
-Catalog management, Main Stock receipts, transfers to Emergency Stock,
-and restock-request fulfillment/rejection all require `inventory:manage`
-(Inventory Manager-only); recording a usage entry requires
+Catalog management, Main Stock receipts, direct-to-Emergency receipts
+(2026-09 addition — see `InventoryEmergencyDirectReceipt`'s own
+docstring for why this exists alongside Main Stock receiving, not
+instead of it), transfers to Emergency Stock, and restock-request
+fulfillment/rejection all require `inventory:manage` (Inventory
+Manager-only); recording a usage entry requires
 `inventory:record_usage` and raising a restock request requires
 `inventory:request_restock` (both Vitals-only); every read endpoint
 requires only `inventory:read` (Inventory Manager, Vitals, and Admin —
@@ -46,6 +49,7 @@ from app.modules.inventory.models import InventoryRestockRequestStatus
 from app.modules.inventory.schemas import (
     CreateInventoryItemRequest,
     FulfillRestockRequestRequest,
+    InventoryEmergencyDirectReceiptOut,
     InventoryItemOut,
     InventoryItemSortField,
     InventoryMainStockReceiptOut,
@@ -54,6 +58,8 @@ from app.modules.inventory.schemas import (
     InventoryTransferOut,
     InventoryUsageEntryOut,
     RaiseRestockRequestRequest,
+    ReceiveDirectToEmergencyRequest,
+    ReceiveStockBatchRequest,
     ReceiveStockRequest,
     RecordUsageRequest,
     RejectRestockRequestRequest,
@@ -201,6 +207,28 @@ async def receive_stock(
     return success_envelope(InventoryItemOut.from_item(item).model_dump(mode="json"))
 
 
+@router.post("/receipts", status_code=201)
+async def receive_stock_batch(
+    payload: ReceiveStockBatchRequest,
+    inventory_service: InventoryService = Depends(get_inventory_service),
+    actor: User = Depends(require_permission(PERMISSION_INVENTORY_MANAGE)),
+) -> dict:
+    """Top-level batch route (2026-09 addition, the checklist-entry
+    redesign) — same "returns every item touched, final post-receipt
+    state" shape `POST /transfers` already established, for the
+    identical reason (a batch's items can span more than one item id).
+    The original single-item `POST /items/{item_id}/receive` above is
+    untouched — see `InventoryService.receive_stock_batch`'s own
+    docstring for why this is additive, not a replacement."""
+    items = await inventory_service.receive_stock_batch(
+        actor=actor,
+        items=[(line.item_id, line.quantity) for line in payload.items],
+        received_on=payload.received_on,
+    )
+    body = [InventoryItemOut.from_item(item).model_dump(mode="json") for item in items]
+    return success_envelope(body)
+
+
 @router.get("/receipts")
 async def list_receipts(
     page: int = Query(default=1, ge=1),
@@ -216,6 +244,57 @@ async def list_receipts(
     )
     body = [
         InventoryMainStockReceiptOut.from_receipt(receipt).model_dump(mode="json")
+        for receipt in receipts
+    ]
+    meta = PaginationMeta(page=page, page_size=page_size, total=total).model_dump(mode="json")
+    return success_envelope(body, meta)
+
+
+# ----------------------------------------------------------------------
+# Direct-to-Emergency receipts — Inventory Manager-only (2026-09
+# addition; see InventoryEmergencyDirectReceipt's own docstring)
+# ----------------------------------------------------------------------
+
+
+@router.post("/emergency-receipts", status_code=201)
+async def receive_directly_to_emergency(
+    payload: ReceiveDirectToEmergencyRequest,
+    inventory_service: InventoryService = Depends(get_inventory_service),
+    actor: User = Depends(require_permission(PERMISSION_INVENTORY_MANAGE)),
+) -> dict:
+    """The real-world-shaped receiving path — see this module's own
+    top-level docstring and `InventoryService.
+    receive_directly_to_emergency`'s own docstring. Same batch shape and
+    "returns every item touched" response as `POST /receipts`/
+    `POST /transfers`; also auto-resolves any pending restock request
+    for each item received (see `InventoryRestockRequest.
+    fulfilled_by_direct_receipt_id`'s docstring) — nothing about *that*
+    needs to appear in this request body, it happens as a side effect
+    the response's `is_low_stock`/stock levels already reflect."""
+    items = await inventory_service.receive_directly_to_emergency(
+        actor=actor,
+        items=[(line.item_id, line.quantity) for line in payload.items],
+        received_on=payload.received_on,
+    )
+    body = [InventoryItemOut.from_item(item).model_dump(mode="json") for item in items]
+    return success_envelope(body)
+
+
+@router.get("/emergency-receipts")
+async def list_emergency_direct_receipts(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    item_id: UUID | None = Query(default=None),
+    start_date: date_type | None = Query(default=None),
+    end_date: date_type | None = Query(default=None),
+    inventory_service: InventoryService = Depends(get_inventory_service),
+    _actor: User = Depends(require_permission(PERMISSION_INVENTORY_READ)),
+) -> dict:
+    receipts, total = await inventory_service.list_emergency_direct_receipts(
+        item_id=item_id, start_date=start_date, end_date=end_date, page=page, page_size=page_size
+    )
+    body = [
+        InventoryEmergencyDirectReceiptOut.from_receipt(receipt).model_dump(mode="json")
         for receipt in receipts
     ]
     meta = PaginationMeta(page=page, page_size=page_size, total=total).model_dump(mode="json")

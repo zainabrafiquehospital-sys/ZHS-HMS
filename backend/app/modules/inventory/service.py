@@ -42,6 +42,7 @@ from app.modules.inventory.exceptions import (
 from app.modules.inventory.models import (
     CATEGORY_ALLOWED_UNITS,
     InventoryCategory,
+    InventoryEmergencyDirectReceipt,
     InventoryItem,
     InventoryMainStockReceipt,
     InventoryRestockRequest,
@@ -52,6 +53,7 @@ from app.modules.inventory.models import (
 )
 from app.modules.inventory.repository import (
     INVENTORY_ITEM_SORTABLE_COLUMNS,
+    InventoryEmergencyDirectReceiptRepository,
     InventoryItemRepository,
     InventoryMainStockReceiptRepository,
     InventoryRestockRequestRepository,
@@ -81,6 +83,7 @@ class InventoryService:
         session: AsyncSession,
         item_repository: InventoryItemRepository,
         receipt_repository: InventoryMainStockReceiptRepository,
+        emergency_direct_receipt_repository: InventoryEmergencyDirectReceiptRepository,
         transfer_repository: InventoryTransferRepository,
         usage_repository: InventoryUsageEntryRepository,
         request_repository: InventoryRestockRequestRepository,
@@ -91,6 +94,7 @@ class InventoryService:
         self._session = session
         self._item_repo = item_repository
         self._receipt_repo = receipt_repository
+        self._emergency_direct_receipt_repo = emergency_direct_receipt_repository
         self._transfer_repo = transfer_repository
         self._usage_repo = usage_repository
         self._request_repo = request_repository
@@ -256,6 +260,165 @@ class InventoryService:
         )
         await self._session.commit()
         return await self._get_item(item.id)
+
+    async def receive_stock_batch(
+        self,
+        *,
+        actor: User,
+        items: list[tuple[UUID, Decimal]],
+        received_on: date_type,
+    ) -> list[InventoryItem]:
+        """Batch Main Stock receiving (2026-09 addition, the checklist-
+        entry redesign) — `items` is a list of `(item_id, quantity)`
+        pairs, already validated non-empty by `ReceiveStockBatchRequest`,
+        one `received_on` shared across the whole batch, committed
+        atomically together. The exact same "sequential lock/increment/
+        insert, one commit, no partial batch ever lands" shape
+        `transfer_to_emergency`'s own docstring establishes — including
+        why two lines naming the same item correctly stack against each
+        other's stock delta (both run against the same locked, identity-
+        mapped `InventoryItem` row within this one transaction).
+
+        Deliberately a *new*, additional method — the original single-
+        item `receive_stock` above is untouched, still backing its own
+        `POST /items/{item_id}/receive` endpoint unchanged, rather than
+        being widened/replaced the way `transfer_to_emergency`/
+        `record_usage` fully replaced their own single-item predecessors
+        when *they* got batched: those two had no other caller left to
+        break, while `receive_stock` is exercised directly by a large
+        share of this module's own existing test suite as ordinary setup
+        — replacing it here would mean rewriting all of that for a UI-
+        only redesign, a disproportionate blast radius for no behavioral
+        gain. The frontend's own Receive Stock screen calls this batch
+        method exclusively going forward."""
+        updated_items: list[InventoryItem] = []
+        for item_id, quantity in items:
+            if quantity <= 0:
+                raise ValidationError("Quantity must be greater than zero.")
+            quantity = _quantize_quantity(quantity)
+
+            item = await self._item_repo.get_for_update(item_id)
+            if item is None:
+                raise InventoryItemNotFoundError
+            if not item.is_active:
+                raise InventoryItemInactiveError(item.name)
+
+            item.main_stock_level = item.main_stock_level + quantity
+            item.updated_by = actor.id
+            await self._item_repo.add(item)
+            await self._receipt_repo.add(
+                InventoryMainStockReceipt(
+                    item_id=item.id,
+                    quantity=quantity,
+                    received_on=received_on,
+                    created_by=actor.id,
+                    updated_by=actor.id,
+                )
+            )
+            await self._audit_repo.record(
+                module="inventory",
+                action="inventory.stock_received",
+                entity_type="inventory_item",
+                entity_id=item.id,
+                actor_user_id=actor.id,
+                metadata={"quantity": str(quantity), "received_on": received_on.isoformat()},
+            )
+            updated_items.append(item)
+
+        await self._session.commit()
+        return [await self._get_item(item.id) for item in updated_items]
+
+    # ------------------------------------------------------------------
+    # Direct-to-Emergency receipts (Inventory Manager only, inventory:manage)
+    # ------------------------------------------------------------------
+
+    async def receive_directly_to_emergency(
+        self,
+        *,
+        actor: User,
+        items: list[tuple[UUID, Decimal]],
+        received_on: date_type,
+    ) -> list[InventoryItem]:
+        """The real-world-shaped receiving path (2026-09 addition) — see
+        this module's own top-level docstring and `InventoryEmergencyDirectReceipt`'s
+        docstring for why this exists alongside, not instead of,
+        `receive_stock`/`receive_stock_batch`. Same batch shape as
+        `transfer_to_emergency`/`receive_stock_batch`: `items` is a list
+        of `(item_id, quantity)` pairs, one `received_on` shared across
+        the batch, committed atomically together.
+
+        Auto-resolves restock requests (see `InventoryRestockRequest.
+        fulfilled_by_direct_receipt_id`'s own docstring for the full
+        "why auto-resolve, not an explicit per-item request link"
+        reasoning): every currently-PENDING request against an item is
+        marked FULFILLED the moment a direct receipt lands for that
+        item, in the same transaction, with no request_id the caller
+        must supply. Lock order per line is request(s)-then-item —
+        deliberately matching `fulfill_request`'s own documented lock
+        order (request row before item row) so this method can never
+        deadlock against a concurrent `fulfill_request`/`reject_request`
+        call on the same request."""
+        updated_items: list[InventoryItem] = []
+        for item_id, quantity in items:
+            if quantity <= 0:
+                raise ValidationError("Quantity must be greater than zero.")
+            quantity = _quantize_quantity(quantity)
+
+            # Locked before the item row, matching fulfill_request's own
+            # documented lock order — see this method's own docstring.
+            pending_requests = await self._request_repo.list_pending_for_item(item_id)
+
+            item = await self._item_repo.get_for_update(item_id)
+            if item is None:
+                raise InventoryItemNotFoundError
+            if not item.is_active:
+                raise InventoryItemInactiveError(item.name)
+
+            item.emergency_stock_level = item.emergency_stock_level + quantity
+            item.updated_by = actor.id
+            await self._item_repo.add(item)
+
+            receipt = InventoryEmergencyDirectReceipt(
+                item_id=item.id,
+                quantity=quantity,
+                received_on=received_on,
+                created_by=actor.id,
+                updated_by=actor.id,
+            )
+            await self._emergency_direct_receipt_repo.add(receipt)
+            await self._audit_repo.record(
+                module="inventory",
+                action="inventory.received_directly_to_emergency",
+                entity_type="inventory_item",
+                entity_id=item.id,
+                actor_user_id=actor.id,
+                metadata={"quantity": str(quantity), "received_on": received_on.isoformat()},
+            )
+
+            resolved_at = datetime.now(UTC)
+            for request in pending_requests:
+                request.status = InventoryRestockRequestStatus.FULFILLED
+                request.fulfilled_by_direct_receipt_id = receipt.id
+                request.resolved_by = actor.id
+                request.resolved_at = resolved_at
+                request.updated_by = actor.id
+                await self._request_repo.add(request)
+                await self._audit_repo.record(
+                    module="inventory",
+                    action="inventory.restock_request_fulfilled",
+                    entity_type="inventory_restock_request",
+                    entity_id=request.id,
+                    actor_user_id=actor.id,
+                    metadata={
+                        "direct_receipt_id": str(receipt.id),
+                        "quantity": str(quantity),
+                    },
+                )
+
+            updated_items.append(item)
+
+        await self._session.commit()
+        return [await self._get_item(item.id) for item in updated_items]
 
     # ------------------------------------------------------------------
     # Transfers (Inventory Manager only, inventory:manage)
@@ -634,6 +797,23 @@ class InventoryService:
         page_size: int,
     ) -> tuple[list[InventoryMainStockReceipt], int]:
         return await self._receipt_repo.list_for_range(
+            item_id=item_id,
+            start_date=start_date,
+            end_date=end_date,
+            limit=page_size,
+            offset=(page - 1) * page_size,
+        )
+
+    async def list_emergency_direct_receipts(
+        self,
+        *,
+        item_id: UUID | None,
+        start_date: date_type | None,
+        end_date: date_type | None,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[InventoryEmergencyDirectReceipt], int]:
+        return await self._emergency_direct_receipt_repo.list_for_range(
             item_id=item_id,
             start_date=start_date,
             end_date=end_date,

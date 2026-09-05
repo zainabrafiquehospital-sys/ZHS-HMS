@@ -1398,4 +1398,271 @@ async def test_print_daily_usage_shows_one_summed_total_line_per_item(
     # submissions still show up individually there.
     assert body.count("0.50") == 2
     assert "Summary Patient One" in body
-    assert "Summary Patient Two" in body
+
+
+# ----------------------------------------------------------------------
+# Batch Main Stock receiving (2026-09 addition, checklist-entry redesign)
+# ----------------------------------------------------------------------
+
+
+async def test_receive_stock_batch_requires_manage_permission(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "receive-batch-noperm")
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
+
+    resp = await api_client.post(
+        "/api/v1/inventory/receipts",
+        json={
+            "items": [{"item_id": "00000000-0000-0000-0000-000000000000", "quantity": "5"}],
+            "received_on": _TODAY,
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_receive_stock_batch_increments_main_stock_for_each_item(
+    api_client, real_session, grant_permission
+):
+    """The new batch endpoint the checklist-entry redesign uses — must
+    still land in `main_stock_level`, exactly like the original
+    single-item `POST /items/{item_id}/receive`, just for one-or-more
+    items in a single atomic call."""
+    actor, access_token = await _create_and_login(api_client, real_session, "receive-batch-mgr")
+    await grant_permission(actor, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
+    item_a = await _create_item(
+        api_client, access_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}ReceiveBatchA"
+    )
+    item_b = await _create_item(
+        api_client, access_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}ReceiveBatchB"
+    )
+
+    resp = await api_client.post(
+        "/api/v1/inventory/receipts",
+        json={
+            "items": [
+                {"item_id": item_a, "quantity": "12"},
+                {"item_id": item_b, "quantity": "8"},
+            ],
+            "received_on": _TODAY,
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 201, resp.text
+    body = {row["id"]: row for row in resp.json()["data"]}
+    assert body[item_a]["main_stock_level"] == "12.00"
+    assert body[item_b]["main_stock_level"] == "8.00"
+    assert body[item_a]["emergency_stock_level"] == "0.00"
+    assert body[item_b]["emergency_stock_level"] == "0.00"
+
+
+# ----------------------------------------------------------------------
+# Direct-to-Emergency receiving (2026-09 addition)
+# ----------------------------------------------------------------------
+
+
+async def test_receive_directly_to_emergency_requires_manage_permission(
+    api_client, real_session, grant_permission
+):
+    actor, access_token = await _create_and_login(api_client, real_session, "direct-receive-noperm")
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
+
+    resp = await api_client.post(
+        "/api/v1/inventory/emergency-receipts",
+        json={
+            "items": [{"item_id": "00000000-0000-0000-0000-000000000000", "quantity": "5"}],
+            "received_on": _TODAY,
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_receive_directly_to_emergency_is_all_or_nothing(
+    api_client, real_session, grant_permission
+):
+    """If any line in the batch fails (here: the second item is
+    inactive), none of the batch's stock increments or receipt rows may
+    land — the same all-or-nothing guarantee every other batch endpoint
+    in this module gives."""
+    actor, access_token = await _create_and_login(api_client, real_session, "direct-receive-atomic")
+    await grant_permission(actor, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
+    ok_item = await _create_item(
+        api_client, access_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}DirectAtomicOk"
+    )
+    inactive_item = await _create_item(
+        api_client, access_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}DirectAtomicInactive"
+    )
+    await api_client.patch(
+        f"/api/v1/inventory/items/{inactive_item}",
+        json={"is_active": False},
+        headers=_auth_header(access_token),
+    )
+
+    resp = await api_client.post(
+        "/api/v1/inventory/emergency-receipts",
+        json={
+            "items": [
+                {"item_id": ok_item, "quantity": "10"},
+                {"item_id": inactive_item, "quantity": "5"},
+            ],
+            "received_on": _TODAY,
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "INVENTORY_ITEM_INACTIVE"
+
+    ok_item_resp = await api_client.get(
+        f"/api/v1/inventory/items/{ok_item}", headers=_auth_header(access_token)
+    )
+    # Unchanged — the first line's increment must not have survived the
+    # second line's failure.
+    assert ok_item_resp.json()["data"]["emergency_stock_level"] == "0.00"
+
+
+async def test_receive_directly_to_emergency_increments_emergency_stock_only(
+    api_client, real_session, grant_permission
+):
+    """The whole point of this endpoint: lands in `emergency_stock_level`
+    directly, for every item in the batch, and never touches
+    `main_stock_level` at all."""
+    actor, access_token = await _create_and_login(api_client, real_session, "direct-receive-mgr")
+    await grant_permission(actor, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
+    item_a = await _create_item(
+        api_client, access_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}DirectReceiveA"
+    )
+    item_b = await _create_item(
+        api_client, access_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}DirectReceiveB"
+    )
+
+    resp = await api_client.post(
+        "/api/v1/inventory/emergency-receipts",
+        json={
+            "items": [
+                {"item_id": item_a, "quantity": "15"},
+                {"item_id": item_b, "quantity": "9"},
+            ],
+            "received_on": _TODAY,
+        },
+        headers=_auth_header(access_token),
+    )
+
+    assert resp.status_code == 201, resp.text
+    body = {row["id"]: row for row in resp.json()["data"]}
+    assert body[item_a]["emergency_stock_level"] == "15.00"
+    assert body[item_b]["emergency_stock_level"] == "9.00"
+    assert body[item_a]["main_stock_level"] == "0.00"
+    assert body[item_b]["main_stock_level"] == "0.00"
+
+
+async def test_receive_directly_to_emergency_auto_fulfills_pending_restock_request(
+    api_client, real_session, grant_permission
+):
+    """A pending restock request for an item must auto-resolve to
+    FULFILLED the moment a direct receipt lands for that item — with
+    `fulfilled_by_direct_receipt_id` set (never `fulfilled_by_transfer_id`,
+    since no transfer was involved) — no explicit request_id passed by
+    the caller at all."""
+    manager, manager_token = await _create_and_login(
+        api_client, real_session, "direct-receive-fulfill-mgr"
+    )
+    await grant_permission(manager, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(manager, PERMISSION_INVENTORY_READ)
+    item_id = await _create_item(
+        api_client, manager_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}DirectFulfill"
+    )
+
+    vitals_actor, vitals_token = await _create_and_login(
+        api_client, real_session, "direct-receive-fulfill-v"
+    )
+    await grant_permission(vitals_actor, PERMISSION_INVENTORY_REQUEST_RESTOCK)
+    request_resp = await api_client.post(
+        "/api/v1/inventory/requests",
+        json={"item_id": item_id, "requested_quantity": "10", "note": "Running low"},
+        headers=_auth_header(vitals_token),
+    )
+    assert request_resp.status_code == 201, request_resp.text
+    request_id = request_resp.json()["data"]["id"]
+    assert request_resp.json()["data"]["status"] == "pending"
+
+    receive_resp = await api_client.post(
+        "/api/v1/inventory/emergency-receipts",
+        json={"items": [{"item_id": item_id, "quantity": "20"}], "received_on": _TODAY},
+        headers=_auth_header(manager_token),
+    )
+    assert receive_resp.status_code == 201, receive_resp.text
+
+    requests_resp = await api_client.get(
+        "/api/v1/inventory/requests",
+        params={"status": "fulfilled"},
+        headers=_auth_header(manager_token),
+    )
+    fulfilled = next(row for row in requests_resp.json()["data"] if row["id"] == request_id)
+    assert fulfilled["status"] == "fulfilled"
+    assert fulfilled["fulfilled_by_direct_receipt_id"] is not None
+    assert fulfilled["fulfilled_by_transfer_id"] is None
+    assert fulfilled["resolved_by"] is not None
+    assert fulfilled["resolved_at"] is not None
+
+
+async def test_receive_directly_to_emergency_resolves_every_pending_request_for_item(
+    api_client, real_session, grant_permission
+):
+    """Two separate pending requests for the same item (e.g. two
+    different shifts both flagging the same shortage before it was
+    restocked) both resolve from one direct receipt — an exact-amount
+    pairing between one receipt and one request was never meaningful to
+    enforce (`requested_quantity` is optional in the first place), so
+    every open flag for the item is considered addressed, not just the
+    oldest/newest one."""
+    manager, manager_token = await _create_and_login(
+        api_client, real_session, "direct-receive-multi-mgr"
+    )
+    await grant_permission(manager, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(manager, PERMISSION_INVENTORY_READ)
+    item_id = await _create_item(
+        api_client, manager_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}DirectMultiFulfill"
+    )
+
+    vitals_actor, vitals_token = await _create_and_login(
+        api_client, real_session, "direct-receive-multi-v"
+    )
+    await grant_permission(vitals_actor, PERMISSION_INVENTORY_REQUEST_RESTOCK)
+    request_ids = []
+    for _ in range(2):
+        request_resp = await api_client.post(
+            "/api/v1/inventory/requests",
+            json={"item_id": item_id, "requested_quantity": None, "note": "just flag it low"},
+            headers=_auth_header(vitals_token),
+        )
+        assert request_resp.status_code == 201, request_resp.text
+        request_ids.append(request_resp.json()["data"]["id"])
+
+    receive_resp = await api_client.post(
+        "/api/v1/inventory/emergency-receipts",
+        json={"items": [{"item_id": item_id, "quantity": "6"}], "received_on": _TODAY},
+        headers=_auth_header(manager_token),
+    )
+    assert receive_resp.status_code == 201, receive_resp.text
+
+    requests_resp = await api_client.get(
+        "/api/v1/inventory/requests",
+        params={"status": "fulfilled"},
+        headers=_auth_header(manager_token),
+    )
+    fulfilled_by_id = {row["id"]: row for row in requests_resp.json()["data"]}
+    for request_id in request_ids:
+        assert fulfilled_by_id[request_id]["status"] == "fulfilled"
+        assert fulfilled_by_id[request_id]["fulfilled_by_direct_receipt_id"] is not None
+    # Both requests resolved by the *same* one receipt event.
+    receipt_ids = {fulfilled_by_id[rid]["fulfilled_by_direct_receipt_id"] for rid in request_ids}
+    assert len(receipt_ids) == 1

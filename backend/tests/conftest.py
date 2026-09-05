@@ -499,9 +499,10 @@ async def real_session():
             # app/modules/inventory/models.py), same reasoning as every
             # other no-ON-DELETE-clause cleanup ordering in this
             # fixture. Deletion order within this block mirrors the
-            # FK graph: restock_request (may reference transfer) and
-            # usage_entry first, then transfer and receipt, then the
-            # item row itself last.
+            # FK graph: restock_request (may reference a transfer OR a
+            # direct receipt) and usage_entry first, then transfer,
+            # direct receipt, and main stock receipt, then the item row
+            # itself last.
             inventory_item_owned_by_test_data = (
                 "SELECT id FROM inventory_item WHERE name LIKE :inventory_item_pattern"
             )
@@ -562,6 +563,25 @@ async def real_session():
             await session.execute(
                 text(
                     "DELETE FROM inventory_main_stock_receipt WHERE item_id IN "
+                    f"({inventory_item_owned_by_test_data})"
+                ),
+                cleanup_params,
+            )
+            # inventory_emergency_direct_receipt (2026-09 addition) — the
+            # restock_request delete above already ran first, so any row
+            # that referenced this via fulfilled_by_direct_receipt_id is
+            # already gone before this table's own rows are removed.
+            await session.execute(
+                text(
+                    "DELETE FROM audit_log WHERE entity_id IN "
+                    "(SELECT id FROM inventory_emergency_direct_receipt WHERE item_id IN "
+                    f"({inventory_item_owned_by_test_data}))"
+                ),
+                cleanup_params,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM inventory_emergency_direct_receipt WHERE item_id IN "
                     f"({inventory_item_owned_by_test_data})"
                 ),
                 cleanup_params,

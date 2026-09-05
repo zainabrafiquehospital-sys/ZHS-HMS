@@ -40,6 +40,38 @@ export const inventoryService = {
     return httpClient.post(`/inventory/items/${itemId}/receive`, payload);
   },
 
+  // Batch (2026-09 addition, checklist-entry redesign) — top-level
+  // route, same shape as transferStock below. `payload` is
+  // `{items: [{item_id, quantity}], received_on}`. The single-item
+  // `receiveStock` above is untouched and still works — see
+  // backend/app/modules/inventory/service.py's `receive_stock_batch`
+  // docstring for why both exist side by side.
+  receiveStockBatch(payload) {
+    return httpClient.post('/inventory/receipts', payload);
+  },
+
+  // The real-world-shaped receiving path (2026-09 addition) — lands in
+  // emergency_stock_level directly and auto-resolves any pending
+  // restock request for each item received (no request_id in the
+  // payload — see backend/app/modules/inventory/service.py's
+  // `receive_directly_to_emergency` docstring). Same batch shape as
+  // `receiveStockBatch`/`transferStock`.
+  receiveDirectlyToEmergency(payload) {
+    return httpClient.post('/inventory/emergency-receipts', payload);
+  },
+
+  listEmergencyDirectReceipts({ itemId, startDate, endDate, page = 1, pageSize = 50 } = {}) {
+    return httpClient.get('/inventory/emergency-receipts', {
+      params: {
+        item_id: itemId || undefined,
+        start_date: startDate || undefined,
+        end_date: endDate || undefined,
+        page,
+        page_size: pageSize,
+      },
+    });
+  },
+
   // Batch (2026-08-28 addition) — top-level route, matches recordUsage's
   // own shape, since a batch's items can span more than one item id.
   // `payload` is `{items: [{item_id, quantity}], transferred_on,

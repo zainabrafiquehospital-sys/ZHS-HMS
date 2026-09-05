@@ -109,6 +109,54 @@ export function useTransferStock() {
   });
 }
 
+/** The checklist-entry redesign's batch Receive to Main Stock
+ * (2026-09 addition) — same cache-patch/invalidate shape as
+ * `useTransferStock` above (a batch response is an array of touched
+ * items, same as transfer's own). The original single-item
+ * `useReceiveStock` below is untouched and still works. */
+export function useReceiveStockBatch() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload) => inventoryService.receiveStockBatch(payload),
+    onSuccess: (response) => {
+      patchItemInCache(queryClient, response.data);
+      invalidateItems(queryClient);
+      invalidateAfterStockMovement(queryClient);
+    },
+  });
+}
+
+/** The real-world-shaped Receive Directly to Emergency batch (2026-09
+ * addition) — identical cache shape to `useTransferStock`/
+ * `useReceiveStockBatch`, plus this action can also auto-resolve
+ * pending restock requests server-side (see backend/app/modules/
+ * inventory/service.py's `receive_directly_to_emergency` docstring), so
+ * this also invalidates the requests list/stats the same way
+ * `useFulfillRequest` already does for its own request-resolving
+ * action. */
+export function useReceiveDirectlyToEmergency() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload) => inventoryService.receiveDirectlyToEmergency(payload),
+    onSuccess: (response) => {
+      patchItemInCache(queryClient, response.data);
+      invalidateItems(queryClient);
+      invalidateAfterStockMovement(queryClient);
+      invalidateRequests(queryClient);
+    },
+  });
+}
+
+export function useInventoryEmergencyDirectReceipts({ itemId, startDate, endDate } = {}) {
+  return useQuery({
+    queryKey: ['inventory', 'emergency-receipts', { itemId, startDate, endDate }],
+    queryFn: () =>
+      inventoryService
+        .listEmergencyDirectReceipts({ itemId, startDate, endDate })
+        .then((res) => res.data),
+  });
+}
+
 export function useInventoryReceipts({ itemId, startDate, endDate } = {}) {
   return useQuery({
     queryKey: ['inventory', 'receipts', { itemId, startDate, endDate }],
