@@ -7,7 +7,8 @@ import { FlaskConical, Plus, Trash2, X } from 'lucide-react';
 import { labService } from '@/features/lab/api/labService';
 import { patientsService } from '@/features/patients/api/patientsService';
 import { useCreateLabBill, usePrintLabBill } from '@/features/lab/hooks/useLab';
-import { finalizeLabBillSchema, labManualPatientSchema } from '@/features/lab/schemas/labSchemas';
+import { finalizeLabBillSchema } from '@/features/lab/schemas/labSchemas';
+import { resolveLabBillLinkage } from '@/features/lab/utils/patientLinkage';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
@@ -59,11 +60,12 @@ function labBillItemToRequestPayload(item) {
  * no same-day registered Visit as Inventory's own ward/emergency
  * population already is (see backend/app/modules/lab/models.py's
  * LabBill docstring for the full rationale) — picking a patient is
- * the whole of it, no second "which visit" step. Manual Entry and the
- * anonymous walk-in fallback otherwise mirror VisitLinkPanel's
- * identical shape (same three fields, same "all three together" rule,
- * same "no record is looked up or created" framing, same "leave
- * unselected to bill this as a walk-in sale" default). */
+ * the whole of it, no second "which visit" step. Manual Entry mirrors
+ * VisitLinkPanel's identical shape (same three fields, same "all three
+ * together" rule, same "no record is looked up or created" framing).
+ * One of the two — a linked patient or a complete Manual Entry — is
+ * now mandatory before Finalize (see resolveLabBillLinkage); a fully
+ * anonymous lab bill can no longer be saved. */
 function LabPatientLinkPanel({
   mode,
   onModeChange,
@@ -171,7 +173,7 @@ function LabPatientLinkPanel({
               onSelect={(patient) => onSelectPatient(patient)}
             />
             <p className="text-xs text-muted-foreground">
-              Leave unselected to bill this as a walk-in sale.
+              For a walk-in with no patient record, use Manual Entry instead.
             </p>
           </div>
         )}
@@ -260,6 +262,23 @@ export function LabBillingWorkspace() {
   const discountForPreview = applyDiscount && watchedDiscount ? Number(watchedDiscount) : 0;
   const netTotal = grandTotal - (Number.isFinite(discountForPreview) ? discountForPreview : 0);
 
+  // The one-line "what patient will this bill save against" summary,
+  // shown right above Finalize so the receptionist always sees it
+  // before committing (the LabPatientLinkPanel is at the top of the
+  // page, out of view by the time they scroll to Finalize).
+  const patientLinkageState =
+    linkMode !== 'manual' && selectedPatient
+      ? {
+          tone: 'ok',
+          text: `Linked to ${selectedPatient.full_name} (MR: ${selectedPatient.mr_number})`,
+        }
+      : linkMode === 'manual' && manualName.trim()
+        ? { tone: 'manual', text: `Manual entry: ${manualName.trim()}` }
+        : {
+            tone: 'none',
+            text: 'No patient attached yet — search & link a patient or use Manual Entry above.',
+          };
+
   // Same "Advance Received tracks Net Total until the receptionist
   // actually types into it" auto-sync as MedicineBillingWorkspace.jsx's
   // own identical effect — see that component's own comment for the
@@ -342,23 +361,25 @@ export function LabBillingWorkspace() {
   async function handleFinalize(values) {
     setFinalizeError(null);
 
-    let manualPatientPayload = {};
-    if (linkMode === 'manual') {
-      const parsed = labManualPatientSchema.safeParse({
-        manual_patient_name: manualName,
-        manual_patient_age: manualAge,
-        manual_patient_phone: manualPhone,
-      });
-      if (!parsed.success) {
-        setFinalizeError(parsed.error.issues[0]?.message ?? 'Manual patient details are incomplete.');
-        return;
-      }
-      manualPatientPayload = parsed.data;
+    // Hard gate: a lab bill can no longer be finalized with neither a
+    // linked patient nor complete manual patient details — see
+    // resolveLabBillLinkage. createBill is never called when
+    // linkage.ok is false.
+    const linkage = resolveLabBillLinkage({
+      linkMode,
+      selectedPatient,
+      manualName,
+      manualAge,
+      manualPhone,
+    });
+    if (!linkage.ok) {
+      setFinalizeError(linkage.error);
+      return;
     }
 
     try {
       const response = await createBill.mutateAsync({
-        patient_id: selectedPatient ? selectedPatient.id : null,
+        patient_id: linkage.patientId,
         items: items.map((item) => labBillItemToRequestPayload(item)),
         initial_payment_amount: values.initial_payment_amount,
         initial_payment_method: values.initial_payment_amount
@@ -366,7 +387,7 @@ export function LabBillingWorkspace() {
           : null,
         discount_amount: applyDiscount ? values.discount_amount : 0,
         discount_reason: applyDiscount ? values.discount_reason || null : null,
-        ...manualPatientPayload,
+        ...linkage.manualPayload,
       });
       const bill = response.data;
       setItems([]);
@@ -563,6 +584,23 @@ export function LabBillingWorkspace() {
                   </div>
                 </>
               ) : null}
+
+              <div
+                className={
+                  patientLinkageState.tone === 'ok'
+                    ? 'rounded-md bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-700'
+                    : patientLinkageState.tone === 'manual'
+                      ? 'rounded-md bg-muted px-3 py-2 text-sm font-medium text-foreground'
+                      : 'rounded-md bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive'
+                }
+              >
+                {patientLinkageState.tone === 'ok'
+                  ? '✓ '
+                  : patientLinkageState.tone === 'none'
+                    ? '⚠ '
+                    : ''}
+                {patientLinkageState.text}
+              </div>
 
               <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
                 <div className="flex flex-col gap-1.5 sm:w-48">

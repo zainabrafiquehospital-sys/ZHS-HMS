@@ -11,11 +11,11 @@ import {
   usePrintMedicineBill,
   useVisitsForPatient,
 } from '@/features/pharmacy/hooks/usePharmacy';
+import { billLineItemSchema, finalizeBillSchema } from '@/features/pharmacy/schemas/pharmacySchemas';
 import {
-  billLineItemSchema,
-  finalizeBillSchema,
-  manualPatientSchema,
-} from '@/features/pharmacy/schemas/pharmacySchemas';
+  autoLinkVisit,
+  resolveMedicineBillLinkage,
+} from '@/features/pharmacy/utils/patientLinkage';
 import { VisitProcedureDisplay } from '@/features/visits/components/VisitProcedureDisplay';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
@@ -40,14 +40,15 @@ function money(amount) {
   return `Rs. ${Number(amount).toFixed(2)}`;
 }
 
-/** The optional "attach patient details to this bill" panel — three
- * mutually exclusive states, mirroring app/modules/pharmacy/models.py's
- * `MedicineBill` docstring exactly: a linked registered Visit (search
- * a patient — same SearchSelect + patientsService.search pattern as
- * RegisterVisitForm.jsx — then pick one of their visits), Manual Entry
- * (name/age/contact typed in for the slip only, no Patient/Visit
- * looked up or created), or neither (an anonymous walk-in, unchanged).
- * The two toggle buttons mirror RegisterVisitForm.jsx's own New
+/** The "attach patient details to this bill" panel — two mutually
+ * exclusive states: a linked registered Visit (search a patient — same
+ * SearchSelect + patientsService.search pattern as RegisterVisitForm.jsx
+ * — whose single open visit is then linked automatically, or, if they
+ * have several, picked from the list), or Manual Entry (name/age/contact
+ * typed in for the slip only, no Patient/Visit looked up or created).
+ * One of the two is now mandatory before Finalize (see
+ * resolveMedicineBillLinkage) — a fully anonymous bill can no longer be
+ * saved. The two toggle buttons mirror RegisterVisitForm.jsx's own New
  * Patient/Existing Patient mode switch. */
 function VisitLinkPanel({
   mode,
@@ -65,6 +66,19 @@ function VisitLinkPanel({
   onManualPhoneChange,
 }) {
   const { data: visits, isLoading } = useVisitsForPatient(selectedPatient?.id);
+
+  // When the picked patient has exactly one open visit, link it
+  // automatically — the separate "click the visit" step is only needed
+  // to disambiguate between multiple open visits. Without this, a
+  // receptionist could select a patient, press Finalize, and save a
+  // fully anonymous bill (visit_id null). Guarded on `!selectedVisit`
+  // so it never overrides a manual pick or re-fires after one, and on
+  // `selectedPatient` so it does nothing once linkage is cleared.
+  useEffect(() => {
+    if (!selectedPatient || selectedVisit) return;
+    const auto = autoLinkVisit(visits);
+    if (auto) onSelectVisit(auto);
+  }, [visits, selectedPatient, selectedVisit, onSelectVisit]);
 
   if (selectedVisit) {
     return (
@@ -173,19 +187,15 @@ function VisitLinkPanel({
                 selectedLabel={selectedPatient ? `${selectedPatient.full_name}` : ''}
                 onSelect={(patient) => onSelectPatient(patient)}
               />
-              {/* Deliberately NOT a "Selected: {name}" confirmation —
-               * selecting a patient here does nothing on its own
-               * (handleFinalize never sends selectedPatient at all,
-               * only selectedVisit's id); a confirmation-shaped message
-               * at this stage previously read as "linking done" when
-               * it wasn't, which is the exact bug this reworked prompt
-               * fixes. The real "this bill will be tied to a patient
-               * record" confirmation only appears once a Visit is
-               * actually selected — see the "Linked to ...'s visit"
-               * card above. */}
+              {/* A patient with a single open visit is linked
+               * automatically once selected (see VisitLinkPanel's
+               * auto-link effect); the "Linked to ...'s visit" card
+               * above is the confirmation. Only when the patient has
+               * several open visits does the picker below require an
+               * explicit choice. */}
               {!selectedPatient ? (
                 <p className="text-xs text-muted-foreground">
-                  Leave unselected to bill this as a walk-in sale.
+                  For a walk-in with no registered visit, use Manual Entry instead.
                 </p>
               ) : null}
             </div>
@@ -199,19 +209,20 @@ function VisitLinkPanel({
                 // No visit to select means there is structurally no way
                 // to link this bill (MedicineBill has no patient_id
                 // column of its own — only visit_id, see app/modules/
-                // pharmacy/models.py's own docstring) — spelled out
-                // explicitly rather than left as a silent dead end.
+                // pharmacy/models.py's own docstring). Finalize is now
+                // blocked in this state (see resolveMedicineBillLinkage)
+                // — the receptionist must switch to Manual Entry.
                 <div className="flex items-center gap-2 rounded-md bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
                   <span>
-                    {selectedPatient.full_name} has no registered visits — finalizing this bill
-                    now will create it as anonymous, with no patient record attached.
+                    {selectedPatient.full_name} has no visits on file to link. Switch to Manual
+                    Entry above to record their name, age, and contact number.
                   </span>
                 </div>
               ) : (
                 <div className="flex flex-col gap-2">
                   <p className="rounded-md bg-primary/10 px-3 py-2 text-sm font-medium text-primary">
-                    Select one of {selectedPatient.full_name}&apos;s visits below to link this
-                    bill to their record.
+                    Select which of {selectedPatient.full_name}&apos;s visits to link this bill
+                    to. A patient with a single open visit is linked automatically.
                   </p>
                   <ul className="flex flex-col gap-2">
                     {visits.map((visit) => (
@@ -272,15 +283,16 @@ function VisitLinkPanel({
  * Medicine Bills tab — this workspace is only ever the point of a new
  * sale, not a lookup for an old one.
  *
- * Linking to a registered Visit is optional (see `VisitLinkPanel`
- * above) — when no patient/visit is picked, `visit_id` stays null and
- * the bill is a standalone walk-in sale, exactly as before. Manual
- * Entry (also via `VisitLinkPanel`) is the third, mutually exclusive
- * alternative: a name/age/contact typed in for the slip with no
- * Patient/Visit lookup or creation at all — see
- * app/modules/pharmacy/models.py's `MedicineBill` docstring for the
- * full three-state rule, enforced server-side (never trust the client
- * alone for a data-integrity invariant like this one).
+ * Every bill must carry a patient identity before it can be finalized
+ * (see `VisitLinkPanel` above and `resolveMedicineBillLinkage`): either
+ * a linked registered Visit — the patient's single open visit links
+ * automatically on selection, or is picked from the list when they have
+ * several — or Manual Entry, a name/age/contact typed in for the slip
+ * with no Patient/Visit lookup or creation. A fully anonymous bill
+ * (`visit_id` null and no manual details) can no longer be saved by
+ * accident; `handleFinalize` blocks it with an inline error. The DB's
+ * own CHECK still enforces the visit/manual mutual exclusivity — see
+ * app/modules/pharmacy/models.py's `MedicineBill` docstring.
  *
  * "Apply Discount" (2026-08-19 addition) is an optional flat discount,
  * off entirely by default — same toggle shape as RegisterVisitForm.jsx's
@@ -332,6 +344,19 @@ export function MedicineBillingWorkspace() {
   const watchedDiscount = watch('discount_amount');
   const discountForPreview = applyDiscount && watchedDiscount ? Number(watchedDiscount) : 0;
   const netTotal = grandTotal - (Number.isFinite(discountForPreview) ? discountForPreview : 0);
+
+  // The one-line "what patient will this bill save against" summary,
+  // shown right above Finalize so the receptionist always sees it
+  // before committing (the VisitLinkPanel is at the top of the page,
+  // out of view by the time they scroll to Finalize).
+  const patientLinkageState = selectedVisit
+    ? {
+        tone: 'ok',
+        text: `Linked to ${selectedPatient?.full_name ?? 'patient'} · visit ${selectedVisit.queue_token}`,
+      }
+    : linkMode === 'manual' && manualName.trim()
+      ? { tone: 'manual', text: `Manual entry: ${manualName.trim()}` }
+      : { tone: 'none', text: 'No patient attached yet — link a visit or use Manual Entry above.' };
 
   // Advance Received defaults to the full Net Total (2026-08-21 fix) —
   // payment is always collected before the slip is printed, so a
@@ -420,23 +445,25 @@ export function MedicineBillingWorkspace() {
   async function handleFinalize(values) {
     setFinalizeError(null);
 
-    let manualPatientPayload = {};
-    if (linkMode === 'manual') {
-      const parsed = manualPatientSchema.safeParse({
-        manual_patient_name: manualName,
-        manual_patient_age: manualAge,
-        manual_patient_phone: manualPhone,
-      });
-      if (!parsed.success) {
-        setFinalizeError(parsed.error.issues[0]?.message ?? 'Manual patient details are incomplete.');
-        return;
-      }
-      manualPatientPayload = parsed.data;
+    // Hard gate: a bill can no longer be finalized with neither a
+    // linked visit nor complete manual patient details — see
+    // resolveMedicineBillLinkage. This is the block, not just a nudge:
+    // createBill is never called when linkage.ok is false.
+    const linkage = resolveMedicineBillLinkage({
+      linkMode,
+      selectedVisit,
+      manualName,
+      manualAge,
+      manualPhone,
+    });
+    if (!linkage.ok) {
+      setFinalizeError(linkage.error);
+      return;
     }
 
     try {
       const response = await createBill.mutateAsync({
-        visit_id: selectedVisit ? selectedVisit.id : null,
+        visit_id: linkage.visitId,
         items: items.map((item) => ({ medicine_id: item.medicine_id, quantity: item.quantity })),
         initial_payment_amount: values.initial_payment_amount,
         initial_payment_method: values.initial_payment_amount
@@ -447,7 +474,7 @@ export function MedicineBillingWorkspace() {
         // unticked checkbox always sends no discount at all.
         discount_amount: applyDiscount ? values.discount_amount : 0,
         discount_reason: applyDiscount ? values.discount_reason || null : null,
-        ...manualPatientPayload,
+        ...linkage.manualPayload,
       });
       const bill = response.data;
       setItems([]);
@@ -659,6 +686,23 @@ export function MedicineBillingWorkspace() {
                   Recorded atomically with the bill itself (see
                   PharmacyService.create_bill's docstring) — never a
                   separate, possibly-failing second request. */}
+              <div
+                className={
+                  patientLinkageState.tone === 'ok'
+                    ? 'rounded-md bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-700'
+                    : patientLinkageState.tone === 'manual'
+                      ? 'rounded-md bg-muted px-3 py-2 text-sm font-medium text-foreground'
+                      : 'rounded-md bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive'
+                }
+              >
+                {patientLinkageState.tone === 'ok'
+                  ? '✓ '
+                  : patientLinkageState.tone === 'none'
+                    ? '⚠ '
+                    : ''}
+                {patientLinkageState.text}
+              </div>
+
               <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
                 <div className="flex flex-col gap-1.5 sm:w-48">
                   <Label htmlFor="initial_payment_amount">Advance Received (Rs.)</Label>
