@@ -290,13 +290,25 @@ async def list_emergency_direct_receipts(
     start_date: date_type | None = Query(default=None),
     end_date: date_type | None = Query(default=None),
     inventory_service: InventoryService = Depends(get_inventory_service),
+    user_service: UserService = Depends(get_user_service),
     _actor: User = Depends(require_permission(PERMISSION_INVENTORY_READ)),
 ) -> dict:
+    """`created_by` is resolved to `created_by_display_name` here via the
+    same `UserService.list_by_ids` batch join `list_usage_entries` uses
+    — the Emergency Stock live feed (InventoryEmergencyFeedPanel.jsx)
+    needs "Added by {name}", and of the `inventory:read` roles only
+    Admin also holds `users:read` to resolve a name client-side, so it
+    is resolved server-side once for every caller."""
     receipts, total = await inventory_service.list_emergency_direct_receipts(
         item_id=item_id, start_date=start_date, end_date=end_date, page=page, page_size=page_size
     )
+    creator_ids = list({r.created_by for r in receipts if r.created_by is not None})
+    creators_by_id = {user.id: user for user in await user_service.list_by_ids(creator_ids)}
     body = [
-        InventoryEmergencyDirectReceiptOut.from_receipt(receipt).model_dump(mode="json")
+        InventoryEmergencyDirectReceiptOut.from_receipt(
+            receipt,
+            creators_by_id.get(receipt.created_by) if receipt.created_by else None,
+        ).model_dump(mode="json")
         for receipt in receipts
     ]
     meta = PaginationMeta(page=page, page_size=page_size, total=total).model_dump(mode="json")
@@ -339,13 +351,22 @@ async def list_transfers(
     start_date: date_type | None = Query(default=None),
     end_date: date_type | None = Query(default=None),
     inventory_service: InventoryService = Depends(get_inventory_service),
+    user_service: UserService = Depends(get_user_service),
     _actor: User = Depends(require_permission(PERMISSION_INVENTORY_READ)),
 ) -> dict:
+    """`created_by` is resolved to `created_by_display_name` here the
+    same way `list_emergency_direct_receipts` above does — both feed the
+    Emergency Stock live feed's "Added by {name}" line."""
     transfers, total = await inventory_service.list_transfers(
         item_id=item_id, start_date=start_date, end_date=end_date, page=page, page_size=page_size
     )
+    creator_ids = list({t.created_by for t in transfers if t.created_by is not None})
+    creators_by_id = {user.id: user for user in await user_service.list_by_ids(creator_ids)}
     body = [
-        InventoryTransferOut.from_transfer(transfer).model_dump(mode="json")
+        InventoryTransferOut.from_transfer(
+            transfer,
+            creators_by_id.get(transfer.created_by) if transfer.created_by else None,
+        ).model_dump(mode="json")
         for transfer in transfers
     ]
     meta = PaginationMeta(page=page, page_size=page_size, total=total).model_dump(mode="json")

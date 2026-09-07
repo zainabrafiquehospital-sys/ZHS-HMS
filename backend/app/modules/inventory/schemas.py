@@ -338,11 +338,23 @@ class InventoryEmergencyDirectReceiptOut(BaseModel):
     quantity: Decimal
     received_on: date_type
     created_by: UUID | None
+    # The recording staff member's own display name — resolved the
+    # identical way `InventoryUsageEntryOut.created_by_display_name`
+    # already is (2026-09-04), by the same `UserService.list_by_ids`
+    # batch join in this endpoint's router handler. Needed here for the
+    # Emergency Stock live feed's "Added by {name}" line: `inventory:read`
+    # is held by the Inventory Manager and Admin, but the Manager holds
+    # no `users:read` to resolve a colleague's name client-side, so it is
+    # resolved server-side once. `None` when the creator is unknown or
+    # unresolved — the frontend renders its own dash.
+    created_by_display_name: str | None
     created_at: datetime
 
     @classmethod
     def from_receipt(
-        cls, receipt: InventoryEmergencyDirectReceipt
+        cls,
+        receipt: InventoryEmergencyDirectReceipt,
+        creator: User | None = None,
     ) -> "InventoryEmergencyDirectReceiptOut":
         return cls(
             id=receipt.id,
@@ -350,6 +362,7 @@ class InventoryEmergencyDirectReceiptOut(BaseModel):
             quantity=receipt.quantity,
             received_on=receipt.received_on,
             created_by=receipt.created_by,
+            created_by_display_name=creator.full_name if creator is not None else None,
             created_at=receipt.created_at,
         )
 
@@ -366,10 +379,22 @@ class InventoryTransferOut(BaseModel):
     # wherever a transfer is shown.
     carried_by_name: str | None
     created_by: UUID | None
+    # The Inventory Manager who recorded this transfer — resolved
+    # server-side exactly like
+    # `InventoryEmergencyDirectReceiptOut.created_by_display_name` above
+    # (and `InventoryUsageEntryOut`'s before it). Distinct from
+    # `carried_by_name`, which is free text for whoever physically
+    # carried the stock and is not necessarily a system user. `None`
+    # when unknown/unresolved.
+    created_by_display_name: str | None
     created_at: datetime
 
     @classmethod
-    def from_transfer(cls, transfer: InventoryTransfer) -> "InventoryTransferOut":
+    def from_transfer(
+        cls,
+        transfer: InventoryTransfer,
+        creator: User | None = None,
+    ) -> "InventoryTransferOut":
         return cls(
             id=transfer.id,
             item_id=transfer.item_id,
@@ -377,6 +402,7 @@ class InventoryTransferOut(BaseModel):
             transferred_on=transfer.transferred_on,
             carried_by_name=transfer.carried_by_name,
             created_by=transfer.created_by,
+            created_by_display_name=creator.full_name if creator is not None else None,
             created_at=transfer.created_at,
         )
 

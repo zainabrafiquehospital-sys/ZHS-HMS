@@ -9,6 +9,7 @@ import { InventoryReceivePanel } from '@/features/inventory/components/Inventory
 import { InventoryReceiveToEmergencyPanel } from '@/features/inventory/components/InventoryReceiveToEmergencyPanel';
 import { InventoryTransferPanel } from '@/features/inventory/components/InventoryTransferPanel';
 import { InventoryRestockRequestsPanel } from '@/features/inventory/components/InventoryRestockRequestsPanel';
+import { InventoryEmergencyFeedPanel } from '@/features/inventory/components/InventoryEmergencyFeedPanel';
 import { InventoryHistoryPanel } from '@/features/inventory/components/InventoryHistoryPanel';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Tabs } from '@/shared/components/ui/Tabs';
@@ -19,6 +20,7 @@ const INVENTORY_TABS = [
   { value: 'receive', label: 'Receive Stock' },
   { value: 'transfer', label: 'Transfer to Emergency' },
   { value: 'receive-emergency', label: 'Receive to Emergency' },
+  { value: 'live-feed', label: 'Live Feed' },
   { value: 'requests', label: 'Restock Requests' },
   { value: 'history', label: 'History' },
 ];
@@ -75,6 +77,8 @@ export function InventoryManagement() {
         <InventoryTransferPanel />
       ) : activeTab === 'receive-emergency' ? (
         <InventoryReceiveToEmergencyPanel />
+      ) : activeTab === 'live-feed' ? (
+        <InventoryEmergencyFeedPanel />
       ) : activeTab === 'requests' ? (
         <InventoryRestockRequestsPanel />
       ) : (

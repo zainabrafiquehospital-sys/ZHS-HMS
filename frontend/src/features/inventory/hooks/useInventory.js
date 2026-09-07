@@ -157,6 +157,42 @@ export function useInventoryEmergencyDirectReceipts({ itemId, startDate, endDate
   });
 }
 
+/** The Emergency Stock live feed (InventoryEmergencyFeedPanel.jsx) — a
+ * single query that pulls both "stock arriving into Emergency" ledgers
+ * at once (direct-to-Emergency receipts + Main-Stock -> Emergency
+ * transfers), each newest-first from the server, for the component to
+ * merge/tag/sort via `buildEmergencyArrivalsFeed`. Its own dedicated
+ * queryKey, deliberately isolated from the History panel's
+ * `useInventoryEmergencyDirectReceipts`/`useInventoryTransfers` caches
+ * so opting this view into live polling never changes their behavior.
+ *
+ * Live: `refetchInterval: 15000` + `refetchIntervalInBackground: true`
+ * — the exact convention the Vitals worklist and the Daily Usage view
+ * already follow (see `useInventoryUsageEntries`'s own note on why
+ * `refetchIntervalInBackground` must be true under this app's global
+ * `refetchOnWindowFocus: false`). Unconditional here: a "what's
+ * arriving right now" feed has no immutable past-date variant to
+ * exempt the way Daily Usage's `isToday` gate does. */
+export function useEmergencyStockFeed({ pageSize = 40 } = {}) {
+  const query = useQuery({
+    queryKey: ['inventory', 'emergency-stock-feed', { pageSize }],
+    queryFn: async () => {
+      const [directReceipts, transfers] = await Promise.all([
+        inventoryService.listEmergencyDirectReceipts({ pageSize }).then((res) => res.data),
+        inventoryService.listTransfers({ pageSize }).then((res) => res.data),
+      ]);
+      return { directReceipts, transfers };
+    },
+    refetchInterval: 15000,
+    refetchIntervalInBackground: true,
+  });
+  return {
+    ...query,
+    directReceipts: query.data?.directReceipts ?? [],
+    transfers: query.data?.transfers ?? [],
+  };
+}
+
 export function useInventoryReceipts({ itemId, startDate, endDate } = {}) {
   return useQuery({
     queryKey: ['inventory', 'receipts', { itemId, startDate, endDate }],

@@ -1759,6 +1759,106 @@ async def test_receive_directly_to_emergency_resolves_every_pending_request_for_
 
 
 # ----------------------------------------------------------------------
+# created_by_display_name on the two "arriving into Emergency" ledgers
+# (2026-09 addition — backs InventoryEmergencyFeedPanel.jsx's live feed)
+# ----------------------------------------------------------------------
+
+
+async def test_list_emergency_direct_receipts_requires_inventory_read(
+    api_client, real_session, grant_permission
+):
+    """The list endpoint is gated on `inventory:read` (held by Inventory
+    Manager and Admin) — a user with neither `inventory:read` nor
+    `inventory:manage` gets 403, so the live feed never leaks to a role
+    that shouldn't see stock movements."""
+    actor, access_token = await _create_and_login(api_client, real_session, "emerg-feed-noperm")
+
+    resp = await api_client.get(
+        "/api/v1/inventory/emergency-receipts", headers=_auth_header(access_token)
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_list_emergency_direct_receipts_resolves_created_by_display_name(
+    api_client, real_session, grant_permission
+):
+    """Every direct-to-Emergency receipt row carries
+    `created_by_display_name` resolved server-side to the recording
+    manager's `full_name` (the same `UserService.list_by_ids` join the
+    Daily Usage view already relies on) — the live feed needs "Added by
+    {name}" and the Inventory Manager holds no `users:read` to resolve
+    it itself."""
+    actor, access_token = await _create_and_login(api_client, real_session, "emerg-feed-direct")
+    await grant_permission(actor, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
+    item_id = await _create_item(
+        api_client, access_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}FeedDirect"
+    )
+
+    receive_resp = await api_client.post(
+        "/api/v1/inventory/emergency-receipts",
+        json={"items": [{"item_id": item_id, "quantity": "12"}], "received_on": _TODAY},
+        headers=_auth_header(access_token),
+    )
+    assert receive_resp.status_code == 201, receive_resp.text
+
+    list_resp = await api_client.get(
+        "/api/v1/inventory/emergency-receipts",
+        params={"item_id": item_id},
+        headers=_auth_header(access_token),
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    row = list_resp.json()["data"][0]
+    assert row["item_id"] == item_id
+    assert row["quantity"] == "12.00"
+    assert row["created_by"] == str(actor.id)
+    assert row["created_by_display_name"] == actor.full_name
+
+
+async def test_list_transfers_resolves_created_by_display_name(
+    api_client, real_session, grant_permission
+):
+    """The Main-Stock -> Emergency transfer list carries the same
+    server-resolved `created_by_display_name` — distinct from
+    `carried_by_name` (free text for whoever physically carried the
+    stock, not necessarily a system user)."""
+    actor, access_token = await _create_and_login(api_client, real_session, "emerg-feed-transfer")
+    await grant_permission(actor, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
+    item_id = await _create_item(
+        api_client, access_token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}FeedTransfer"
+    )
+    await api_client.post(
+        f"/api/v1/inventory/items/{item_id}/receive",
+        json={"quantity": "50", "received_on": _TODAY},
+        headers=_auth_header(access_token),
+    )
+    transfer_resp = await api_client.post(
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": item_id, "quantity": "20"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "Some Porter",
+        },
+        headers=_auth_header(access_token),
+    )
+    assert transfer_resp.status_code == 200, transfer_resp.text
+
+    list_resp = await api_client.get(
+        "/api/v1/inventory/transfers",
+        params={"item_id": item_id},
+        headers=_auth_header(access_token),
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    row = list_resp.json()["data"][0]
+    assert row["quantity"] == "20.00"
+    assert row["carried_by_name"] == "Some Porter"
+    assert row["created_by"] == str(actor.id)
+    assert row["created_by_display_name"] == actor.full_name
+
+
+# ----------------------------------------------------------------------
 # Requirement list print (2026-09 addition, Vitals' "Build Requirement"
 # checklist)
 # ----------------------------------------------------------------------

@@ -64,6 +64,7 @@ import {
   useInventoryRequests,
 } from '@/features/inventory/hooks/useInventory';
 import { InventoryHistoryPanel } from '@/features/inventory/components/InventoryHistoryPanel';
+import { InventoryEmergencyFeedPanel } from '@/features/inventory/components/InventoryEmergencyFeedPanel';
 import { LeadsSection } from '@/features/admin/components/LeadsSection';
 import { RevenueByActorPieChart } from '@/features/admin/components/RevenueByActorPieChart';
 import {
@@ -105,6 +106,7 @@ const OVERVIEW_TABS = [
 const INVENTORY_SUB_TABS = [
   { value: 'stock_levels', label: 'Stock Levels' },
   { value: 'requests', label: 'Restock Requests' },
+  { value: 'live_feed', label: 'Live Feed' },
   { value: 'history', label: 'History' },
 ];
 
@@ -1472,7 +1474,10 @@ function InventoryRequestsPanel() {
  * already fully read-only (no action buttons anywhere in it), so
  * reusing it here is a real cross-feature reuse, not a coincidence;
  * it also covers Receipts alongside Transfers/Usage, a superset of what
- * was asked for at no extra cost. */
+ * was asked for at no extra cost. "Live Feed" reuses
+ * `InventoryEmergencyFeedPanel` the same wholesale way — the Inventory
+ * Manager's own live Emergency-Stock arrivals feed, shown here so an
+ * Admin watching the same data has the same at-a-glance view. */
 function InventoryPanel() {
   const [subTab, setSubTab] = useState('stock_levels');
 
@@ -1483,6 +1488,8 @@ function InventoryPanel() {
         <InventoryStockLevelsTable />
       ) : subTab === 'requests' ? (
         <InventoryRequestsPanel />
+      ) : subTab === 'live_feed' ? (
+        <InventoryEmergencyFeedPanel />
       ) : (
         <InventoryHistoryPanel />
       )}
