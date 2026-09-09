@@ -35,10 +35,15 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse
 
 from app.core.config import Settings, get_settings
-from app.modules.auth.dependencies import get_user_service, require_permission
+from app.modules.auth.dependencies import (
+    get_user_service,
+    require_any_permission,
+    require_permission,
+)
 from app.modules.auth.models import User
 from app.modules.auth.user_service import UserService
 from app.modules.inventory.constants import (
+    PERMISSION_INVENTORY_CREATE_ITEM,
     PERMISSION_INVENTORY_MANAGE,
     PERMISSION_INVENTORY_READ,
     PERMISSION_INVENTORY_RECORD_USAGE,
@@ -112,8 +117,14 @@ async def _load_items_by_id(inventory_service: InventoryService) -> dict[UUID, I
 async def create_item(
     payload: CreateInventoryItemRequest,
     inventory_service: InventoryService = Depends(get_inventory_service),
-    actor: User = Depends(require_permission(PERMISSION_INVENTORY_MANAGE)),
+    actor: User = Depends(
+        require_any_permission(PERMISSION_INVENTORY_CREATE_ITEM, PERMISSION_INVENTORY_MANAGE)
+    ),
 ) -> dict:
+    """Adding a catalog row accepts the narrow `inventory:create_item`
+    (Vitals + Inventory Manager) OR the broad `inventory:manage`
+    (Inventory Manager, unchanged) — see constants.py's docstring.
+    Every other write endpoint below stays `inventory:manage`-only."""
     item = await inventory_service.create_item(
         actor=actor,
         name=payload.name,
@@ -186,6 +197,31 @@ async def update_item(
         actor=actor, item_id=item_id, updates=payload.model_dump(exclude_unset=True)
     )
     return success_envelope(InventoryItemOut.from_item(item).model_dump(mode="json"))
+
+
+@router.delete("/items/{item_id}")
+async def delete_item(
+    item_id: UUID,
+    inventory_service: InventoryService = Depends(get_inventory_service),
+    actor: User = Depends(require_permission(PERMISSION_INVENTORY_MANAGE)),
+) -> dict:
+    """Soft-delete only (`inventory:manage`, Inventory Manager) — sets
+    `deleted_at`, matching this codebase's universal convention. A hard
+    SQL DELETE is deliberately never issued: the five ledger tables
+    (receipt/transfer/direct-receipt/usage/restock-request) all
+    reference `inventory_item.id` with `ON DELETE NO ACTION`, so a
+    DELETE against any item with history would raise a FK violation —
+    and most real items have history. Soft-deleted items drop out of
+    every listing/picker (the `deleted_at IS NULL` filter every item
+    read path already applies), while every historical ledger row
+    referencing them stays intact and queryable. `is_active` remains
+    the separate "still stocked, just stop offering it" toggle.
+
+    Returns `{"data": null}` — the same no-body shape
+    `DELETE /pharmacy/bills/{id}` / `DELETE /lab/bills/{id}` already use
+    for their own admin soft-deletes."""
+    await inventory_service.delete_item(actor=actor, item_id=item_id)
+    return success_envelope(None)
 
 
 # ----------------------------------------------------------------------

@@ -421,6 +421,37 @@ def require_permission(permission_code: str) -> Callable[..., Coroutine[Any, Any
     return dependency
 
 
+def require_any_permission(*permission_codes: str) -> Callable[..., Coroutine[Any, Any, User]]:
+    """Passes when the actor holds *any one* of `permission_codes` —
+    the "either the broad permission or a narrower alternative" gate.
+    Originally added in reception/dependencies.py (2026-08-25, for
+    GET /reception/visits/{id}/slip/print accepting register_visit OR
+    view_slip); promoted here in 2026-09 once a second module
+    (Inventory: `POST /inventory/items` accepting `inventory:manage` OR
+    the narrower `inventory:create_item`) needed the identical shape,
+    so both consumers share one definition rather than the helper
+    living in one feature module another has to reach into. Pure
+    composition over `AuthService.effective_permission_codes`, the same
+    method `require_permission` above already calls."""
+
+    async def dependency(
+        user: User = Depends(get_current_active_user),
+        auth_service: AuthService = Depends(get_auth_service),
+    ) -> User:
+        # Same must_change_password gate as require_permission, checked
+        # first for the identical reason — see that dependency's comment.
+        if user.must_change_password:
+            raise PasswordChangeRequiredError
+        held = auth_service.effective_permission_codes(user)
+        if not held.intersection(permission_codes):
+            raise PermissionDeniedError(
+                f"Missing required permission (any of): {', '.join(permission_codes)}"
+            )
+        return user
+
+    return dependency
+
+
 def require_role(role_name: str) -> Callable[..., Coroutine[Any, Any, User]]:
     async def dependency(
         user: User = Depends(get_current_active_user),

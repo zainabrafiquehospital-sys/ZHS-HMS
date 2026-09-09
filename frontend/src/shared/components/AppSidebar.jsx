@@ -19,6 +19,7 @@ import {
   Warehouse,
   History,
   ClipboardCheck,
+  Activity,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { ROUTES } from '@/core/constants/routes';
@@ -78,6 +79,16 @@ const NAV_ITEMS = [
     href: ROUTES.DAILY_INVENTORY_USAGE,
     label: 'Daily Usage',
     icon: ClipboardCheck,
+    permission: 'inventory:read',
+  },
+  // Same shared `inventory:read` gate and "own top-level route, not an
+  // /inventory sub-screen" shape as Daily Usage directly above (Vitals
+  // never holds the stricter `inventory:manage`) — a live at-a-glance
+  // Main/Emergency stock + today's-usage dashboard.
+  {
+    href: ROUTES.LIVE_INVENTORY,
+    label: 'Live Inventory',
+    icon: Activity,
     permission: 'inventory:read',
   },
   // A genuinely shared screen, not an Admin sub-screen — gated purely on

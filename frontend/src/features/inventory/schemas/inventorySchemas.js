@@ -41,6 +41,20 @@ export const inventoryItemFormSchema = z
       .refine((value) => value === null || (Number.isFinite(value) && value > 0), {
         message: 'Threshold must be greater than 0',
       }),
+    // Optional "also receive this much into Main Stock right now"
+    // (2026-09 addition, InventoryItemForm's merged Add-Item + Receive
+    // flow). Blank -> null -> the item is just created at 0, exactly as
+    // before. Never sent to POST /inventory/items itself (which has no
+    // such field); when set, the form fires a second POST /inventory/
+    // items/{id}/receive. Only surfaced on the Inventory Manager's
+    // Catalog form (`showInitialReceipt`), never Vitals' own Add Item
+    // tab — receiving is `inventory:manage`-gated.
+    initial_quantity_received: z
+      .union([z.string(), z.number()])
+      .transform((value) => (value === '' || value === null || value === undefined ? null : Number(value)))
+      .refine((value) => value === null || (Number.isFinite(value) && value > 0), {
+        message: 'Initial quantity must be greater than 0',
+      }),
   })
   .refine((data) => (CATEGORY_ALLOWED_UNITS[data.category] ?? []).includes(data.unit), {
     message: 'Select a unit that is standardized for this category',

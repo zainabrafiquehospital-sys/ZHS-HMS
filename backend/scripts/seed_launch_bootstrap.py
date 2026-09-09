@@ -96,6 +96,7 @@ from app.modules.dashboard.constants import (
     PERMISSION_DASHBOARD_VITALS_READ,
 )
 from app.modules.inventory.constants import (
+    PERMISSION_INVENTORY_CREATE_ITEM,
     PERMISSION_INVENTORY_MANAGE,
     PERMISSION_INVENTORY_READ,
     PERMISSION_INVENTORY_RECORD_USAGE,
@@ -313,6 +314,13 @@ PERMISSION_CATALOG: list[tuple[str, str, str]] = [
         "Emergency Stock, and fulfill/reject restock requests.",
     ),
     (
+        PERMISSION_INVENTORY_CREATE_ITEM,
+        "Add Inventory Items",
+        "Add a new item to the inventory catalog. Does not grant Main Stock receipts, "
+        "transfers to Emergency Stock, restock-request fulfillment, or item deletion. "
+        "Granted to both Inventory Manager and Vitals.",
+    ),
+    (
         PERMISSION_INVENTORY_RECORD_USAGE,
         "Record Inventory Usage",
         "Record an Emergency Stock item as used against a patient.",
@@ -416,9 +424,13 @@ VITALS_PERMISSION_CODES: list[str] = [
     # records usage against Emergency Stock and raises restock requests,
     # and needs read access to search items and see stock levels while
     # doing either. Deliberately NOT PERMISSION_INVENTORY_MANAGE —
-    # catalog/receipt/transfer/request-resolution actions are Inventory
-    # Manager-only (see app/modules/inventory/constants.py's docstring).
+    # receipt/transfer/request-resolution/item-delete actions are
+    # Inventory Manager-only (see app/modules/inventory/constants.py's
+    # docstring). `inventory:create_item` (2026-09 addition) IS granted:
+    # adding a missing catalog row is a legitimate mid-task Vitals need,
+    # and it carries nothing else — see that same docstring.
     PERMISSION_INVENTORY_READ,
+    PERMISSION_INVENTORY_CREATE_ITEM,
     PERMISSION_INVENTORY_RECORD_USAGE,
     PERMISSION_INVENTORY_REQUEST_RESTOCK,
     # Patient History search (2026-08-31 addition) — same grant/reasoning

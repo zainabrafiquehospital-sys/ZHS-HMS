@@ -19,7 +19,11 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
 
 from app.core.config import Settings, get_settings
-from app.modules.auth.dependencies import get_user_service, require_permission
+from app.modules.auth.dependencies import (
+    get_user_service,
+    require_any_permission,
+    require_permission,
+)
 from app.modules.auth.models import User
 from app.modules.auth.user_service import UserService
 from app.modules.patients.dependencies import get_patient_service
@@ -34,7 +38,7 @@ from app.modules.reception.constants import (
     PERMISSION_RECEPTION_UPDATE_VISIT,
     PERMISSION_RECEPTION_VIEW_SLIP,
 )
-from app.modules.reception.dependencies import get_reception_service, require_any_permission
+from app.modules.reception.dependencies import get_reception_service
 from app.modules.reception.schemas import (
     AdminUpdateVisitRequest,
     AdminUpdateVisitResponse,

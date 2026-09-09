@@ -48,4 +48,8 @@ export const ROUTES = {
   // gated the stricter `inventory:manage` Vitals never holds) — see
   // app/(dashboard)/daily-usage/layout.jsx's own docstring.
   DAILY_INVENTORY_USAGE: '/daily-usage',
+  // Same `inventory:read`, own-top-level-route shape as
+  // DAILY_INVENTORY_USAGE above — a live, glanceable Main/Emergency
+  // stock + today's-usage dashboard for all three inventory:read roles.
+  LIVE_INVENTORY: '/live-inventory',
 };

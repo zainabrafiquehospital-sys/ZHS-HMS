@@ -7,12 +7,20 @@ import { openAndPrintHtml } from '@/utils/printWindow';
 /** Catalog listing — every item, active and inactive alike (mirrors
  * usePharmacy.js's useMedicines identical shape). `category`/
  * `lowStockOnly` are optional server-side filters (History/Catalog
- * panels each use a subset). */
-export function useInventoryItems({ category, lowStockOnly } = {}) {
+ * panels each use a subset).
+ *
+ * `live` (2026-09, Live Inventory dashboard) opts this query into the
+ * app's 15s `refetchInterval` + `refetchIntervalInBackground: true`
+ * convention — the same flag-not-in-the-queryKey shape
+ * `useInventoryUsageEntries`'s own `isToday` uses. Not a filter, so it
+ * stays out of the key: a `{ live: true }` caller and a plain caller
+ * share one cache entry, and React Query polls it while any live
+ * observer is mounted, then stops. */
+export function useInventoryItems({ category, lowStockOnly, live = false } = {}) {
   return useQuery({
     queryKey: ['inventory', 'items', { category, lowStockOnly }],
-    queryFn: () =>
-      inventoryService.listItems({ category, lowStockOnly }).then((res) => res.data),
+    queryFn: () => inventoryService.listItems({ category, lowStockOnly }).then((res) => res.data),
+    ...(live ? { refetchInterval: 15000, refetchIntervalInBackground: true } : {}),
   });
 }
 
@@ -68,6 +76,22 @@ export function useUpdateInventoryItem() {
     mutationFn: ({ itemId, payload }) => inventoryService.updateItem(itemId, payload),
     onSuccess: (response) => {
       patchItemInCache(queryClient, response.data);
+      invalidateItems(queryClient);
+      queryClient.invalidateQueries({ queryKey: ['inventory', 'stats'] });
+    },
+  });
+}
+
+/** Soft-delete a catalog item (Inventory Manager only, inventory:manage)
+ * — the item vanishes from every listing/picker, so this just
+ * invalidates the items list + the low-stock/pending stats rather than
+ * patching the deleted row into cache the way update does. Historical
+ * ledger rows are untouched server-side. */
+export function useDeleteInventoryItem() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (itemId) => inventoryService.deleteItem(itemId),
+    onSuccess: () => {
       invalidateItems(queryClient);
       queryClient.invalidateQueries({ queryKey: ['inventory', 'stats'] });
     },

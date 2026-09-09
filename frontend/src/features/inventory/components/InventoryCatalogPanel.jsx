@@ -1,25 +1,18 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { Pencil, PlusCircle, Power, PowerOff, Search } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Pencil, Power, PowerOff, Search, Trash2 } from 'lucide-react';
 import {
   useInventoryItems,
-  useCreateInventoryItem,
+  useDeleteInventoryItem,
   useUpdateInventoryItem,
 } from '@/features/inventory/hooks/useInventory';
-import {
-  INVENTORY_CATEGORIES,
-  CATEGORY_ALLOWED_UNITS,
-  inventoryItemFormSchema,
-} from '@/features/inventory/schemas/inventorySchemas';
+import { InventoryItemForm } from '@/features/inventory/components/InventoryItemForm';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
-import { Label } from '@/shared/components/ui/Label';
-import { Select } from '@/shared/components/ui/Select';
 import { Badge } from '@/shared/components/ui/Badge';
+import { ConfirmDialog } from '@/shared/components/ui/ConfirmDialog';
 import { PageLoader } from '@/shared/components/PageLoader';
 import { PageError } from '@/shared/components/PageError';
 import {
@@ -33,165 +26,14 @@ import {
 import { useDebouncedValue } from '@/shared/hooks/useDebouncedValue';
 import { useToast } from '@/shared/components/toast/ToastProvider';
 
-const EMPTY_VALUES = { name: '', category: '', unit: '', low_stock_threshold: '' };
-
-/** Doubles as the "Add Item" and "Edit Item" form — `editing` (an
- * InventoryItemOut, or null) picks which mode it's in — same shape as
- * features/pharmacy/components/MedicineManagement.jsx's
- * MedicineFormPanel. The Unit select is filtered live to only the units
- * standardized for whichever category is currently selected (see
- * inventorySchemas.js's CATEGORY_ALLOWED_UNITS) — never a free-typed
- * unit, matching the confirmed design's "standardized per category, not
- * free text" requirement. */
-function ItemFormPanel({ editing, onDoneEditing }) {
-  const { toast } = useToast();
-  const createItem = useCreateInventoryItem();
-  const updateItem = useUpdateInventoryItem();
-  const [submitError, setSubmitError] = useState(null);
-  const {
-    register,
-    handleSubmit,
-    reset,
-    watch,
-    setValue,
-    formState: { errors, isSubmitting },
-  } = useForm({
-    resolver: zodResolver(inventoryItemFormSchema),
-    defaultValues: EMPTY_VALUES,
-  });
-
-  const selectedCategory = watch('category');
-  const allowedUnits = CATEGORY_ALLOWED_UNITS[selectedCategory] ?? [];
-
-  useEffect(() => {
-    if (editing) {
-      reset({
-        name: editing.name,
-        category: editing.category,
-        unit: editing.unit,
-        low_stock_threshold: editing.low_stock_threshold ?? '',
-      });
-    } else {
-      reset(EMPTY_VALUES);
-    }
-  }, [editing, reset]);
-
-  // Switching category away from the currently-selected unit's own
-  // category invalidates that unit — clear it rather than silently
-  // submitting a now-mismatched combination the backend would reject.
-  function handleCategoryChange(event) {
-    const nextCategory = event.target.value;
-    setValue('category', nextCategory, { shouldValidate: true });
-    const stillValid = (CATEGORY_ALLOWED_UNITS[nextCategory] ?? []).includes(watch('unit'));
-    if (!stillValid) {
-      setValue('unit', '');
-    }
-  }
-
-  async function onSubmit(values) {
-    setSubmitError(null);
-    try {
-      if (editing) {
-        await updateItem.mutateAsync({ itemId: editing.id, payload: values });
-        toast.success({ title: 'Item updated', description: values.name });
-        onDoneEditing?.();
-      } else {
-        await createItem.mutateAsync(values);
-        toast.success({ title: 'Item added', description: values.name });
-        reset(EMPTY_VALUES);
-      }
-    } catch (error) {
-      const message = error.message || 'Unable to save this item.';
-      setSubmitError(message);
-      toast.error({
-        title: editing ? 'Unable to update item' : 'Unable to add item',
-        description: message,
-      });
-    }
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{editing ? `Edit ${editing.name}` : 'Add Item'}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <form
-          onSubmit={handleSubmit(onSubmit)}
-          className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end"
-        >
-          <div className="flex min-w-[200px] flex-1 flex-col gap-1.5">
-            <Label htmlFor="name">Item Name</Label>
-            <Input id="name" {...register('name')} />
-            {errors.name ? <p className="text-xs text-destructive">{errors.name.message}</p> : null}
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="category">Category</Label>
-            <Select id="category" {...register('category')} onChange={handleCategoryChange}>
-              <option value="">Select…</option>
-              {INVENTORY_CATEGORIES.map((category) => (
-                <option key={category} value={category} className="capitalize">
-                  {category}
-                </option>
-              ))}
-            </Select>
-            {errors.category ? (
-              <p className="text-xs text-destructive">{errors.category.message}</p>
-            ) : null}
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="unit">Unit</Label>
-            <Select id="unit" {...register('unit')} disabled={!selectedCategory}>
-              <option value="">Select…</option>
-              {allowedUnits.map((unit) => (
-                <option key={unit} value={unit}>
-                  {unit}
-                </option>
-              ))}
-            </Select>
-            {errors.unit ? <p className="text-xs text-destructive">{errors.unit.message}</p> : null}
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="low_stock_threshold">Low-Stock Alert Below</Label>
-            <Input
-              id="low_stock_threshold"
-              type="number"
-              step="0.01"
-              min="0"
-              placeholder="No alert"
-              {...register('low_stock_threshold')}
-            />
-            {errors.low_stock_threshold ? (
-              <p className="text-xs text-destructive">{errors.low_stock_threshold.message}</p>
-            ) : null}
-          </div>
-          <div className="flex gap-2">
-            <Button type="submit" disabled={isSubmitting}>
-              <PlusCircle className="h-4 w-4" />
-              {isSubmitting ? 'Saving…' : editing ? 'Save Changes' : 'Add Item'}
-            </Button>
-            {editing ? (
-              <Button type="button" variant="outline" onClick={onDoneEditing}>
-                Cancel
-              </Button>
-            ) : null}
-          </div>
-        </form>
-        {submitError ? (
-          <p className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {submitError}
-          </p>
-        ) : null}
-      </CardContent>
-    </Card>
-  );
-}
-
 function ItemsListPanel({ items, onEdit }) {
   const { toast } = useToast();
   const updateItem = useUpdateInventoryItem();
+  const deleteItem = useDeleteInventoryItem();
   const [toggleError, setToggleError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [deletingItem, setDeletingItem] = useState(null);
+  const [deleteError, setDeleteError] = useState(null);
   const debouncedSearch = useDebouncedValue(searchTerm, 200);
 
   // Client-side name/category filter over the already-fetched catalog —
@@ -221,6 +63,21 @@ function ItemsListPanel({ items, onEdit }) {
       const message = error.message || 'Unable to update this item.';
       setToggleError(message);
       toast.error({ title: 'Unable to update item', description: message });
+    }
+  }
+
+  async function handleConfirmDelete() {
+    if (!deletingItem) return;
+    setDeleteError(null);
+    try {
+      await deleteItem.mutateAsync(deletingItem.id);
+      toast.success({ title: 'Item deleted', description: deletingItem.name });
+      setDeletingItem(null);
+    } catch (error) {
+      // Kept inline in the dialog (same "failure is a message, not a
+      // separate UI state" shape AdminOverview.jsx's own delete
+      // confirmations use) so the user can read it and retry/cancel.
+      setDeleteError(error.message || 'Unable to delete this item.');
     }
   }
 
@@ -302,6 +159,18 @@ function ItemsListPanel({ items, onEdit }) {
                           </>
                         )}
                       </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => {
+                          setDeleteError(null);
+                          setDeletingItem(item);
+                        }}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        Delete
+                      </Button>
                     </div>
                   </TableCell>
                 </TableRow>
@@ -311,6 +180,25 @@ function ItemsListPanel({ items, onEdit }) {
         )}
         {toggleError ? <p className="text-sm text-destructive">{toggleError}</p> : null}
       </CardContent>
+
+      <ConfirmDialog
+        open={Boolean(deletingItem)}
+        variant="destructive"
+        title={deletingItem ? `Delete ${deletingItem.name}?` : 'Delete item'}
+        confirmLabel={deleteItem.isPending ? 'Deleting…' : 'Delete Item'}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setDeletingItem(null)}
+        description={
+          <div className="flex flex-col gap-2 text-sm text-muted-foreground">
+            <p>
+              This removes the item from the catalog and every item picker. Its history —
+              receipts, transfers, usage entries, and restock requests — stays intact.
+            </p>
+            <p>To keep it on file but stop offering it, use Deactivate instead.</p>
+            {deleteError ? <p className="text-destructive">{deleteError}</p> : null}
+          </div>
+        }
+      />
     </Card>
   );
 }
@@ -321,7 +209,11 @@ export function InventoryCatalogPanel() {
 
   return (
     <div className="flex flex-col gap-6">
-      <ItemFormPanel editing={editing} onDoneEditing={() => setEditing(null)} />
+      <InventoryItemForm
+        editing={editing}
+        onDoneEditing={() => setEditing(null)}
+        showInitialReceipt
+      />
 
       {isLoading ? (
         <PageLoader label="Loading catalog" />

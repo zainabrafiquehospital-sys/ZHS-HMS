@@ -36,6 +36,13 @@ export const inventoryService = {
     return httpClient.patch(`/inventory/items/${itemId}`, payload);
   },
 
+  // Soft-delete (DELETE /inventory/items/{id}) — Inventory Manager only
+  // (inventory:manage). The item drops out of every listing/picker;
+  // its historical receipt/transfer/usage/restock rows stay intact.
+  deleteItem(itemId) {
+    return httpClient.delete(`/inventory/items/${itemId}`);
+  },
+
   receiveStock(itemId, payload) {
     return httpClient.post(`/inventory/items/${itemId}/receive`, payload);
   },

@@ -193,6 +193,39 @@ class InventoryService:
         await self._session.commit()
         return await self._get_item(item.id)
 
+    async def delete_item(self, *, actor: User, item_id: UUID) -> None:
+        """Soft-delete a catalog item — sets `deleted_at`, never a
+        hard DB DELETE (the ledger FKs are `ON DELETE NO ACTION`; an
+        item with history cannot be hard-deleted without a FK
+        violation, and most items have history). The item then drops
+        out of every listing/picker via the `deleted_at IS NULL` filter
+        every read path already applies; its historical
+        receipt/transfer/usage/restock-request rows are untouched and
+        stay queryable. Returns nothing — the identical `-> None` /
+        no-body shape `LabService.admin_delete_bill` /
+        `PharmacyService.admin_delete_bill` already use for their own
+        soft-deletes. Idempotent-safe: `_get_item` already 404s for an
+        already-deleted item, so a double delete raises
+        `InventoryItemNotFoundError` rather than re-stamping."""
+        item = await self._get_item(item_id)
+        now = datetime.now(UTC)
+        await self._audit_repo.record(
+            module="inventory",
+            action="inventory.item_deleted",
+            entity_type="inventory_item",
+            entity_id=item.id,
+            actor_user_id=actor.id,
+            metadata={
+                "name": item.name,
+                "category": item.category.value,
+                "unit": item.unit.value,
+                "main_stock_level": str(item.main_stock_level),
+                "emergency_stock_level": str(item.emergency_stock_level),
+            },
+        )
+        await self._item_repo.soft_delete(item, deleted_at=now, deleted_by=actor.id)
+        await self._session.commit()
+
     async def search_items(self, *, search: str, limit: int = 20) -> list[InventoryItem]:
         return await self._item_repo.search_active(search=search, limit=limit)
 

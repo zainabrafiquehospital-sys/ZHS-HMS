@@ -9,6 +9,7 @@ from app.modules.auth.models import User, UserStatus
 from app.modules.auth.password_service import PasswordService
 from app.modules.auth.repository import UserRepository
 from app.modules.inventory.constants import (
+    PERMISSION_INVENTORY_CREATE_ITEM,
     PERMISSION_INVENTORY_MANAGE,
     PERMISSION_INVENTORY_READ,
     PERMISSION_INVENTORY_RECORD_USAGE,
@@ -84,7 +85,9 @@ async def _create_patient(api_client, access_token, full_name: str) -> str:
 # ----------------------------------------------------------------------
 
 
-async def test_create_item_requires_manage_permission(api_client, real_session):
+async def test_create_item_requires_create_item_or_manage_permission(api_client, real_session):
+    """`POST /inventory/items` accepts `inventory:create_item` OR
+    `inventory:manage` — a user holding neither is still rejected."""
     _actor, access_token = await _create_and_login(api_client, real_session, "no-perm-create")
 
     resp = await api_client.post(
@@ -98,6 +101,182 @@ async def test_create_item_requires_manage_permission(api_client, real_session):
     )
 
     assert resp.status_code == 403
+
+
+async def test_create_item_permission_allows_create_but_nothing_else(
+    api_client, real_session, grant_permission
+):
+    """A Vitals-shaped actor holding only `inventory:create_item` (+ the
+    shared `inventory:read`) CAN add a catalog item, but is rejected
+    (403) from every stock-custody action — receive, transfer, direct
+    receive, delete, and restock fulfilment — which all stay
+    `inventory:manage`-only."""
+    actor, token = await _create_and_login(api_client, real_session, "create-item-only")
+    await grant_permission(actor, PERMISSION_INVENTORY_CREATE_ITEM)
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
+
+    create_resp = await api_client.post(
+        "/api/v1/inventory/items",
+        json={
+            "name": f"{TEST_INVENTORY_ITEM_NAME_PREFIX}CreateItemOnly",
+            "category": "medicine",
+            "unit": "piece",
+        },
+        headers=_auth_header(token),
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    item_id = create_resp.json()["data"]["id"]
+
+    forbidden_calls = [
+        (
+            "POST",
+            f"/api/v1/inventory/items/{item_id}/receive",
+            {"quantity": "5", "received_on": _TODAY},
+        ),
+        (
+            "POST",
+            "/api/v1/inventory/receipts",
+            {"items": [{"item_id": item_id, "quantity": "5"}], "received_on": _TODAY},
+        ),
+        (
+            "POST",
+            "/api/v1/inventory/transfers",
+            {
+                "items": [{"item_id": item_id, "quantity": "1"}],
+                "transferred_on": _TODAY,
+                "carried_by_name": "Nobody",
+            },
+        ),
+        (
+            "POST",
+            "/api/v1/inventory/emergency-receipts",
+            {"items": [{"item_id": item_id, "quantity": "5"}], "received_on": _TODAY},
+        ),
+        ("DELETE", f"/api/v1/inventory/items/{item_id}", None),
+        (
+            "POST",
+            f"/api/v1/inventory/requests/{item_id}/fulfill",
+            {"transfer_quantity": "1", "transferred_on": _TODAY, "carried_by_name": "Nobody"},
+        ),
+    ]
+    for method, path, body in forbidden_calls:
+        resp = await api_client.request(method, path, json=body, headers=_auth_header(token))
+        assert resp.status_code == 403, f"{method} {path} -> {resp.status_code} (expected 403)"
+
+
+async def test_manage_permission_retains_create_and_delete(
+    api_client, real_session, grant_permission
+):
+    """The Inventory Manager (via `inventory:manage`, unchanged) keeps
+    full access — creating an item and hard-gating delete both still
+    work for them."""
+    actor, token = await _create_and_login(api_client, real_session, "manage-full-access")
+    await grant_permission(actor, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
+
+    item_id = await _create_item(api_client, token, f"{TEST_INVENTORY_ITEM_NAME_PREFIX}ManageFull")
+    delete_resp = await api_client.delete(
+        f"/api/v1/inventory/items/{item_id}", headers=_auth_header(token)
+    )
+    assert delete_resp.status_code == 200, delete_resp.text
+    assert delete_resp.json()["data"] is None
+
+
+async def test_delete_item_requires_manage_not_create_item(
+    api_client, real_session, grant_permission
+):
+    """Delete is more consequential than create — it stays
+    `inventory:manage`-only and is NOT extended to the narrower
+    `inventory:create_item`."""
+    actor, token = await _create_and_login(api_client, real_session, "create-item-no-delete")
+    await grant_permission(actor, PERMISSION_INVENTORY_CREATE_ITEM)
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
+
+    create_resp = await api_client.post(
+        "/api/v1/inventory/items",
+        json={
+            "name": f"{TEST_INVENTORY_ITEM_NAME_PREFIX}NoDeletePerm",
+            "category": "medicine",
+            "unit": "piece",
+        },
+        headers=_auth_header(token),
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    item_id = create_resp.json()["data"]["id"]
+
+    delete_resp = await api_client.delete(
+        f"/api/v1/inventory/items/{item_id}", headers=_auth_header(token)
+    )
+    assert delete_resp.status_code == 403
+
+
+async def test_soft_deleted_item_hidden_from_listings_but_ledger_rows_intact(
+    api_client, real_session, grant_permission
+):
+    """A soft-deleted item disappears from `GET /items`, `GET
+    /items/search`, and `GET /items/{id}` (404) — but its historical
+    ledger rows (here: a receipt and a transfer) remain fully queryable
+    via the range endpoints, exactly like every other soft-deleted
+    entity in this system."""
+    actor, token = await _create_and_login(api_client, real_session, "soft-delete-history")
+    await grant_permission(actor, PERMISSION_INVENTORY_MANAGE)
+    await grant_permission(actor, PERMISSION_INVENTORY_READ)
+
+    name = f"{TEST_INVENTORY_ITEM_NAME_PREFIX}SoftDeleteHistory"
+    item_id = await _create_item(api_client, token, name)
+
+    await api_client.post(
+        f"/api/v1/inventory/items/{item_id}/receive",
+        json={"quantity": "40", "received_on": _TODAY},
+        headers=_auth_header(token),
+    )
+    await api_client.post(
+        "/api/v1/inventory/transfers",
+        json={
+            "items": [{"item_id": item_id, "quantity": "15"}],
+            "transferred_on": _TODAY,
+            "carried_by_name": "History Porter",
+        },
+        headers=_auth_header(token),
+    )
+
+    delete_resp = await api_client.delete(
+        f"/api/v1/inventory/items/{item_id}", headers=_auth_header(token)
+    )
+    assert delete_resp.status_code == 200, delete_resp.text
+    assert delete_resp.json()["data"] is None
+
+    # Gone from every item read path.
+    list_resp = await api_client.get(
+        "/api/v1/inventory/items", params={"page_size": 100}, headers=_auth_header(token)
+    )
+    assert all(row["id"] != item_id for row in list_resp.json()["data"])
+
+    search_resp = await api_client.get(
+        "/api/v1/inventory/items/search", params={"search": name}, headers=_auth_header(token)
+    )
+    assert all(row["id"] != item_id for row in search_resp.json()["data"])
+
+    get_resp = await api_client.get(
+        f"/api/v1/inventory/items/{item_id}", headers=_auth_header(token)
+    )
+    assert get_resp.status_code == 404
+
+    # Ledger history for the now-deleted item is untouched.
+    receipts_resp = await api_client.get(
+        "/api/v1/inventory/receipts", params={"item_id": item_id}, headers=_auth_header(token)
+    )
+    assert receipts_resp.status_code == 200
+    assert len(receipts_resp.json()["data"]) == 1
+    assert receipts_resp.json()["data"][0]["quantity"] == "40.00"
+
+    transfers_resp = await api_client.get(
+        "/api/v1/inventory/transfers", params={"item_id": item_id}, headers=_auth_header(token)
+    )
+    assert transfers_resp.status_code == 200
+    assert len(transfers_resp.json()["data"]) == 1
+    assert transfers_resp.json()["data"][0]["quantity"] == "15.00"
+    assert transfers_resp.json()["data"][0]["carried_by_name"] == "History Porter"
 
 
 async def test_list_items_requires_read_permission(api_client, real_session):

@@ -1,19 +1,30 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { VitalsWorklist } from '@/features/vitals/components/VitalsWorklist';
 import { RecordInventoryUsageForm } from '@/features/vitals/components/RecordInventoryUsageForm';
 import { MyInventoryUsage } from '@/features/vitals/components/MyInventoryUsage';
 import { VitalsBuildRequirementForm } from '@/features/vitals/components/VitalsBuildRequirementForm';
 import { MyVitalsRecords } from '@/features/vitals/components/MyVitalsRecords';
+import { InventoryItemForm } from '@/features/inventory/components/InventoryItemForm';
+import { useAuth } from '@/features/auth/hooks/useAuth';
 import { ShiftBadge } from '@/shared/components/ShiftBadge';
 import { Tabs } from '@/shared/components/ui/Tabs';
 
-const VITALS_TABS = [
+const BASE_VITALS_TABS = [
   { value: 'worklist', label: 'Worklist' },
   { value: 'record_usage', label: 'Record Usage' },
   { value: 'build_requirement', label: 'Build Requirement' },
 ];
+
+// Shown only to a holder of `inventory:create_item` (granted to Vitals
+// and the Inventory Manager — see backend/app/modules/inventory/
+// constants.py). Adding a missing catalog row is Vitals' own narrow
+// inventory action, the same permission-gated "the tab simply isn't
+// there without the grant" pattern this app already uses elsewhere
+// (e.g. the print-slip button in PatientHistorySearch.jsx). It carries
+// nothing else — receive/transfer/delete stay Inventory-Manager-only.
+const ADD_ITEM_TAB = { value: 'add_item', label: 'Add Item' };
 
 /** Vitals' existing worklist screen, extended (step 4) with two new
  * tabs for its own two Ward/Emergency Inventory actions — recording a
@@ -36,6 +47,13 @@ const VITALS_TABS = [
  * never touches the other tabs. */
 export default function VitalsPage() {
   const [activeTab, setActiveTab] = useState('worklist');
+  const { hasPermission } = useAuth();
+  const canCreateInventoryItem = hasPermission('inventory:create_item');
+
+  const tabs = useMemo(
+    () => (canCreateInventoryItem ? [...BASE_VITALS_TABS, ADD_ITEM_TAB] : BASE_VITALS_TABS),
+    [canCreateInventoryItem],
+  );
 
   return (
     <div className="flex flex-col gap-6">
@@ -47,7 +65,7 @@ export default function VitalsPage() {
         <ShiftBadge />
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} tabs={VITALS_TABS} />
+      <Tabs value={activeTab} onValueChange={setActiveTab} tabs={tabs} />
 
       {activeTab === 'worklist' ? (
         <div className="flex flex-col gap-6">
@@ -59,6 +77,8 @@ export default function VitalsPage() {
           <RecordInventoryUsageForm />
           <MyInventoryUsage />
         </div>
+      ) : activeTab === 'add_item' && canCreateInventoryItem ? (
+        <InventoryItemForm />
       ) : (
         <VitalsBuildRequirementForm />
       )}

@@ -7,34 +7,18 @@ own endpoints would receive, all sharing the one request-scoped
 guarantees a single call to `get_db` per request, so every service
 built from it operates on the same session/transaction scope).
 
-`require_any_permission` (2026-08-25 addition) lives here rather than
-in app/modules/auth/dependencies.py, which is frozen Phase 5 code not
-modified for anything short of a genuine defect (see that module's own
-docstring) — adding an "any of these permissions" composition helper
-there would be a new capability, not a fix. This is purely a consumer
-of AuthService's already-public `effective_permission_codes` — the
-identical method `require_permission` itself already calls — never a
-modification of Auth's own code, the same "observer of Auth's public
-interface" boundary this codebase already established for Attendance
-(see that module's own docstring for the precedent). Used by exactly
-one endpoint so far: GET /reception/visits/{id}/slip/print, which
-needs to accept either the existing PERMISSION_RECEPTION_REGISTER_VISIT
-(Reception's own, unchanged access) or the narrower
-PERMISSION_RECEPTION_VIEW_SLIP (Doctor's new, read-only access) — see
-reception/constants.py's own docstring on that permission."""
-
-from collections.abc import Callable, Coroutine
-from typing import Any
+`require_any_permission` (2026-08-25, originally defined here) was
+promoted to app/modules/auth/dependencies.py in 2026-09 once Inventory
+needed the identical "either the broad permission or a narrower
+alternative" gate (`POST /inventory/items` accepts `inventory:manage`
+OR `inventory:create_item`) — one shared definition alongside
+`require_permission`, rather than a second module reaching into this
+one for it. `reception/router.py` now imports it from there directly."""
 
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_db
-from app.core.exceptions import PermissionDeniedError
-from app.modules.auth.dependencies import get_auth_service, get_current_active_user
-from app.modules.auth.exceptions import PasswordChangeRequiredError
-from app.modules.auth.models import User
-from app.modules.auth.service import AuthService
 from app.modules.billing.dependencies import get_invoice_repository
 from app.modules.billing.repository import InvoiceRepository
 from app.modules.lab.dependencies import get_lab_bill_repository
@@ -51,26 +35,6 @@ from app.modules.visits.dependencies import get_visit_service
 from app.modules.visits.service import VisitService
 from app.shared.audit.dependencies import get_audit_log_repository
 from app.shared.audit.repository import AuditLogRepository
-
-
-def require_any_permission(*permission_codes: str) -> Callable[..., Coroutine[Any, Any, User]]:
-    async def dependency(
-        user: User = Depends(get_current_active_user),
-        auth_service: AuthService = Depends(get_auth_service),
-    ) -> User:
-        # Same must_change_password gate as require_permission, checked
-        # first for the identical reason — see that dependency's own
-        # comment (app/modules/auth/dependencies.py).
-        if user.must_change_password:
-            raise PasswordChangeRequiredError
-        held = auth_service.effective_permission_codes(user)
-        if not held.intersection(permission_codes):
-            raise PermissionDeniedError(
-                f"Missing required permission (any of): {', '.join(permission_codes)}"
-            )
-        return user
-
-    return dependency
 
 
 def get_reception_repository(db: AsyncSession = Depends(get_db)) -> ReceptionRepository:
