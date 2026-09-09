@@ -255,7 +255,13 @@ export function EmployeeAccounts() {
                   Activity stats couldn't be loaded — showing account details only.
                 </p>
               ) : null}
-              <div className="overflow-x-auto">
+              {/* `overflow-y-hidden` for the same reason as Table.jsx's
+                  own wrapper — a bare `overflow-x-auto` promotes
+                  `overflow-y` to `auto` and yields a phantom vertical
+                  scrollbar. (This outer div also duplicates Table.jsx's
+                  own horizontal-scroll wrapper; kept as-is to stay a
+                  minimal fix.) */}
+              <div className="overflow-x-auto overflow-y-hidden">
                 <Table>
                   <TableHeader>
                     <TableRow>
