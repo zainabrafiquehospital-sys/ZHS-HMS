@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { RegisterVisitForm } from '@/features/reception/components/RegisterVisitForm';
 import { RegistrationSummary } from '@/features/reception/components/RegistrationSummary';
 import { MyRegistrations } from '@/features/reception/components/MyRegistrations';
+import { AddExpenseForm } from '@/features/expenses/components/AddExpenseForm';
+import { MyExpensesList } from '@/features/expenses/components/MyExpensesList';
 import { ShiftBadge } from '@/shared/components/ShiftBadge';
 
 export default function ReceptionPage() {
@@ -29,6 +31,8 @@ export default function ReceptionPage() {
         </div>
       </div>
       <MyRegistrations />
+      <AddExpenseForm />
+      <MyExpensesList />
     </div>
   );
 }

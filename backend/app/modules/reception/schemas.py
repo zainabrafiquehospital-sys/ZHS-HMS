@@ -187,6 +187,13 @@ class ReceptionRevenueOut(BaseModel):
     lab_bill_count: int
     lab_revenue: Decimal
     total_revenue: Decimal
+    # 2026-09 addition — this receptionist's own cash expenses over the
+    # same rolling window as the revenue figures above, and the
+    # resulting Net Revenue (`total_revenue - total_expenses`). See
+    # ReceptionService.get_own_revenue's docstring.
+    expense_count: int
+    total_expenses: Decimal
+    net_revenue: Decimal
     cleared_at: datetime
 
 

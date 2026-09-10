@@ -95,6 +95,10 @@ from app.modules.dashboard.constants import (
     PERMISSION_DASHBOARD_RECEPTION_READ,
     PERMISSION_DASHBOARD_VITALS_READ,
 )
+from app.modules.expenses.constants import (
+    PERMISSION_EXPENSES_LOG,
+    PERMISSION_EXPENSES_READ_ALL,
+)
 from app.modules.inventory.constants import (
     PERMISSION_INVENTORY_CREATE_ITEM,
     PERMISSION_INVENTORY_MANAGE,
@@ -245,6 +249,19 @@ PERMISSION_CATALOG: list[tuple[str, str, str]] = [
         "Reset a receptionist's own 'My Revenue' display to zero going forward. Never "
         "deletes or modifies any visit, invoice, or medicine bill row.",
     ),
+    # Expense Tracking (2026-09) — see app/modules/expenses/constants.py.
+    (
+        PERMISSION_EXPENSES_LOG,
+        "Log Cash Expenses",
+        "Log a same-day cash expense (amount, reason, recipient) and view, edit, or "
+        "delete your own expenses while the day is still current. Granted to Receptionist.",
+    ),
+    (
+        PERMISSION_EXPENSES_READ_ALL,
+        "View All Expenses",
+        "View every receptionist's cash expenses for a day and the per-receptionist "
+        "breakdown. Admin only — never granted to Receptionist.",
+    ),
     (PERMISSION_SEARCH_READ, "Search", "Cross-module patient/visit search."),
     (
         PERMISSION_VISITS_CREATE,
@@ -371,6 +388,13 @@ RECEPTIONIST_PERMISSION_CODES: list[str] = [
     # permission was added, see reception/constants.py's own docstring),
     # so only the "Clear Revenue" mutation needs its own grant here.
     PERMISSION_RECEPTION_CLEAR_OWN_REVENUE,  # POST /reception/revenue/clear
+    # Expense Tracking (2026-09) — a receptionist logs same-day cash
+    # expenses and edits/deletes her own while the Asia/Karachi day is
+    # current (POST/GET /expenses/mine, PATCH/DELETE /expenses/{id}).
+    # Deliberately NOT PERMISSION_EXPENSES_READ_ALL (cross-receptionist
+    # visibility + breakdown) — that stays admin-only, see
+    # app/modules/expenses/constants.py's docstring.
+    PERMISSION_EXPENSES_LOG,
     # Patient History search (2026-08-31 addition) — the new sidebar
     # entry/page every one of Reception/Vitals/Doctor/admin gets (see
     # app/modules/patient_history/router.py's own docstring); gates

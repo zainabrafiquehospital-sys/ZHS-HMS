@@ -46,6 +46,7 @@ from app.modules.billing.service import BillingService
 from app.modules.consultation.repository import ConsultationRepository
 from app.modules.consultation.service import ConsultationService
 from app.modules.dashboard.service import DashboardService
+from app.modules.expenses.repository import ExpenseRepository
 from app.modules.lab.repository import LabBillRepository
 from app.modules.patients.repository import PatientRepository
 from app.modules.patients.service import PatientService
@@ -664,6 +665,25 @@ async def real_session():
                 text("DELETE FROM procedure WHERE name LIKE :pattern"),
                 {"pattern": f"{TEST_PROCEDURE_NAME_PREFIX}%"},
             )
+            # expense rows (2026-09 addition) — tied to a test user via
+            # `receptionist_id`, a plain FK with no ON DELETE clause (see
+            # app/modules/expenses/models.py), so they must go before the
+            # user deletion just below, same reasoning as every other
+            # no-ON-DELETE-clause cleanup ordering in this fixture. Every
+            # test expense's owner is a test-suite-created user under
+            # TEST_EMAIL_PREFIX.
+            expense_owned_by_test_data = (
+                "SELECT id FROM expense WHERE receptionist_id IN "
+                '(SELECT id FROM "user" WHERE email LIKE :email_pattern)'
+            )
+            await session.execute(
+                text(f"DELETE FROM audit_log WHERE entity_id IN ({expense_owned_by_test_data})"),
+                cleanup_params,
+            )
+            await session.execute(
+                text(f"DELETE FROM expense WHERE id IN ({expense_owned_by_test_data})"),
+                cleanup_params,
+            )
             await session.execute(
                 text('DELETE FROM "user" WHERE email LIKE :pattern'),
                 {"pattern": f"{TEST_EMAIL_PREFIX}%@example.com"},
@@ -832,6 +852,9 @@ def reception_service(
         # Step 4 addition, same shape/rationale, for "My Revenue"'s
         # lab-bill breakdown.
         lab_bill_repository=LabBillRepository(real_session),
+        # 2026-09 addition, same read-only shape — backs get_own_revenue's
+        # Net Revenue (total_revenue - own expenses over the same window).
+        expense_repository=ExpenseRepository(real_session),
     )
 
 

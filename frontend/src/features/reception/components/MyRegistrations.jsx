@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Eraser, Printer, Receipt, Search, Users } from 'lucide-react';
+import { Eraser, Printer, Receipt, Search, Users, Wallet } from 'lucide-react';
 import {
   useClearMyRevenue,
   useMyRegistrations,
@@ -163,6 +163,32 @@ export function MyRegistrations() {
             />
             <SummaryTile icon={Receipt} label="Lab Revenue" value={formatPkr(revenue.labRevenue)} />
             <SummaryTile icon={Receipt} label="Total Revenue" value={formatPkr(revenue.totalRevenue)} />
+          </div>
+          {/* Net Revenue (2026-09 addition) — Total Revenue minus this
+              receptionist's own cash expenses over the same rolling
+              window (see backend ReceptionRevenueOut). Given its own
+              prominent row directly under the revenue breakdown: it is
+              the figure that should be reconciled against the cash
+              drawer at hand-over. */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <SummaryTile
+              icon={Wallet}
+              label={`Total Expenses (${revenue.expenseCount} ${
+                revenue.expenseCount === 1 ? 'entry' : 'entries'
+              })`}
+              value={formatPkr(revenue.totalExpenses)}
+            />
+            <div className="flex items-center gap-3 rounded-md border border-primary/40 bg-primary/5 p-4">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
+                <Wallet className="h-4 w-4" />
+              </div>
+              <div className="flex flex-col">
+                <span className="text-xs text-muted-foreground">Net Revenue</span>
+                <span className="text-2xl font-bold tabular-nums text-foreground">
+                  {formatPkr(revenue.netRevenue)}
+                </span>
+              </div>
+            </div>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-dashed border-border p-3">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">

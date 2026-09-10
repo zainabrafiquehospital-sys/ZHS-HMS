@@ -66,6 +66,7 @@ import {
 import { InventoryHistoryPanel } from '@/features/inventory/components/InventoryHistoryPanel';
 import { InventoryEmergencyFeedPanel } from '@/features/inventory/components/InventoryEmergencyFeedPanel';
 import { LeadsSection } from '@/features/admin/components/LeadsSection';
+import { AdminExpensesSection } from '@/features/admin/components/AdminExpensesSection';
 import { RevenueByActorPieChart } from '@/features/admin/components/RevenueByActorPieChart';
 import {
   computeCombinedRevenueByActor,
@@ -1847,6 +1848,8 @@ export function AdminOverview() {
           )}
         </CardContent>
       </Card>
+
+      <AdminExpensesSection />
 
       <LeadsSection />
 

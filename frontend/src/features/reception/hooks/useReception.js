@@ -119,6 +119,13 @@ export function useMyRevenue() {
     labBillCount: query.data?.lab_bill_count ?? 0,
     labRevenue: query.data?.lab_revenue ?? '0.00',
     totalRevenue: query.data?.total_revenue ?? '0.00',
+    // 2026-09 addition — this receptionist's own cash expenses over the
+    // same rolling window as the revenue figures above, and the
+    // resulting Net Revenue (`total_revenue - total_expenses`). See
+    // backend ReceptionRevenueOut / ExpenseRepository.sum_for_owner_since.
+    expenseCount: query.data?.expense_count ?? 0,
+    totalExpenses: query.data?.total_expenses ?? '0.00',
+    netRevenue: query.data?.net_revenue ?? '0.00',
     clearedAt: query.data?.cleared_at ?? null,
   };
 }

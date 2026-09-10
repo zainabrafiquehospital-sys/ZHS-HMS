@@ -260,8 +260,11 @@ async def get_own_revenue(
         medicine_revenue,
         lab_count,
         lab_revenue,
+        expense_count,
+        total_expenses,
         cleared_at,
     ) = await reception_service.get_own_revenue(actor=actor)
+    total_revenue = visits_revenue + medicine_revenue + lab_revenue
     body = ReceptionRevenueOut(
         visits_count=visits_count,
         visits_revenue=visits_revenue,
@@ -269,7 +272,10 @@ async def get_own_revenue(
         medicine_revenue=medicine_revenue,
         lab_bill_count=lab_count,
         lab_revenue=lab_revenue,
-        total_revenue=visits_revenue + medicine_revenue + lab_revenue,
+        total_revenue=total_revenue,
+        expense_count=expense_count,
+        total_expenses=total_expenses,
+        net_revenue=total_revenue - total_expenses,
         cleared_at=cleared_at,
     )
     return success_envelope(body.model_dump(mode="json"))

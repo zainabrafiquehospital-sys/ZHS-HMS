@@ -8,6 +8,7 @@ from app.modules.auth.user_router import router as user_router
 from app.modules.billing.router import router as billing_router
 from app.modules.consultation.router import router as consultation_router
 from app.modules.dashboard.router import router as dashboard_router
+from app.modules.expenses.router import router as expenses_router
 from app.modules.inventory.router import router as inventory_router
 from app.modules.lab.router import router as lab_router
 from app.modules.patient_history.router import router as patient_history_router
@@ -38,5 +39,6 @@ api_v1_router.include_router(search_router)
 api_v1_router.include_router(dashboard_router)
 api_v1_router.include_router(inventory_router)
 api_v1_router.include_router(lab_router)
+api_v1_router.include_router(expenses_router)
 
 # This completes the core OPD workflow's backend module set.

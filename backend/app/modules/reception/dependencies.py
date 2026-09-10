@@ -21,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import get_db
 from app.modules.billing.dependencies import get_invoice_repository
 from app.modules.billing.repository import InvoiceRepository
+from app.modules.expenses.dependencies import get_expense_repository
+from app.modules.expenses.repository import ExpenseRepository
 from app.modules.lab.dependencies import get_lab_bill_repository
 from app.modules.lab.repository import LabBillRepository
 from app.modules.patients.dependencies import get_patient_service
@@ -61,6 +63,11 @@ def get_reception_service(
     # above — reused directly from lab/dependencies.py, backs the "Lab"
     # third of get_own_revenue's now-3-way breakdown.
     lab_bill_repository: LabBillRepository = Depends(get_lab_bill_repository),
+    # 2026-09 addition, same narrow read-only shape as the three bill
+    # repos above — reused from expenses/dependencies.py so
+    # get_own_revenue can subtract a receptionist's own expense total
+    # from her revenue to report Net Revenue.
+    expense_repository: ExpenseRepository = Depends(get_expense_repository),
 ) -> ReceptionService:
     return ReceptionService(
         session=db,
@@ -72,4 +79,5 @@ def get_reception_service(
         invoice_repository=invoice_repository,
         medicine_bill_repository=medicine_bill_repository,
         lab_bill_repository=lab_bill_repository,
+        expense_repository=expense_repository,
     )

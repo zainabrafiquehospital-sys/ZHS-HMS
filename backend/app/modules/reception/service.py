@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.auth.models import User
 from app.modules.billing.models import InvoiceStatus
 from app.modules.billing.repository import InvoiceRepository
+from app.modules.expenses.repository import ExpenseRepository
 from app.modules.lab.repository import LabBillRepository
 from app.modules.patients.models import Patient
 from app.modules.patients.service import PatientService
@@ -78,6 +79,7 @@ class ReceptionService:
         invoice_repository: InvoiceRepository,
         medicine_bill_repository: MedicineBillRepository,
         lab_bill_repository: LabBillRepository,
+        expense_repository: ExpenseRepository,
     ) -> None:
         """`session` here must be the exact same `AsyncSession` instance
         `audit_repository` was built with (see dependencies.py) — this
@@ -117,6 +119,7 @@ class ReceptionService:
         self._invoice_repo = invoice_repository
         self._medicine_bill_repo = medicine_bill_repository
         self._lab_bill_repo = lab_bill_repository
+        self._expense_repo = expense_repository
 
     async def register_visit(
         self,
@@ -399,14 +402,27 @@ class ReceptionService:
 
     async def get_own_revenue(
         self, *, actor: User
-    ) -> tuple[int, Decimal, int, Decimal, int, Decimal, datetime]:
+    ) -> tuple[int, Decimal, int, Decimal, int, Decimal, int, Decimal, datetime]:
         """This receptionist's own revenue — visits, medicine bills, and
         (Step 4 addition) lab bills counted separately, always capped to
-        roughly the last 24 hours. Returns `(visits_count,
-        visits_revenue, medicine_bill_count, medicine_revenue,
-        lab_bill_count, lab_revenue, window_since)`; the router adds the
-        three revenue figures together for `total_revenue` rather than
-        this method doing it itself.
+        roughly the last 24 hours — plus (2026-09 addition) her own
+        cash expenses over the *same* window, so the router can report
+        `net_revenue = total_revenue - total_expenses`. Returns
+        `(visits_count, visits_revenue, medicine_bill_count,
+        medicine_revenue, lab_bill_count, lab_revenue, expense_count,
+        total_expenses, window_since)`; the router adds the three
+        revenue figures together for `total_revenue` and subtracts
+        `total_expenses` for `net_revenue` rather than this method doing
+        it itself.
+
+        The expense total uses the identical `since` cutoff as the
+        three revenue figures (via `ExpenseRepository.sum_for_owner_
+        since`, `created_at > since`), so Net Revenue is always
+        arithmetically consistent with the Total shown right beside it.
+        Expenses whose calendar `expense_date` is "today" but whose
+        `created_at` predates the rolling window (only possible right
+        after a manual Clear Revenue) are correctly excluded here, the
+        same as the revenue side.
 
         Mechanism (2026-08-19 fix): the effective cutoff is
         `since = max(last_manual_clear_at, now - 24h)`, computed fresh
@@ -456,6 +472,9 @@ class ReceptionService:
         lab_count, lab_revenue = await self._lab_bill_repo.count_and_revenue_for_creator(
             actor.id, since=since
         )
+        expense_count, total_expenses = await self._expense_repo.sum_for_owner_since(
+            receptionist_id=actor.id, since=since
+        )
         return (
             visits_count,
             visits_revenue,
@@ -463,6 +482,8 @@ class ReceptionService:
             medicine_revenue,
             lab_count,
             lab_revenue,
+            expense_count,
+            total_expenses,
             since,
         )
 
