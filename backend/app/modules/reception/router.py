@@ -265,6 +265,14 @@ async def get_own_revenue(
         cleared_at,
     ) = await reception_service.get_own_revenue(actor=actor)
     total_revenue = visits_revenue + medicine_revenue + lab_revenue
+    # Cash vs online is a split of what was actually *collected* (payment
+    # ledgers), so it sums to at most `total_revenue` (billed); the
+    # shortfall is `total_pending_revenue`. Same `since` window —
+    # `cleared_at` is exactly that window start, reused rather than
+    # recomputed. See ReceptionService.own_payment_method_split.
+    total_cash_revenue, total_online_revenue = await reception_service.own_payment_method_split(
+        actor=actor, since=cleared_at
+    )
     body = ReceptionRevenueOut(
         visits_count=visits_count,
         visits_revenue=visits_revenue,
@@ -273,6 +281,9 @@ async def get_own_revenue(
         lab_bill_count=lab_count,
         lab_revenue=lab_revenue,
         total_revenue=total_revenue,
+        total_cash_revenue=total_cash_revenue,
+        total_online_revenue=total_online_revenue,
+        total_pending_revenue=total_revenue - total_cash_revenue - total_online_revenue,
         expense_count=expense_count,
         total_expenses=total_expenses,
         net_revenue=total_revenue - total_expenses,

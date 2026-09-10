@@ -119,6 +119,13 @@ export function useMyRevenue() {
     labBillCount: query.data?.lab_bill_count ?? 0,
     labRevenue: query.data?.lab_revenue ?? '0.00',
     totalRevenue: query.data?.total_revenue ?? '0.00',
+    // 2026-09 addition — cash vs "online" (all non-cash methods) split of
+    // what has actually been *collected* toward the same rolling window,
+    // plus the still-unpaid remainder. The three sum to totalRevenue.
+    // See backend ReceptionService.own_payment_method_split.
+    totalCashRevenue: query.data?.total_cash_revenue ?? '0.00',
+    totalOnlineRevenue: query.data?.total_online_revenue ?? '0.00',
+    totalPendingRevenue: query.data?.total_pending_revenue ?? '0.00',
     // 2026-09 addition — this receptionist's own cash expenses over the
     // same rolling window as the revenue figures above, and the
     // resulting Net Revenue (`total_revenue - total_expenses`). See

@@ -487,6 +487,36 @@ class ReceptionService:
             since,
         )
 
+    async def own_payment_method_split(
+        self, *, actor: User, since: datetime
+    ) -> tuple[Decimal, Decimal]:
+        """The cash-vs-online split of what this receptionist has
+        actually *collected* (across her own visit / medicine-bill /
+        lab-bill payment ledgers) toward the same rolling window
+        `get_own_revenue` reports. `since` is that method's
+        already-computed window start (the last element of its return
+        tuple), passed straight through so the two never diverge —
+        this method deliberately does not recompute it (and so never
+        re-reads the "Clear Revenue" audit marker).
+
+        "Online" is every non-`CASH` `PaymentMethod`
+        (bank transfer / JazzCash / EasyPaisa / card) summed together.
+        Unlike `get_own_revenue`'s per-domain totals — which sum the
+        *billed* amount and count an unpaid balance in full — a
+        partially-paid visit or bill contributes only its payments
+        here; `total_revenue - (cash + online)` is the caller's
+        still-unpaid `total_pending_revenue`."""
+        v_cash, v_online = await self._visit_service.cash_online_collected_for_creator(
+            actor.id, since=since
+        )
+        m_cash, m_online = await self._medicine_bill_repo.cash_online_collected_for_creator(
+            actor.id, since=since
+        )
+        l_cash, l_online = await self._lab_bill_repo.cash_online_collected_for_creator(
+            actor.id, since=since
+        )
+        return (v_cash + m_cash + l_cash, v_online + m_online + l_online)
+
     async def clear_own_revenue(self, *, actor: User) -> datetime:
         """Resets this receptionist's own "My Revenue" display to zero
         going forward — see `get_own_revenue`'s own docstring for the

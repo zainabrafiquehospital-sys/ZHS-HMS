@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Sequence, func, select
+from sqlalchemy import Sequence, case, func, select
 from sqlalchemy.orm import InstrumentedAttribute
 
 from app.modules.pharmacy.models import (
@@ -16,6 +16,7 @@ from app.modules.pharmacy.models import (
     MedicineBillPayment,
 )
 from app.modules.visits.constants import QUEUE_TOKEN_SEQUENCE_NAME
+from app.shared.payment_method import PaymentMethod
 from app.shared.repository.base_repository import BaseRepository
 
 # The exact same Postgres sequence app/modules/visits/repository.py's
@@ -152,6 +153,40 @@ class MedicineBillRepository(BaseRepository[MedicineBill]):
         result = await self.session.execute(stmt)
         count, revenue = result.one()
         return count, (revenue if revenue is not None else Decimal("0.00"))
+
+    async def cash_online_collected_for_creator(
+        self, user_id: UUID, *, since: datetime | None = None
+    ) -> tuple[Decimal, Decimal]:
+        """Cash vs "online" (every non-`CASH` `PaymentMethod` summed
+        together) amounts actually *collected* via `medicine_bill_payment`
+        rows, for bills this user created — optionally only those created
+        after `since`, the identical cutoff `count_and_revenue_for_creator`
+        above applies. Unlike that method (billed `total_amount`), a
+        partially-paid bill contributes only what has been paid on it.
+        See app/modules/visits/repository.py's identical
+        `cash_online_collected_for_creator` for the full rationale."""
+        conditions = [
+            MedicineBill.deleted_at.is_(None),
+            MedicineBill.created_by == user_id,
+            MedicineBillPayment.deleted_at.is_(None),
+        ]
+        if since is not None:
+            conditions.append(MedicineBill.created_at > since)
+        is_cash = MedicineBillPayment.payment_method == PaymentMethod.CASH
+        stmt = (
+            select(
+                func.sum(case((is_cash, MedicineBillPayment.amount), else_=None)),
+                func.sum(case((~is_cash, MedicineBillPayment.amount), else_=None)),
+            )
+            .select_from(MedicineBillPayment)
+            .join(MedicineBill, MedicineBill.id == MedicineBillPayment.medicine_bill_id)
+            .where(*conditions)
+        )
+        cash, online = (await self.session.execute(stmt)).one()
+        return (
+            cash if cash is not None else Decimal("0.00"),
+            online if online is not None else Decimal("0.00"),
+        )
 
     async def list_for_creator(
         self, user_id: UUID, *, page: int, page_size: int

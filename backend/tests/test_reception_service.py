@@ -7,8 +7,8 @@ from uuid6 import uuid7
 from app.modules.auth.models import LoginSession, User, UserStatus
 from app.modules.auth.repository import LoginSessionRepository, UserRepository
 from app.modules.consultation.constants import PERMISSION_CONSULTATION_START
-from app.modules.lab.models import LabBill, LabBillStatus
-from app.modules.lab.repository import LabBillRepository
+from app.modules.lab.models import LabBill, LabBillPayment, LabBillStatus
+from app.modules.lab.repository import LabBillPaymentRepository, LabBillRepository
 from app.modules.patients.exceptions import PatientNotFoundError
 from app.modules.patients.models import PatientGender
 from app.modules.pharmacy.models import MedicineCategory
@@ -886,6 +886,139 @@ async def test_get_own_revenue_includes_lab_bills_in_breakdown(real_session, rec
     assert visits_revenue == Decimal("1500.00")
     assert lab_count == 2
     assert lab_revenue == Decimal("900.00")  # 600.00 + 300.00
+
+
+async def test_own_payment_method_split_sums_cash_and_online_across_all_three_sources(
+    real_session, reception_service, pharmacy_service
+):
+    """`own_payment_method_split` returns (cash, online) actually
+    *collected* via the visit/medicine/lab payment ledgers — "online"
+    being every non-CASH method summed together — and its shortfall to
+    the billed `total_revenue` is exactly the still-unpaid balance.
+    Exercised across all three revenue sources with a mix of methods
+    and both full and partial payments in one window."""
+    receptionist = await _make_actor(real_session, "revenue-paysplit")
+    medicine = await _make_medicine(pharmacy_service, receptionist, "PaySplit", price="100.00")
+
+    # Visit 1 — billed 1500, paid 1500 CASH at registration (full).
+    await reception_service.register_visit(
+        actor=receptionist,
+        patient_id=None,
+        new_patient=_new_patient_payload("PaySplitV1"),
+        doctor_user_id=None,
+        procedures=[(None, "Consultation", Decimal("1500.00"))],
+        vitals_required=False,
+        initial_payment_amount=Decimal("1500.00"),
+        initial_payment_method=PaymentMethod.CASH,
+    )
+    # Visit 2 — billed 2000, paid 800 BANK_TRANSFER at registration (1200 pending).
+    await reception_service.register_visit(
+        actor=receptionist,
+        patient_id=None,
+        new_patient=_new_patient_payload("PaySplitV2"),
+        doctor_user_id=None,
+        procedures=[(None, "Consultation", Decimal("2000.00"))],
+        vitals_required=False,
+        initial_payment_amount=Decimal("800.00"),
+        initial_payment_method=PaymentMethod.BANK_TRANSFER,
+    )
+    # Medicine bill — billed 300 (3 x 100): 100 CASH initial + 50 JAZZCASH top-up (150 pending).
+    bill = await pharmacy_service.create_bill(
+        actor=receptionist,
+        visit_id=None,
+        items=[(medicine.id, 3)],
+        initial_payment_amount=Decimal("100.00"),
+        initial_payment_method=PaymentMethod.CASH,
+    )
+    await pharmacy_service.record_payment(
+        actor=receptionist,
+        bill_id=bill.id,
+        amount=Decimal("50.00"),
+        payment_method=PaymentMethod.JAZZCASH,
+    )
+    # Lab bill — billed 600, single 600 EASYPAISA payment (full).
+    lab_bill = await _make_lab_bill(
+        real_session, creator_id=receptionist.id, amount=Decimal("600.00")
+    )
+    await LabBillPaymentRepository(real_session).add(
+        LabBillPayment(
+            lab_bill_id=lab_bill.id,
+            amount=Decimal("600.00"),
+            payment_method=PaymentMethod.EASYPAISA,
+            created_by=receptionist.id,
+        )
+    )
+    await real_session.commit()
+
+    (
+        _visits_count,
+        visits_revenue,
+        _med_count,
+        med_revenue,
+        _lab_count,
+        lab_revenue,
+        _expense_count,
+        _total_expenses,
+        since,
+    ) = await reception_service.get_own_revenue(actor=receptionist)
+    total_revenue = visits_revenue + med_revenue + lab_revenue
+    assert total_revenue == Decimal("4400.00")  # 1500 + 2000 + 300 + 600
+
+    cash, online = await reception_service.own_payment_method_split(actor=receptionist, since=since)
+    assert cash == Decimal("1600.00")  # 1500 (v1) + 100 (medicine initial)
+    # 800 (v2 bank transfer) + 50 (medicine jazzcash) + 600 (lab easypaisa)
+    assert online == Decimal("1450.00")
+
+    pending = total_revenue - cash - online
+    assert pending == Decimal("1350.00")  # 1200 (v2) + 150 (medicine)
+    assert cash + online + pending == total_revenue
+
+
+async def test_own_payment_method_split_respects_clear_revenue_and_the_since_window(
+    real_session, reception_service
+):
+    """The split honours the exact same `since` cutoff as
+    `get_own_revenue` — a payment on a visit registered before a "Clear
+    Revenue" action drops out of both figures together, and a
+    post-clear visit is the only thing either reflects."""
+    receptionist = await _make_actor(real_session, "paysplit-clear")
+
+    await reception_service.register_visit(
+        actor=receptionist,
+        patient_id=None,
+        new_patient=_new_patient_payload("PaySplitPreClear"),
+        doctor_user_id=None,
+        procedures=[(None, "Consultation", Decimal("500.00"))],
+        vitals_required=False,
+        initial_payment_amount=Decimal("500.00"),
+        initial_payment_method=PaymentMethod.CASH,
+    )
+    await reception_service.clear_own_revenue(actor=receptionist)
+
+    *_pre, since_after_clear = await reception_service.get_own_revenue(actor=receptionist)
+    cash, online = await reception_service.own_payment_method_split(
+        actor=receptionist, since=since_after_clear
+    )
+    assert cash == Decimal("0.00")
+    assert online == Decimal("0.00")
+
+    await reception_service.register_visit(
+        actor=receptionist,
+        patient_id=None,
+        new_patient=_new_patient_payload("PaySplitPostClear"),
+        doctor_user_id=None,
+        procedures=[(None, "Consultation", Decimal("700.00"))],
+        vitals_required=False,
+        initial_payment_amount=Decimal("700.00"),
+        initial_payment_method=PaymentMethod.CARD,
+    )
+
+    *_post, since_now = await reception_service.get_own_revenue(actor=receptionist)
+    cash2, online2 = await reception_service.own_payment_method_split(
+        actor=receptionist, since=since_now
+    )
+    assert cash2 == Decimal("0.00")
+    assert online2 == Decimal("700.00")  # only the post-clear CARD visit
 
 
 async def test_clear_own_revenue_resets_display_but_leaves_data_intact(

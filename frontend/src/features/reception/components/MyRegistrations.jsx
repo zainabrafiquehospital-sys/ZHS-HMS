@@ -1,7 +1,17 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Eraser, Printer, Receipt, Search, Users, Wallet } from 'lucide-react';
+import {
+  Banknote,
+  CreditCard,
+  Eraser,
+  Hourglass,
+  Printer,
+  Receipt,
+  Search,
+  Users,
+  Wallet,
+} from 'lucide-react';
 import {
   useClearMyRevenue,
   useMyRegistrations,
@@ -163,6 +173,30 @@ export function MyRegistrations() {
             />
             <SummaryTile icon={Receipt} label="Lab Revenue" value={formatPkr(revenue.labRevenue)} />
             <SummaryTile icon={Receipt} label="Total Revenue" value={formatPkr(revenue.totalRevenue)} />
+          </div>
+          {/* Payment-method split (2026-09 addition) — of what has
+              actually been *collected* toward the same rolling window
+              (not billed): Cash vs Online (every non-cash method — bank
+              transfer / JazzCash / EasyPaisa / card), plus the
+              still-unpaid Pending remainder. The three sum to Total
+              Revenue. Cash Revenue is the figure to count the drawer
+              against; see backend ReceptionService.own_payment_method_split. */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <SummaryTile
+              icon={Banknote}
+              label="Cash Revenue"
+              value={formatPkr(revenue.totalCashRevenue)}
+            />
+            <SummaryTile
+              icon={CreditCard}
+              label="Online Revenue"
+              value={formatPkr(revenue.totalOnlineRevenue)}
+            />
+            <SummaryTile
+              icon={Hourglass}
+              label="Pending Revenue"
+              value={formatPkr(revenue.totalPendingRevenue)}
+            />
           </div>
           {/* Net Revenue (2026-09 addition) — Total Revenue minus this
               receptionist's own cash expenses over the same rolling

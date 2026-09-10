@@ -187,6 +187,18 @@ class ReceptionRevenueOut(BaseModel):
     lab_bill_count: int
     lab_revenue: Decimal
     total_revenue: Decimal
+    # 2026-09 addition — cash vs "online" (every non-cash PaymentMethod:
+    # bank transfer / JazzCash / EasyPaisa / card) split of what has
+    # actually been *collected* toward the same rolling window, from the
+    # visit/medicine/lab payment ledgers, plus the still-unpaid
+    # remainder. `total_cash_revenue + total_online_revenue +
+    # total_pending_revenue == total_revenue` by construction. Unlike
+    # `total_revenue` (which is billed and counts an unpaid balance in
+    # full), these three let a receptionist reconcile cash-in-hand
+    # against digital receipts. See ReceptionService.own_payment_method_split.
+    total_cash_revenue: Decimal
+    total_online_revenue: Decimal
+    total_pending_revenue: Decimal
     # 2026-09 addition — this receptionist's own cash expenses over the
     # same rolling window as the revenue figures above, and the
     # resulting Net Revenue (`total_revenue - total_expenses`). See

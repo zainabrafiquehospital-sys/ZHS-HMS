@@ -604,6 +604,55 @@ async def test_register_visit_discount_flows_through_to_my_revenue(
     assert body["total_revenue"] == "2000.00"
 
 
+async def test_revenue_endpoint_reports_cash_online_pending_payment_method_split(
+    api_client, real_session, grant_permission
+):
+    """`GET /reception/revenue` breaks `total_revenue` (billed) into
+    what was actually *collected* by cash vs online (every non-cash
+    method), plus the still-unpaid remainder. The three must reconcile
+    exactly to `total_revenue` — the guard against a payment-method
+    value falling through neither bucket."""
+    actor, access_token = await _create_and_login(api_client, real_session, "revenue-paysplit-http")
+    await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)
+
+    # Billed 3000, only 1000 paid in cash -> 2000 still pending.
+    await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("PaySplitCash"),
+            "procedures": [{"name": "Consultation", "amount": "3000.00"}],
+            "vitals_required": False,
+            "initial_payment_amount": "1000.00",
+            "initial_payment_method": "cash",
+        },
+        headers=_auth_header(access_token),
+    )
+    # Billed 2000, paid 2000 by card (an "online" method) -> fully paid.
+    await api_client.post(
+        "/api/v1/reception/visits",
+        json={
+            "new_patient": _new_patient_body("PaySplitCard"),
+            "procedures": [{"name": "Consultation", "amount": "2000.00"}],
+            "vitals_required": False,
+            "initial_payment_amount": "2000.00",
+            "initial_payment_method": "card",
+        },
+        headers=_auth_header(access_token),
+    )
+
+    resp = await api_client.get("/api/v1/reception/revenue", headers=_auth_header(access_token))
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+
+    assert body["total_revenue"] == "5000.00"
+    assert body["total_cash_revenue"] == "1000.00"
+    assert body["total_online_revenue"] == "2000.00"
+    assert body["total_pending_revenue"] == "2000.00"
+    assert Decimal(body["total_cash_revenue"]) + Decimal(body["total_online_revenue"]) + Decimal(
+        body["total_pending_revenue"]
+    ) == Decimal(body["total_revenue"])
+
+
 async def test_cancel_visit_requires_permission(api_client, real_session, grant_permission):
     actor, access_token = await _create_and_login(api_client, real_session, "cancel-no-perm")
     await grant_permission(actor, PERMISSION_RECEPTION_REGISTER_VISIT)

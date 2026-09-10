@@ -6,7 +6,7 @@ from datetime import UTC, date as date_type, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Sequence, func, select, update
+from sqlalchemy import Sequence, case, func, select, update
 from sqlalchemy.orm import InstrumentedAttribute
 
 from app.modules.visits.constants import QUEUE_TOKEN_SEQUENCE_NAME
@@ -18,6 +18,7 @@ from app.modules.visits.models import (
     VisitProcedureItem,
     VisitStatus,
 )
+from app.shared.payment_method import PaymentMethod
 from app.shared.repository.base_repository import BaseRepository
 
 VISIT_SORTABLE_COLUMNS: dict[str, InstrumentedAttribute] = {
@@ -290,6 +291,43 @@ class VisitRepository(BaseRepository[Visit]):
         result = await self.session.execute(stmt)
         count, revenue = result.one()
         return count, (revenue if revenue is not None else Decimal("0.00"))
+
+    async def cash_online_collected_for_creator(
+        self, user_id: UUID, *, since: datetime | None = None
+    ) -> tuple[Decimal, Decimal]:
+        """Cash vs "online" (every non-`CASH` `PaymentMethod` summed
+        together) amounts this user has actually *collected* via
+        `visit_payment` rows, for visits she registered — optionally
+        only those created after `since`, the identical rolling-window
+        cutoff `count_and_revenue_for_creator` above applies. Unlike
+        that method (which sums the *billed* `Visit.amount`), a
+        partially-paid visit contributes only what has been paid on it
+        here; the shortfall to the billed figure is the caller's
+        pending balance. Soft-deleted payments and visits are excluded.
+        Returns `(Decimal("0.00"), Decimal("0.00"))` when there are
+        none, so callers never need a None-check."""
+        conditions = [
+            Visit.deleted_at.is_(None),
+            Visit.created_by == user_id,
+            VisitPayment.deleted_at.is_(None),
+        ]
+        if since is not None:
+            conditions.append(Visit.created_at > since)
+        is_cash = VisitPayment.payment_method == PaymentMethod.CASH
+        stmt = (
+            select(
+                func.sum(case((is_cash, VisitPayment.amount), else_=None)),
+                func.sum(case((~is_cash, VisitPayment.amount), else_=None)),
+            )
+            .select_from(VisitPayment)
+            .join(Visit, Visit.id == VisitPayment.visit_id)
+            .where(*conditions)
+        )
+        cash, online = (await self.session.execute(stmt)).one()
+        return (
+            cash if cash is not None else Decimal("0.00"),
+            online if online is not None else Decimal("0.00"),
+        )
 
 
 class ProcedureRepository(BaseRepository[Procedure]):

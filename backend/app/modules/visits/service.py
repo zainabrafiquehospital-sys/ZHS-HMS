@@ -465,6 +465,15 @@ class VisitService:
         or touches any row, only narrows the count."""
         return await self._visit_repo.count_and_revenue_for_creator(user_id, since=since)
 
+    async def cash_online_collected_for_creator(
+        self, user_id: UUID, *, since: datetime | None = None
+    ) -> tuple[Decimal, Decimal]:
+        """The cash-vs-online split of what this receptionist has
+        actually *collected* on her own visits (via `visit_payment`),
+        over the same `since` window `count_and_revenue_for_creator`
+        uses — see VisitRepository.cash_online_collected_for_creator."""
+        return await self._visit_repo.cash_online_collected_for_creator(user_id, since=since)
+
     async def list_visits(
         self,
         *,
