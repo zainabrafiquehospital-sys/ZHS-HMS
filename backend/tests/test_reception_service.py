@@ -739,12 +739,16 @@ async def test_update_visit_details_blocked_when_visit_has_settled_payment(
 
 
 async def _make_medicine(pharmacy_service, actor, suffix: str, price: str = "50.00"):
-    return await pharmacy_service.create_medicine(
+    medicine = await pharmacy_service.create_medicine(
         actor=actor,
         name=f"{TEST_MEDICINE_NAME_PREFIX}Reception{suffix}",
         category=MedicineCategory.TABLET,
         unit_price=Decimal(price),
     )
+    # Stock it so `create_bill` (which now checks medicine stock) works
+    # for these revenue tests, which predate stock tracking and don't
+    # exercise it — see tests/test_pharmacy_stock_endpoints.py for that.
+    return await pharmacy_service.add_stock(actor=actor, medicine_id=medicine.id, quantity=5000)
 
 
 async def _make_lab_bill(real_session, *, creator_id, amount: Decimal) -> LabBill:

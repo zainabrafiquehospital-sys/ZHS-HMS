@@ -10,6 +10,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.modules.pharmacy.constants import PHARMACY_LOW_STOCK_THRESHOLD
 from app.modules.pharmacy.models import (
     Medicine,
     MedicineBill,
@@ -61,6 +62,17 @@ class MedicineBillLineItemRequest(BaseModel):
     quantity: int = Field(gt=0, le=1000)
 
 
+class AddMedicineStockRequest(BaseModel):
+    """`POST /pharmacy/medicines/{id}/stock/add` — an additive "received
+    N more units" restock, the only stock write v1 exposes. Never a
+    "set stock to N": a wrong count is corrected by adding the
+    difference (see PharmacyService.add_stock's docstring)."""
+
+    model_config = ConfigDict(strict=True)
+
+    quantity: int = Field(gt=0, le=1_000_000)
+
+
 class CreateMedicineBillRequest(BaseModel):
     model_config = ConfigDict(strict=True)
 
@@ -95,6 +107,17 @@ class CreateMedicineBillRequest(BaseModel):
     # enforce, unlike Invoice's discount).
     discount_amount: LaxDecimal = Field(default=Decimal("0"), ge=0)
     discount_reason: str | None = Field(default=None, max_length=200)
+    # Bill-level "sell anyway" confirmation (2026-09 addition, medicine
+    # stock tracking). Default False: any line whose quantity exceeds
+    # that medicine's on-hand stock is rejected with
+    # `MedicineInsufficientStockError` and nothing is written. When the
+    # receptionist confirms the "only N left — sell anyway?" prompt, the
+    # frontend re-submits the identical bill with this set, and the sale
+    # proceeds (the stock decrement clamps at 0). Bill-level rather than
+    # per-line because the frontend already knows exactly which lines
+    # triggered the warning and is confirming the whole bill in one
+    # step — see PharmacyService.create_bill's docstring.
+    override_insufficient_stock: bool = False
 
 
 class RecordMedicineBillPaymentRequest(BaseModel):
@@ -143,6 +166,13 @@ class MedicineOut(BaseModel):
     category: MedicineCategory
     unit_price: Decimal
     is_active: bool
+    # On-hand dispensing stock (2026-09 addition). `is_low_stock` is
+    # computed live against the single global
+    # `PHARMACY_LOW_STOCK_THRESHOLD` (10) — `stock_quantity <= 10`, so a
+    # medicine at exactly the threshold and one at zero both read low —
+    # never a stored flag; see that constant's own docstring.
+    stock_quantity: int
+    is_low_stock: bool
     created_at: datetime
     updated_at: datetime
 
@@ -154,6 +184,8 @@ class MedicineOut(BaseModel):
             category=medicine.category,
             unit_price=medicine.unit_price,
             is_active=medicine.is_active,
+            stock_quantity=medicine.stock_quantity,
+            is_low_stock=medicine.stock_quantity <= PHARMACY_LOW_STOCK_THRESHOLD,
             created_at=medicine.created_at,
             updated_at=medicine.updated_at,
         )

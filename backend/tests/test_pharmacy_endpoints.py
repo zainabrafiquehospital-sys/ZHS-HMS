@@ -70,14 +70,29 @@ async def _register_visit(api_client, access_token, suffix: str) -> str:
     return resp.json()["data"]["visit"]["id"]
 
 
-async def _create_medicine(api_client, access_token, name: str, *, price: str = "50.00") -> str:
+async def _create_medicine(
+    api_client, access_token, name: str, *, price: str = "50.00", stock: int = 5000
+) -> str:
     resp = await api_client.post(
         "/api/v1/pharmacy/medicines",
         json={"name": name, "category": "tablet", "unit_price": price},
         headers=_auth_header(access_token),
     )
     assert resp.status_code == 201, resp.text
-    return resp.json()["data"]["id"]
+    medicine_id = resp.json()["data"]["id"]
+    # Stock it generously so the ~40 existing billing tests here (which
+    # predate medicine stock tracking and don't care about it) keep
+    # working unchanged — insufficient-stock behaviour has its own
+    # dedicated file, tests/test_pharmacy_stock_endpoints.py. Pass
+    # `stock=0` to opt a specific test out.
+    if stock > 0:
+        stock_resp = await api_client.post(
+            f"/api/v1/pharmacy/medicines/{medicine_id}/stock/add",
+            json={"quantity": stock},
+            headers=_auth_header(access_token),
+        )
+        assert stock_resp.status_code == 201, stock_resp.text
+    return medicine_id
 
 
 async def test_search_medicines_requires_permission(api_client, real_session):
@@ -261,7 +276,7 @@ async def test_full_pharmacy_lifecycle_via_http(api_client, real_session, grant_
 
 
 def _token_value(token: str) -> int:
-    """"Token #000295" -> 295, for numeric comparison in the tests
+    """ "Token #000295" -> 295, for numeric comparison in the tests
     below — the exact format both VisitService._generate_queue_token
     and PharmacyService._generate_queue_token produce."""
     return int(token.removeprefix("Token #"))
@@ -678,7 +693,9 @@ async def test_create_bill_with_initial_payment_records_it_atomically(
     records a payment in the same request/commit as creation — same
     MedicineBillPayment audit-row mechanism record_payment uses, never
     a second, separately-failing request."""
-    actor, access_token = await _create_and_login(api_client, real_session, "initial-payment-partial")
+    actor, access_token = await _create_and_login(
+        api_client, real_session, "initial-payment-partial"
+    )
     await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
     await grant_permission(actor, PERMISSION_PHARMACY_BILL)
     medicine_id = await _create_medicine(
@@ -824,7 +841,9 @@ async def test_create_bill_initial_payment_exceeding_balance_creates_no_bill(
     initial_payment_amount that exceeds the bill's total is rejected,
     and — verified via a separate, later request's own fresh DB
     session — no bill is left behind at all."""
-    actor, access_token = await _create_and_login(api_client, real_session, "initial-payment-atomic")
+    actor, access_token = await _create_and_login(
+        api_client, real_session, "initial-payment-atomic"
+    )
     await grant_permission(actor, PERMISSION_PHARMACY_MANAGE)
     await grant_permission(actor, PERMISSION_PHARMACY_BILL)
     await grant_permission(actor, PERMISSION_PHARMACY_READ)
@@ -1227,9 +1246,7 @@ async def test_print_bill_without_discount_omits_discount_line(
 async def test_list_my_bills_requires_permission(api_client, real_session):
     _actor, access_token = await _create_and_login(api_client, real_session, "my-bills-no-perm")
 
-    resp = await api_client.get(
-        "/api/v1/pharmacy/bills/mine", headers=_auth_header(access_token)
-    )
+    resp = await api_client.get("/api/v1/pharmacy/bills/mine", headers=_auth_header(access_token))
 
     assert resp.status_code == 403
 

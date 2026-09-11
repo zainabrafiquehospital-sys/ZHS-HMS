@@ -20,6 +20,7 @@ import {
   History,
   ClipboardCheck,
   Activity,
+  Boxes,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { ROUTES } from '@/core/constants/routes';
@@ -132,6 +133,15 @@ const NAV_ITEMS = [
     href: ROUTES.ADMIN_MEDICINES,
     label: 'Medicines',
     icon: PackageSearch,
+    permission: 'pharmacy:manage',
+  },
+  // Standalone from Medicines above (that's the price list; this is
+  // on-hand dispensing stock — see MedicineStockManagement.jsx), same
+  // pharmacy:manage gate.
+  {
+    href: ROUTES.ADMIN_MEDICINE_STOCK,
+    label: 'Medicine Stock',
+    icon: Boxes,
     permission: 'pharmacy:manage',
   },
   // Same "own top-level entry, permission-gated only" shape as Medicines

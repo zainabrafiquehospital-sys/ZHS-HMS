@@ -21,6 +21,13 @@ export const pharmacyService = {
     return httpClient.patch(`/pharmacy/medicines/${medicineId}`, payload);
   },
 
+  // Additive restock — "received N more units" (never "set stock to N").
+  // Admin-only (pharmacy:manage). Backs the standalone Medicine Stock
+  // screen's per-row "Add Stock" action.
+  addMedicineStock(medicineId, quantity) {
+    return httpClient.post(`/pharmacy/medicines/${medicineId}/stock/add`, { quantity });
+  },
+
   createBill(payload) {
     return httpClient.post('/pharmacy/bills', payload);
   },

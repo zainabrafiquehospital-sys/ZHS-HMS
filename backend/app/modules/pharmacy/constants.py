@@ -15,6 +15,19 @@ PERMISSION_PHARMACY_READ = "pharmacy:read"
 PERMISSION_PHARMACY_BILL = "pharmacy:bill"
 PERMISSION_PHARMACY_MANAGE = "pharmacy:manage"
 
+# A single global "this medicine is running low" threshold (2026-09
+# addition, medicine stock tracking) — a plain constant, deliberately
+# NOT a per-`Medicine` column or a UI-configurable value for v1. Unlike
+# Inventory's per-item `low_stock_threshold` (a real column, because
+# ward supplies genuinely vary — a box of gloves vs. a single crash-cart
+# item), the pharmacy price list is uniform enough that one number is
+# the simpler, sufficient model. `MedicineOut.is_low_stock` is computed
+# live as `stock_quantity <= PHARMACY_LOW_STOCK_THRESHOLD` (so a
+# medicine at exactly the threshold, and one at zero, both read as low),
+# never cached — same "a single-column comparison is cheaper to compute
+# than to keep in sync" reasoning `InventoryItem`'s own docstring gives.
+PHARMACY_LOW_STOCK_THRESHOLD = 10
+
 # Admin-only data-correction actions (2026-08-20 addition) — mirrors
 # app/modules/reception/constants.py's identical
 # PERMISSION_RECEPTION_UPDATE_VISIT/PERMISSION_RECEPTION_DELETE_VISIT

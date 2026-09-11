@@ -95,6 +95,7 @@ class Medicine(BaseEntity):
         Index("ix_medicine_name", "name"),
         Index("ix_medicine_is_active", "is_active"),
         CheckConstraint("unit_price > 0", name="ck_medicine_unit_price_positive"),
+        CheckConstraint("stock_quantity >= 0", name="ck_medicine_stock_quantity_non_negative"),
     )
 
     name: Mapped[str] = mapped_column(String(150), nullable=False)
@@ -110,6 +111,30 @@ class Medicine(BaseEntity):
         nullable=False,
     )
     unit_price: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)
+    # On-hand dispensing stock (2026-09 addition). A single whole-unit
+    # count — Pharmacy's own concern, structurally unrelated to the
+    # Ward/Emergency Inventory module (which this model still imports
+    # nothing from). Integer, not Numeric: every `MedicineCategory`
+    # (sachet/drops/tablet/injection) is dispensed in whole units, so
+    # there is no fractional case the way Inventory's "ml" unit forces.
+    #
+    # Deliberately just this column — NO separate stock-movement ledger
+    # table. Every change to it is either a bill sale (already fully
+    # recorded, line by line, in `medicine_bill_item.quantity`) or a
+    # manual restock/adjustment; both additionally write a generic
+    # `audit_log` row (`pharmacy.medicine_stock_added` /
+    # `pharmacy.bill_created` metadata carries the per-line stock
+    # deltas), which is the same "ledger + audit_log alongside it"
+    # coverage Inventory has, minus the dedicated ledger a uniform
+    # whole-unit price list does not need.
+    #
+    # `CHECK >= 0` is absolute: a sale that would drive it below zero
+    # (permitted only via `create_bill`'s explicit override flag —
+    # "only 3 left, sell anyway") clamps the decrement at 0 rather than
+    # letting the column go negative. The sale itself is still recorded
+    # in full via `medicine_bill_item`, so no financial history is lost
+    # either way — see PharmacyService.create_bill's docstring.
+    stock_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # "No longer sold" — distinct from `deleted_at` (a hard mistake/undo),
     # this is the normal, expected end state of a medicine the pharmacy
     # stops carrying. Deactivated medicines are excluded from the

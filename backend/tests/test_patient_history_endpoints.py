@@ -18,7 +18,10 @@ from app.modules.lab.constants import (
     PERMISSION_LAB_MANAGE,
     PERMISSION_LAB_READ,
 )
-from app.modules.patients.constants import PERMISSION_PATIENTS_CREATE, PERMISSION_PATIENTS_HISTORY_READ
+from app.modules.patients.constants import (
+    PERMISSION_PATIENTS_CREATE,
+    PERMISSION_PATIENTS_HISTORY_READ,
+)
 from app.modules.pharmacy.constants import (
     PERMISSION_PHARMACY_BILL,
     PERMISSION_PHARMACY_MANAGE,
@@ -339,7 +342,17 @@ async def _create_medicine(api_client, access_token: str, name: str) -> str:
         headers=_auth_header(access_token),
     )
     assert resp.status_code == 201, resp.text
-    return resp.json()["data"]["id"]
+    medicine_id = resp.json()["data"]["id"]
+    # Stock it so `_create_standalone_medicine_bill` below works — these
+    # patient-history tests predate medicine stock tracking and don't
+    # exercise it (see tests/test_pharmacy_stock_endpoints.py).
+    stock_resp = await api_client.post(
+        f"/api/v1/pharmacy/medicines/{medicine_id}/stock/add",
+        json={"quantity": 5000},
+        headers=_auth_header(access_token),
+    )
+    assert stock_resp.status_code == 201, stock_resp.text
+    return medicine_id
 
 
 async def _create_standalone_medicine_bill(api_client, access_token: str, medicine_id: str) -> dict:
@@ -383,7 +396,9 @@ async def _create_lab_test(api_client, access_token: str, name: str) -> str:
     return resp.json()["data"]["id"]
 
 
-async def _create_lab_bill(api_client, access_token: str, patient_id: str, lab_test_id: str) -> dict:
+async def _create_lab_bill(
+    api_client, access_token: str, patient_id: str, lab_test_id: str
+) -> dict:
     resp = await api_client.post(
         "/api/v1/lab/bills",
         json={"patient_id": patient_id, "items": [{"lab_test_id": lab_test_id}]},
@@ -436,7 +451,9 @@ async def test_list_history_records_finds_patient_linked_lab_bill(
     at all — LabBill has no visit_id column) is now reachable from the
     always-visible list by that patient's own name, not just from a
     drill-down the receptionist would have had no way to reach."""
-    actor, access_token = await _create_and_login(api_client, real_session, "history-labbill-patient")
+    actor, access_token = await _create_and_login(
+        api_client, real_session, "history-labbill-patient"
+    )
     await grant_permission(actor, PERMISSION_PATIENTS_CREATE)
     await grant_permission(actor, PERMISSION_LAB_MANAGE)
     await grant_permission(actor, PERMISSION_LAB_BILL)
@@ -474,7 +491,9 @@ async def test_list_history_records_hides_medicine_bill_without_pharmacy_permiss
     matches their search, the same "dropped from the query entirely,
     not fetched-then-filtered" behavior the drill-down's own per-
     section gating already establishes."""
-    setup_actor, setup_token = await _create_and_login(api_client, real_session, "history-hide-setup")
+    setup_actor, setup_token = await _create_and_login(
+        api_client, real_session, "history-hide-setup"
+    )
     await grant_permission(setup_actor, PERMISSION_PHARMACY_MANAGE)
     await grant_permission(setup_actor, PERMISSION_PHARMACY_BILL)
     medicine_id = await _create_medicine(

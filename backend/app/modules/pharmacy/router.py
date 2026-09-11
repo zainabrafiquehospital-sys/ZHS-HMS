@@ -32,6 +32,7 @@ from app.modules.pharmacy.constants import (
 )
 from app.modules.pharmacy.dependencies import get_pharmacy_service
 from app.modules.pharmacy.schemas import (
+    AddMedicineStockRequest,
     AdminUpdateMedicineBillRequest,
     CreateMedicineBillRequest,
     CreateMedicineRequest,
@@ -128,6 +129,25 @@ async def update_medicine(
     return success_envelope(MedicineOut.from_medicine(medicine).model_dump(mode="json"))
 
 
+@router.post("/medicines/{medicine_id}/stock/add", status_code=201)
+async def add_medicine_stock(
+    medicine_id: UUID,
+    payload: AddMedicineStockRequest,
+    pharmacy_service: PharmacyService = Depends(get_pharmacy_service),
+    actor: User = Depends(require_permission(PERMISSION_PHARMACY_MANAGE)),
+) -> dict:
+    """Additive restock — adds `quantity` whole units to this
+    medicine's on-hand stock. Gated on `pharmacy:manage`, the same
+    Admin-only permission the medicine price list itself uses (stock
+    management is a new standalone screen, but the same class of
+    action — no narrower permission was judged warranted for v1).
+    Audited as `pharmacy.medicine_stock_added`."""
+    medicine = await pharmacy_service.add_stock(
+        actor=actor, medicine_id=medicine_id, quantity=payload.quantity
+    )
+    return success_envelope(MedicineOut.from_medicine(medicine).model_dump(mode="json"))
+
+
 # ----------------------------------------------------------------------
 # Medicine bills — Receptionist + Admin
 # ----------------------------------------------------------------------
@@ -150,6 +170,7 @@ async def create_bill(
         manual_patient_phone=payload.manual_patient_phone,
         discount_amount=payload.discount_amount,
         discount_reason=payload.discount_reason,
+        override_insufficient_stock=payload.override_insufficient_stock,
     )
     items = await pharmacy_service.get_bill_items(bill.id)
     payments = await pharmacy_service.get_bill_payments(bill.id)

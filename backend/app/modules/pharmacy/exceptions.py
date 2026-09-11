@@ -22,6 +22,32 @@ class MedicineInactiveError(ValidationError):
         )
 
 
+class MedicineInsufficientStockError(ValidationError):
+    """Raised by `PharmacyService.create_bill` when a line's quantity
+    exceeds that medicine's on-hand `stock_quantity` and the caller did
+    NOT pass the override flag. Deliberately a *soft* block, unlike
+    Inventory's `InsufficientEmergencyStockError` (an all-or-nothing
+    hard stop): the receptionist may knowingly proceed by re-submitting
+    with `override_insufficient_stock=True`, and the sale is still
+    recorded in full — the stock column simply clamps at 0. `details`
+    carries a `shortfalls` list (`medicine_id` / `medicine_name` /
+    `requested` / `available`) covering *every* offending line, so the
+    frontend can raise one "sell anyway?" confirmation for the whole
+    bill rather than one per line."""
+
+    code = "MEDICINE_INSUFFICIENT_STOCK"
+
+    def __init__(self, shortfalls: list[dict]) -> None:
+        summary = ", ".join(
+            f"{s['medicine_name']} (need {s['requested']}, {s['available']} in stock)"
+            for s in shortfalls
+        )
+        super().__init__(
+            f"Not enough stock to fill this bill: {summary}.",
+            {"shortfalls": shortfalls},
+        )
+
+
 class MedicineBillNotFoundError(NotFoundError):
     code = "MEDICINE_BILL_NOT_FOUND"
 

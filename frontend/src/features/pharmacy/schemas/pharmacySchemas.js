@@ -15,6 +15,18 @@ export const medicineFormSchema = z.object({
   unit_price: positivePrice,
 });
 
+// The standalone Medicine Stock screen's per-row "Add Stock" dialog —
+// an additive whole-unit count (never "set to N"; see
+// app/modules/pharmacy/schemas.py's AddMedicineStockRequest).
+export const addMedicineStockSchema = z.object({
+  quantity: z
+    .union([z.string(), z.number()])
+    .transform((value) => Number(value))
+    .refine((value) => Number.isInteger(value) && value > 0 && value <= 1_000_000, {
+      message: 'Enter a whole number greater than 0',
+    }),
+});
+
 export const billLineItemSchema = z.object({
   quantity: z
     .union([z.string(), z.number()])

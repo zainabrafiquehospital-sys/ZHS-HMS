@@ -36,6 +36,20 @@ export function useUpdateMedicine() {
   });
 }
 
+/** Additive restock (2026-09 addition) — adds N units to a medicine's
+ * on-hand stock. Invalidates the whole `['pharmacy', 'medicines']`
+ * prefix so both the admin stock screen and the receptionist's
+ * billing-search autocomplete (`['pharmacy', 'medicines', 'search']`)
+ * pick up the new count. */
+export function useAddMedicineStock() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ medicineId, quantity }) =>
+      pharmacyService.addMedicineStock(medicineId, quantity),
+    onSuccess: () => invalidateMedicines(queryClient),
+  });
+}
+
 export function useCreateMedicineBill() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -43,6 +57,9 @@ export function useCreateMedicineBill() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pharmacy', 'bills'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      // A sale decremented stock — refresh the medicine search so the
+      // next line the receptionist adds shows the updated "in stock" count.
+      queryClient.invalidateQueries({ queryKey: ['pharmacy', 'medicines'] });
     },
   });
 }

@@ -83,6 +83,21 @@ class MedicineRepository(BaseRepository[Medicine]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all()), total
 
+    async def get_for_update(self, medicine_id: UUID) -> Medicine | None:
+        """Row-locking variant of `get_by_id` — every `stock_quantity`
+        read-modify-write goes through this (a bill sale in
+        `PharmacyService.create_bill`, a manual restock in
+        `add_stock`), never the plain `get_by_id`. Identical rationale
+        to `MedicineBillRepository.get_for_update` /
+        `InventoryItemRepository.get_for_update`: two concurrent sells
+        of the same medicine's last unit must never both compute
+        "stock on hand" from the same stale snapshot."""
+        stmt = self._exclude_soft_deleted(
+            select(Medicine).where(Medicine.id == medicine_id), include_deleted=False
+        ).with_for_update()
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
 
 class MedicineBillRepository(BaseRepository[MedicineBill]):
     model = MedicineBill

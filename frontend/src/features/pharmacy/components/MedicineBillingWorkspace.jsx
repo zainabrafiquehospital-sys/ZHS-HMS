@@ -22,6 +22,7 @@ import { Button } from '@/shared/components/ui/Button';
 import { Input } from '@/shared/components/ui/Input';
 import { Label } from '@/shared/components/ui/Label';
 import { Badge } from '@/shared/components/ui/Badge';
+import { ConfirmDialog } from '@/shared/components/ui/ConfirmDialog';
 import { SearchSelect } from '@/shared/components/SearchSelect';
 import { PaymentMethodSelect } from '@/shared/components/PaymentMethodSelect';
 import { useToast } from '@/shared/components/toast/ToastProvider';
@@ -309,6 +310,12 @@ export function MedicineBillingWorkspace() {
   const [quantityError, setQuantityError] = useState(null);
   const [items, setItems] = useState([]);
   const [finalizeError, setFinalizeError] = useState(null);
+  // Set when a finalize attempt hits insufficient stock (client-side
+  // pre-check, or the server's own MEDICINE_INSUFFICIENT_STOCK) — holds
+  // the offending lines plus the validated form values, so confirming
+  // the "sell anyway?" prompt can re-submit the identical bill with the
+  // override flag. See handleFinalize / submitBill below.
+  const [stockWarning, setStockWarning] = useState(null);
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [selectedVisit, setSelectedVisit] = useState(null);
   const [linkMode, setLinkMode] = useState('search');
@@ -407,6 +414,10 @@ export function MedicineBillingWorkspace() {
           name: selectedMedicine.name,
           category: selectedMedicine.category,
           unit_price: selectedMedicine.unit_price,
+          // Snapshot at add-line time — powers the client-side
+          // "exceeds stock" pre-check at finalize (the server re-checks
+          // against the live count regardless).
+          stock_quantity: selectedMedicine.stock_quantity ?? 0,
           quantity: parsed.data.quantity,
         },
       ];
@@ -442,7 +453,10 @@ export function MedicineBillingWorkspace() {
     setManualPhone('');
   }
 
-  async function handleFinalize(values) {
+  /** Fires the actual POST /pharmacy/bills. Split out from
+   * handleFinalize so the "sell anyway?" confirmation can call it a
+   * second time with `overrideStock` set, on the identical bill. */
+  async function submitBill(values, overrideStock) {
     setFinalizeError(null);
 
     // Hard gate: a bill can no longer be finalized with neither a
@@ -474,6 +488,7 @@ export function MedicineBillingWorkspace() {
         // unticked checkbox always sends no discount at all.
         discount_amount: applyDiscount ? values.discount_amount : 0,
         discount_reason: applyDiscount ? values.discount_reason || null : null,
+        override_insufficient_stock: overrideStock,
         ...linkage.manualPayload,
       });
       const bill = response.data;
@@ -492,12 +507,39 @@ export function MedicineBillingWorkspace() {
       });
       await printBill.mutateAsync(bill.id);
     } catch (error) {
+      // Stock ran out between search and finalize (our client snapshot
+      // was stale) — surface the same "sell anyway?" prompt the
+      // client-side pre-check does, from the server's own line list.
+      if (error.code === 'MEDICINE_INSUFFICIENT_STOCK') {
+        setStockWarning({ shortfalls: error.details?.shortfalls ?? [], values });
+        return;
+      }
       setFinalizeError(error.message || 'Unable to finalize this bill.');
       toast.error({
         title: 'Unable to finalize this bill',
         description: error.message,
       });
     }
+  }
+
+  async function handleFinalize(values) {
+    setFinalizeError(null);
+    // Proactive client-side check against the stock snapshot captured
+    // when each line was added — instant feedback, no round-trip. The
+    // server re-checks against the live count regardless (submitBill's
+    // catch handles a stale snapshot).
+    const localShortfalls = items
+      .filter((item) => item.quantity > (item.stock_quantity ?? 0))
+      .map((item) => ({
+        medicine_name: item.name,
+        requested: item.quantity,
+        available: item.stock_quantity ?? 0,
+      }));
+    if (localShortfalls.length > 0) {
+      setStockWarning({ shortfalls: localShortfalls, values });
+      return;
+    }
+    await submitBill(values, false);
   }
 
   return (
@@ -539,7 +581,15 @@ export function MedicineBillingWorkspace() {
               queryKey={['pharmacy', 'medicines', 'search']}
               queryFn={(term) => pharmacyService.searchMedicines(term).then((res) => res.data)}
               getLabel={(medicine) => medicine.name}
-              getDescription={(medicine) => `${medicine.category} · ${money(medicine.unit_price)}`}
+              getDescription={(medicine) => {
+                const stock =
+                  medicine.stock_quantity <= 0
+                    ? 'Out of stock'
+                    : medicine.is_low_stock
+                      ? `Only ${medicine.stock_quantity} left`
+                      : `${medicine.stock_quantity} in stock`;
+                return `${medicine.category} · ${money(medicine.unit_price)} · ${stock}`;
+              }}
               placeholder="Search medicine by name"
               selectedLabel={selectedMedicine ? `${selectedMedicine.name}` : ''}
               onSelect={(medicine) => setSelectedMedicine(medicine)}
@@ -741,6 +791,40 @@ export function MedicineBillingWorkspace() {
           )}
         </CardContent>
       </Card>
+
+      {stockWarning ? (
+        <ConfirmDialog
+          open
+          variant="destructive"
+          title="Not enough stock"
+          confirmLabel="Sell anyway"
+          cancelLabel="Go back"
+          onCancel={() => setStockWarning(null)}
+          onConfirm={() => {
+            const { values } = stockWarning;
+            setStockWarning(null);
+            submitBill(values, true);
+          }}
+          description={
+            <div className="flex flex-col gap-2 text-sm">
+              <p className="text-muted-foreground">
+                These lines are more than what&apos;s on hand:
+              </p>
+              <ul className="list-disc pl-5 text-foreground">
+                {stockWarning.shortfalls.map((shortfall) => (
+                  <li key={shortfall.medicine_name}>
+                    <span className="font-medium">{shortfall.medicine_name}</span> — billing{' '}
+                    {shortfall.requested}, only {shortfall.available} in stock
+                  </li>
+                ))}
+              </ul>
+              <p className="text-muted-foreground">
+                The sale is still recorded in full; on-hand stock for these will show 0.
+              </p>
+            </div>
+          }
+        />
+      ) : null}
     </div>
   );
 }

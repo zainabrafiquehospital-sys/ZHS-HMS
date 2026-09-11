@@ -58,6 +58,7 @@ from app.modules.pharmacy.exceptions import (
     MedicineBillPaymentExceedsBalanceError,
     MedicineBillPaymentMethodRequiredError,
     MedicineInactiveError,
+    MedicineInsufficientStockError,
     MedicineNotFoundError,
 )
 from app.modules.pharmacy.models import (
@@ -192,6 +193,44 @@ class PharmacyService:
             offset=(page - 1) * page_size,
         )
 
+    async def add_stock(self, *, actor: User, medicine_id: UUID, quantity: int) -> Medicine:
+        """Manual restock — adds `quantity` whole units to a medicine's
+        on-hand `stock_quantity` (an additive "received N more", never a
+        "set stock to N" — the only stock write the management screen
+        exposes for v1). Row-locked read-modify-write, the same shape as
+        `create_bill`'s own decrement and `InventoryService.
+        receive_stock`: lock `FOR UPDATE`, mutate, audit
+        (`pharmacy.medicine_stock_added`, metadata carries the
+        before/after count), one commit. `quantity` must be `> 0` —
+        `ValidationError` otherwise; there is no "adjust down" path here
+        (a wrong count is corrected by adding the difference, or is
+        left for a future explicit stock-take feature)."""
+        if quantity <= 0:
+            raise ValidationError("quantity must be greater than zero.")
+
+        medicine = await self._medicine_repo.get_for_update(medicine_id)
+        if medicine is None:
+            raise MedicineNotFoundError
+
+        previous = medicine.stock_quantity
+        medicine.stock_quantity = previous + quantity
+        medicine.updated_by = actor.id
+        await self._medicine_repo.add(medicine)
+        await self._audit_repo.record(
+            module="pharmacy",
+            action="pharmacy.medicine_stock_added",
+            entity_type="medicine",
+            entity_id=medicine.id,
+            actor_user_id=actor.id,
+            metadata={
+                "quantity_added": quantity,
+                "previous_quantity": previous,
+                "new_quantity": medicine.stock_quantity,
+            },
+        )
+        await self._session.commit()
+        return await self._get_medicine(medicine.id)
+
     # ------------------------------------------------------------------
     # Medicine bills (Receptionist + Admin, pharmacy:bill / pharmacy:read)
     # ------------------------------------------------------------------
@@ -209,12 +248,33 @@ class PharmacyService:
         manual_patient_phone: str | None = None,
         discount_amount: Decimal = _ZERO,
         discount_reason: str | None = None,
+        override_insufficient_stock: bool = False,
     ) -> MedicineBill:
         """`items` is a list of `(medicine_id, quantity)` pairs, already
         validated non-empty by `CreateMedicineBillRequest`. Every
         medicine referenced must exist and be active — checked up front,
         before anything is written, so a bad line item never leaves a
         partially-built bill behind.
+
+        Stock (2026-09 addition): each medicine row is now read
+        `FOR UPDATE` (`MedicineRepository.get_for_update`) — the same
+        "lock, validate, mutate, insert, commit once" shape
+        `InventoryService.record_usage` follows — so two concurrent
+        sells of the same medicine's last unit serialize on the row
+        lock and can never both succeed against a stale count. If any
+        line's quantity exceeds that medicine's on-hand `stock_quantity`
+        (running remainder, so two lines for the same medicine are
+        checked against the combined total) and
+        `override_insufficient_stock` is False, the whole call is
+        rejected with `MedicineInsufficientStockError` *before anything
+        is written*, its `shortfalls` list covering every offending
+        line. With the override set (the receptionist confirmed "sell
+        anyway" in the UI), the sale proceeds regardless: every line's
+        `stock_quantity` decrement is clamped at 0 so the DB's
+        `stock_quantity >= 0` CHECK is never violated, and the sale is
+        still fully recorded via `MedicineBillItem.quantity` — no
+        financial history is lost even when the physical count was
+        wrong.
 
         Every new bill draws its own `queue_token` (2026-08-20 addition)
         from the exact same unified Postgres sequence Visit uses (see
@@ -270,11 +330,34 @@ class PharmacyService:
             await self._visit_service.get_visit(visit_id)
 
         resolved: list[tuple[Medicine, int]] = []
+        # Running per-medicine remainder, so two lines naming the same
+        # medicine are checked against their combined quantity (the
+        # frontend merges duplicate lines, but the API contract does
+        # not forbid them).
+        stock_remaining: dict[UUID, int] = {}
+        shortfalls: list[dict] = []
         for medicine_id, quantity in items:
-            medicine = await self._get_medicine(medicine_id)
+            medicine = await self._medicine_repo.get_for_update(medicine_id)
+            if medicine is None:
+                raise MedicineNotFoundError
             if not medicine.is_active:
                 raise MedicineInactiveError(medicine.name)
+            if medicine_id not in stock_remaining:
+                stock_remaining[medicine_id] = medicine.stock_quantity
+            if quantity > stock_remaining[medicine_id]:
+                shortfalls.append(
+                    {
+                        "medicine_id": str(medicine_id),
+                        "medicine_name": medicine.name,
+                        "requested": quantity,
+                        "available": stock_remaining[medicine_id],
+                    }
+                )
+            stock_remaining[medicine_id] -= quantity
             resolved.append((medicine, quantity))
+
+        if shortfalls and not override_insufficient_stock:
+            raise MedicineInsufficientStockError(shortfalls)
 
         subtotal = sum(
             (quantize_money(medicine.unit_price * quantity) for medicine, quantity in resolved),
@@ -307,6 +390,7 @@ class PharmacyService:
         )
         await self._bill_repo.add(bill)
 
+        stock_deltas: list[dict] = []
         for medicine, quantity in resolved:
             line_total = quantize_money(medicine.unit_price * quantity)
             await self._item_repo.add(
@@ -322,6 +406,20 @@ class PharmacyService:
                     updated_by=actor.id,
                 )
             )
+            # Clamp at 0: the DB `stock_quantity >= 0` CHECK is absolute
+            # even under an override — the sale is still recorded in full
+            # via the MedicineBillItem row above.
+            stock_before = medicine.stock_quantity
+            medicine.stock_quantity = max(0, stock_before - quantity)
+            medicine.updated_by = actor.id
+            await self._medicine_repo.add(medicine)
+            stock_deltas.append(
+                {
+                    "medicine_id": str(medicine.id),
+                    "quantity": quantity,
+                    "stock_after": medicine.stock_quantity,
+                }
+            )
 
         await self._audit_repo.record(
             module="pharmacy",
@@ -335,6 +433,8 @@ class PharmacyService:
                 "line_item_count": len(resolved),
                 "manual_patient_name": manual_patient_name,
                 "discount_amount": str(discount_amount),
+                "stock_deltas": stock_deltas,
+                "stock_override": bool(shortfalls) and override_insufficient_stock,
             },
         )
 

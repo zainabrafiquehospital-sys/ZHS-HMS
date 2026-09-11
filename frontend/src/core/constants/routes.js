@@ -29,6 +29,11 @@ export const ROUTES = {
   LABORATORY: '/laboratory',
   INVENTORY: '/inventory',
   ADMIN_MEDICINES: '/admin/medicines',
+  // Its own standalone screen, deliberately NOT folded into
+  // ADMIN_MEDICINES above (that's the price list; this is on-hand stock)
+  // — same `/admin/*` + pharmacy:manage-gated shape. See
+  // MedicineStockManagement.jsx.
+  ADMIN_MEDICINE_STOCK: '/admin/medicine-stock',
   ADMIN_LAB_TESTS: '/admin/lab-tests',
   ADMIN_PROCEDURES: '/admin/procedures',
   // A top-level route, not nested under /admin — shared by both Admin
