@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
 import { z } from 'zod';
 import { KeyRound } from 'lucide-react';
+import { useHasMounted } from '@/shared/hooks/useHasMounted';
 import { otpSchema, resetPasswordSchema } from '@/features/auth/schemas/otpSchema';
 import {
   useForgotPassword,
@@ -41,6 +42,7 @@ const GENERIC_STEP1_MESSAGE =
  * page navigations.
  */
 export function ForgotPasswordForm() {
+  const hasMounted = useHasMounted();
   const router = useRouter();
   const [step, setStep] = useState('email');
   const [email, setEmail] = useState('');
@@ -127,6 +129,7 @@ export function ForgotPasswordForm() {
       <CardContent>
         {step === 'email' ? (
           <form
+            method="post"
             onSubmit={emailForm.handleSubmit(onSubmitEmail)}
             className="flex flex-col gap-4"
           >
@@ -153,14 +156,22 @@ export function ForgotPasswordForm() {
                 {stepError}
               </p>
             ) : null}
-            <Button type="submit" disabled={emailForm.formState.isSubmitting} className="w-full">
+            <Button
+              type="submit"
+              disabled={!hasMounted || emailForm.formState.isSubmitting}
+              className="w-full"
+            >
               {emailForm.formState.isSubmitting ? 'Sending…' : 'Send Reset Code'}
             </Button>
           </form>
         ) : null}
 
         {step === 'otp' ? (
-          <form onSubmit={otpForm.handleSubmit(onSubmitOtp)} className="flex flex-col gap-4">
+          <form
+            method="post"
+            onSubmit={otpForm.handleSubmit(onSubmitOtp)}
+            className="flex flex-col gap-4"
+          >
             <p className="rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
               {GENERIC_STEP1_MESSAGE}
             </p>
@@ -176,7 +187,11 @@ export function ForgotPasswordForm() {
                 {stepError}
               </p>
             ) : null}
-            <Button type="submit" disabled={otpForm.formState.isSubmitting} className="w-full">
+            <Button
+              type="submit"
+              disabled={!hasMounted || otpForm.formState.isSubmitting}
+              className="w-full"
+            >
               {otpForm.formState.isSubmitting ? 'Verifying…' : 'Verify Code'}
             </Button>
           </form>
@@ -184,6 +199,7 @@ export function ForgotPasswordForm() {
 
         {step === 'password' ? (
           <form
+            method="post"
             onSubmit={passwordForm.handleSubmit(onSubmitPassword)}
             className="flex flex-col gap-4"
           >
@@ -222,7 +238,11 @@ export function ForgotPasswordForm() {
                 {stepError}
               </p>
             ) : null}
-            <Button type="submit" disabled={passwordForm.formState.isSubmitting} className="w-full">
+            <Button
+              type="submit"
+              disabled={!hasMounted || passwordForm.formState.isSubmitting}
+              className="w-full"
+            >
               {passwordForm.formState.isSubmitting ? 'Saving…' : 'Reset Password'}
             </Button>
           </form>

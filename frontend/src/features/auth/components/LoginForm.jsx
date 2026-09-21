@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { CheckCircle2 } from 'lucide-react';
+import { useHasMounted } from '@/shared/hooks/useHasMounted';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import { useResendSignupOtp } from '@/features/auth/hooks/useSignup';
 import { loginSchema } from '@/features/auth/schemas/loginSchema';
@@ -16,6 +17,7 @@ import { Input } from '@/shared/components/ui/Input';
 import { Label } from '@/shared/components/ui/Label';
 
 export function LoginForm() {
+  const hasMounted = useHasMounted();
   const { login } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -78,7 +80,11 @@ export function LoginForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="flex w-full max-w-sm flex-col gap-4">
+    <form
+      method="post"
+      onSubmit={handleSubmit(onSubmit)}
+      className="flex w-full max-w-sm flex-col gap-4"
+    >
       {resetSucceeded ? (
         <div className="flex items-center gap-2 rounded-md bg-emerald-600/10 px-3 py-2 text-sm text-emerald-700">
           <CheckCircle2 className="h-4 w-4 shrink-0" />
@@ -161,7 +167,7 @@ export function LoginForm() {
         </div>
       ) : null}
 
-      <Button type="submit" disabled={isSubmitting} className="w-full">
+      <Button type="submit" disabled={!hasMounted || isSubmitting} className="w-full">
         {isSubmitting ? 'Signing in…' : 'Sign in'}
       </Button>
 

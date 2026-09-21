@@ -3,6 +3,7 @@
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
+import { useHasMounted } from '@/shared/hooks/useHasMounted';
 import { signupSchema } from '@/features/auth/schemas/signupSchema';
 import { useSignup } from '@/features/auth/hooks/useSignup';
 import { ROUTES } from '@/core/constants/routes';
@@ -28,6 +29,7 @@ import { useToast } from '@/shared/components/toast/ToastProvider';
  * shown with a meaningless choice once either is selected.
  */
 export function SignupForm() {
+  const hasMounted = useHasMounted();
   const router = useRouter();
   const { toast } = useToast();
   const signup = useSignup();
@@ -77,7 +79,11 @@ export function SignupForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="flex w-full max-w-sm flex-col gap-4">
+    <form
+      method="post"
+      onSubmit={handleSubmit(onSubmit)}
+      className="flex w-full max-w-sm flex-col gap-4"
+    >
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="fullName">Full Name</Label>
         <Input id="fullName" autoFocus autoComplete="name" {...register('fullName')} />
@@ -150,7 +156,7 @@ export function SignupForm() {
         ) : null}
       </div>
 
-      <Button type="submit" disabled={isSubmitting} className="w-full">
+      <Button type="submit" disabled={!hasMounted || isSubmitting} className="w-full">
         {isSubmitting ? 'Creating account…' : 'Create Account'}
       </Button>
     </form>

@@ -5,6 +5,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
 import { ShieldAlert } from 'lucide-react';
+import { useHasMounted } from '@/shared/hooks/useHasMounted';
 import { changePasswordSchema } from '@/features/auth/schemas/changePasswordSchema';
 import { useChangePassword } from '@/features/auth/hooks/useChangePassword';
 import { useAuth } from '@/features/auth/hooks/useAuth';
@@ -32,6 +33,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui
  * ForgotPasswordForm's reset flow already shows on LoginForm.
  */
 export function ChangePasswordForm() {
+  const hasMounted = useHasMounted();
   const router = useRouter();
   const { clearSession } = useAuth();
   const changePassword = useChangePassword();
@@ -70,7 +72,7 @@ export function ChangePasswordForm() {
         <p className="mb-4 text-sm text-muted-foreground">
           For your account&apos;s security, you must set a new password before continuing.
         </p>
-        <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
+        <form method="post" onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="currentPassword">Current Password</Label>
             <Input
@@ -114,7 +116,7 @@ export function ChangePasswordForm() {
               {submitError}
             </div>
           ) : null}
-          <Button type="submit" disabled={isSubmitting} className="w-full">
+          <Button type="submit" disabled={!hasMounted || isSubmitting} className="w-full">
             {isSubmitting ? 'Saving…' : 'Change Password'}
           </Button>
         </form>

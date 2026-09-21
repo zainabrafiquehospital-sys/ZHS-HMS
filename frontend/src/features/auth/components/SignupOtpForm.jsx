@@ -5,6 +5,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
 import { CheckCircle2, MailCheck } from 'lucide-react';
+import { useHasMounted } from '@/shared/hooks/useHasMounted';
 import { otpSchema } from '@/features/auth/schemas/otpSchema';
 import { useVerifyEmail, useResendSignupOtp } from '@/features/auth/hooks/useSignup';
 import { OtpCodeInput } from '@/features/auth/components/OtpCodeInput';
@@ -14,6 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui
 import { useToast } from '@/shared/components/toast/ToastProvider';
 
 export function SignupOtpForm({ email }) {
+  const hasMounted = useHasMounted();
   const router = useRouter();
   const { toast } = useToast();
   const [verified, setVerified] = useState(false);
@@ -91,7 +93,7 @@ export function SignupOtpForm({ email }) {
         <CardTitle>Verify Your Email</CardTitle>
       </CardHeader>
       <CardContent>
-        <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
+        <form method="post" onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
           <OtpCodeInput
             control={control}
             error={errors.code}
@@ -99,7 +101,7 @@ export function SignupOtpForm({ email }) {
             onResend={handleResend}
             isResending={resendOtp.isPending}
           />
-          <Button type="submit" disabled={isSubmitting} className="w-full">
+          <Button type="submit" disabled={!hasMounted || isSubmitting} className="w-full">
             {isSubmitting ? 'Verifying…' : 'Verify Email'}
           </Button>
         </form>
