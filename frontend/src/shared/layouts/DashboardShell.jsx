@@ -46,8 +46,10 @@ export function DashboardShell({ sidebar, header, children, className }) {
   }, [isMobileNavOpen]);
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
-      {sidebar ? <aside className="hidden w-64 shrink-0 md:block">{sidebar}</aside> : null}
+    <div className="h-app-shell flex w-full overflow-hidden bg-background text-foreground">
+      {sidebar ? (
+        <aside className="hidden w-64 shrink-0 overflow-hidden md:block">{sidebar}</aside>
+      ) : null}
 
       {sidebar ? (
         <>
@@ -61,7 +63,7 @@ export function DashboardShell({ sidebar, header, children, className }) {
           />
           <aside
             className={cn(
-              'fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] transform transition-transform duration-300 ease-in-out md:hidden',
+              'fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] transform overflow-hidden transition-transform duration-300 ease-in-out md:hidden',
               isMobileNavOpen ? 'translate-x-0' : '-translate-x-full',
             )}
             aria-hidden={!isMobileNavOpen}

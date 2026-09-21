@@ -83,3 +83,26 @@
     @apply bg-background text-foreground;
   }
 }
+
+@layer utilities {
+  /* Dynamic-viewport height for full-screen shells (sidebar/app shell),
+     with a 100vh fallback for browsers that don't support `dvh` —
+     the second `height` declaration wins where supported, and is
+     simply ignored (falling back to the first) where it isn't. */
+  .h-app-shell {
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  /* Scrollable regions (sidebar nav, mobile drawer nav) that must keep
+     full wheel/touch/keyboard scrolling while hiding the scrollbar
+     visual — Firefox/IE via `scrollbar-width`/`-ms-overflow-style`,
+     WebKit/Blink via the pseudo-element below. */
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}

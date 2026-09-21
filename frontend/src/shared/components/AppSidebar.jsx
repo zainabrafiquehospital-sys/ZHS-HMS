@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -198,32 +199,59 @@ export function AppSidebar() {
     (item) => item.permission === null || hasPermission(item.permission),
   );
 
+  const activeItemRef = useRef(null);
+
+  // Keep the active item in view on every route change — without this,
+  // navigating to an item scrolled out of view (e.g. via a deep link or
+  // back/forward) leaves the nav scrolled wherever it happened to be.
+  useEffect(() => {
+    activeItemRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [pathname]);
+
   return (
-    <nav className="flex h-full flex-col gap-1 bg-brand-navy p-3 text-white">
-      <div className="mb-4 flex items-center gap-2.5 px-1 py-2">
-        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-white p-1 shadow-sm">
-          <Image src="/images/logo.png" alt={env.appName} width={40} height={40} priority />
+    <nav className="flex h-full min-h-0 flex-col bg-brand-navy text-white">
+      <div className="shrink-0 px-3 pt-3">
+        <div className="mb-4 flex items-center gap-2.5 px-1 py-2">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-white p-1 shadow-sm">
+            <Image src="/images/logo.png" alt={env.appName} width={40} height={40} priority />
+          </div>
+          <div className="min-w-0 text-sm font-semibold leading-tight text-white">
+            {env.appName}
+          </div>
         </div>
-        <div className="min-w-0 text-sm font-semibold leading-tight text-white">{env.appName}</div>
       </div>
-      {visibleItems.map(({ href, label, icon: Icon }) => {
-        const isActive = href === '/' ? pathname === href : pathname.startsWith(href);
-        return (
-          <Link
-            key={href}
-            href={href}
-            className={cn(
-              'flex items-center gap-2 rounded-md px-3 py-2.5 text-sm font-medium transition-colors',
-              isActive
-                ? 'bg-white text-brand-navy shadow-sm'
-                : 'text-white/75 hover:bg-white/10 hover:text-white',
-            )}
-          >
-            <Icon className="h-4 w-4 shrink-0" />
-            {label}
-          </Link>
-        );
-      })}
+      {/* Independently scrollable — visible scrollbar hidden, but wheel/
+          touch/keyboard scrolling stays fully functional (`no-scrollbar`
+          only hides the bar, `overscroll-contain` stops scroll chaining
+          into the page behind it). Bottom padding adds the safe-area
+          inset so the last item is never flush with (or under) a mobile
+          home indicator/gesture bar. */}
+      <div
+        className="no-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain px-3"
+        style={{ paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom))' }}
+      >
+        <div className="flex flex-col gap-1">
+          {visibleItems.map(({ href, label, icon: Icon }) => {
+            const isActive = href === '/' ? pathname === href : pathname.startsWith(href);
+            return (
+              <Link
+                key={href}
+                href={href}
+                ref={isActive ? activeItemRef : null}
+                className={cn(
+                  'flex items-center gap-2 rounded-md px-3 py-2.5 text-sm font-medium transition-colors',
+                  isActive
+                    ? 'bg-white text-brand-navy shadow-sm'
+                    : 'text-white/75 hover:bg-white/10 hover:text-white',
+                )}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                {label}
+              </Link>
+            );
+          })}
+        </div>
+      </div>
     </nav>
   );
 }
