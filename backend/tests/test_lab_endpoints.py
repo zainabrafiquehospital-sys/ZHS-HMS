@@ -1062,6 +1062,7 @@ async def test_print_bill_with_manual_patient_shows_reference_and_totals(
     assert "Pathology" in resp.text
     assert "700.00" in resp.text
     assert "Sale Type" not in resp.text
+    assert "Paid via: Cash" in resp.text
 
 
 async def test_print_bill_with_manual_line_omits_category(

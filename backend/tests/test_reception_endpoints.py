@@ -326,6 +326,11 @@ async def test_print_registration_slip_success(api_client, real_session, grant_p
     assert resp.status_code == 200
     assert mr_number in resp.text
     assert "Consultation" in resp.text
+    # 2026-09-22 fix: the slip must show the payment method actually
+    # used at registration (see render_registration_slip's own
+    # docstring — this was the one Central Print Service document
+    # missing this line entirely).
+    assert "Paid via: Cash" in resp.text
     # The attending doctor is intentionally omitted from this slip design
     # (see app/shared/printing/service.py's render_registration_slip
     # docstring) — assert its absence rather than presence.
