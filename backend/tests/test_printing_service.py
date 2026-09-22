@@ -331,16 +331,50 @@ def test_medicine_bill_receipt_omits_paid_via_line_when_nothing_paid():
     assert "Paid via" not in html_document
 
 
-def test_registration_slip_has_no_payment_method_concept():
-    """The Registration Slip has no `payment_methods` (plural, distinct-
-    methods-used) parameter and never renders a "Paid via" summary line,
-    unlike the two receipt types that print after money has actually
-    been collected via Billing/Pharmacy — still true after the
-    2026-08-22 addition of `visit_amount_paid`/`visit_payment_status`
-    (a Total/Received/Pending strip, never a per-method breakdown)."""
+def test_registration_slip_shows_single_payment_method():
+    """2026-09-22 fix: the Registration Slip was the one Central Print
+    Service document that never gained the "Paid via" line its three
+    siblings already had — a Visit always requires a real payment at
+    registration (see VisitService.register_visit's own docstring), so
+    the common case (no `visit_amount_paid`/`visit_payment_status`
+    override here — nothing "partially paid" to show) still needs the
+    method to appear, not just the partial-balance case below."""
+    html_document = _render_slip(payment_methods=["cash"])
+
+    assert "Paid via: Cash" in html_document
+
+
+def test_registration_slip_shows_multiple_distinct_payment_methods_in_order():
+    html_document = _render_slip(payment_methods=["bank_transfer", "jazzcash", "cash"])
+
+    assert "Paid via: Bank Transfer, JazzCash, Cash" in html_document
+
+
+def test_registration_slip_omits_paid_via_line_when_no_payment_recorded():
+    """A visit that predates registration-charge payment tracking (see
+    Visit.payment_status's own docstring) has no resolvable method —
+    same "nothing to show, show nothing" convention every other
+    omitted row on this receipt already follows, never a blank value
+    or the literal word "None"."""
     html_document = _render_slip()
 
     assert "Paid via" not in html_document
+
+
+def test_registration_slip_shows_payment_method_alongside_partial_balance_strip():
+    """The one case this slip already had a payment strip for before
+    this fix — a genuine outstanding balance — must show the method
+    *and* keep the existing Total/Received/Pending breakdown, not one
+    or the other."""
+    html_document = _render_slip(
+        visit_amount=Decimal("1500.00"),
+        visit_amount_paid=Decimal("500.00"),
+        visit_payment_status="partially_paid",
+        payment_methods=["cash"],
+    )
+
+    assert "Paid via: Cash" in html_document
+    assert "Pending" in html_document
 
 
 # ---------------------------------------------------------------------

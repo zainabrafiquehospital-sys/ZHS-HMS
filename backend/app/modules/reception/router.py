@@ -136,6 +136,7 @@ async def print_registration_slip(
         doctor = await user_service.get_user(visit.doctor_user_id)
         doctor_full_name = doctor.full_name
     procedure_items = await visit_service.list_procedure_items(visit.id)
+    payments = await visit_service.list_payments(visit.id)
 
     html_document = render_registration_slip(
         hospital_name=settings.app_name,
@@ -154,6 +155,11 @@ async def print_registration_slip(
         visit_procedure_items=[(item.name, item.amount) for item in procedure_items],
         visit_amount_paid=visit.amount_paid,
         visit_payment_status=visit.payment_status.value if visit.payment_status else None,
+        # Distinct payment methods used, in first-payment order — same
+        # dict.fromkeys construction as app/modules/billing/router.py's
+        # print_invoice/pharmacy's and lab's print_bill, see
+        # render_registration_slip's own docstring.
+        payment_methods=list(dict.fromkeys(payment.payment_method.value for payment in payments)),
     )
     return HTMLResponse(content=html_document)
 

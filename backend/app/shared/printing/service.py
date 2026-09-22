@@ -750,6 +750,7 @@ def render_registration_slip(
     visit_procedure_items: list[tuple[str, Decimal]] | None = None,
     visit_amount_paid: Decimal | None = None,
     visit_payment_status: str | None = None,
+    payment_methods: list[str] | None = None,
 ) -> str:
     """Renders Reception's fast-registration slip (Phase 6
     fast-registration §6/§7) — printed immediately after a visit is
@@ -803,14 +804,36 @@ def render_registration_slip(
     are `None` for every visit that predates registration-charge
     payment tracking (see app/modules/visits/models.py's `Visit.
     payment_status` docstring) — in that case, and whenever the visit
-    is fully `paid`, this slip renders with no payment strip at all (a
-    deliberately conservative choice — this slip only ever gains the
-    extra strip when there is a real, non-zero balance still owed).
-    Only when `payment_status` is `partially_paid` (a genuine
-    outstanding balance) does a "Total / Received / Pending" strip
-    appear below the Patient/Visit Details section (and below the
-    itemized list, when present) — stacked rows, not the old 3-column
-    grid (see `_RECEIPT_STYLE`'s own `.payment-strip` comment)."""
+    is fully `paid`, this slip renders with no Total/Received/Pending
+    breakdown at all (a deliberately conservative choice — that
+    breakdown only ever appears when there is a real, non-zero balance
+    still owed). Only when `payment_status` is `partially_paid` (a
+    genuine outstanding balance) does the full "Total / Received /
+    Pending" strip appear below the Patient/Visit Details section (and
+    below the itemized list, when present) — stacked rows, not the old
+    3-column grid (see `_RECEIPT_STYLE`'s own `.payment-strip`
+    comment).
+
+    `payment_methods` (2026-09-22 addition — this slip was the one
+    Central Print Service document that never gained the "Paid via"
+    line its three siblings (`render_invoice_receipt`/
+    `render_medicine_bill_receipt`/`render_lab_bill_receipt`) already
+    show) is the caller-computed list of *distinct* methods across
+    every `VisitPayment` on this Visit, in first-payment order — same
+    convention, same `dict.fromkeys`-in-the-router construction, same
+    "Paid via: Cash, JazzCash" rendering as those three (see any of
+    their docstrings). Unlike the Total/Received/Pending breakdown
+    above, this line is not gated on `partially_paid`: a Visit always
+    requires a real payment at registration (see VisitService.
+    register_visit's own docstring — there is no "register unpaid"
+    path), so the common case is a *fully* paid visit with no balance
+    breakdown to show at all — the method still belongs on the slip
+    either way, so it gets its own minimal `.payment-strip` when the
+    full breakdown isn't otherwise showing. Omitted entirely when
+    `payment_methods` is empty/`None` (a visit that predates payment
+    tracking with no resolvable method) — the same "nothing to show,
+    show nothing" convention every other omitted row on this receipt
+    already follows, never a blank value or the literal word "None"."""
     registered_on = _to_local_time(visit_created_at, display_timezone).strftime(
         "%d %b %Y, %I:%M %p"
     )
@@ -825,13 +848,30 @@ def render_registration_slip(
     if visit_amount_paid is not None and visit_payment_status == "partially_paid":
         pending_amount = visit_amount - visit_amount_paid
 
+    paid_via_row = ""
+    if payment_methods:
+        labels = ", ".join(PAYMENT_METHOD_LABELS.get(method, method) for method in payment_methods)
+        paid_via_row = f'<div class="paid-via-row">Paid via: {_escape(labels)}</div>'
+
     payment_strip = ""
     if pending_amount is not None and pending_amount > 0:
         payment_strip = f"""
     <div class="payment-strip">
       <div class="payment-row"><span class="payment-label">Total</span><span class="payment-value">{_money(visit_amount)}</span></div>
       <div class="payment-row"><span class="payment-label">Received</span><span class="payment-value">{_money(visit_amount_paid)}</span></div>
+      {paid_via_row}
       <div class="payment-row pending"><span class="payment-label">Pending</span><span class="payment-value">{_money(pending_amount)}</span></div>
+    </div>
+"""
+    elif paid_via_row:
+        # The common case — a Visit always requires payment at
+        # registration, so most visits are fully paid with no balance
+        # breakdown above, but the payment method itself still belongs
+        # on the slip. Same `.payment-strip` container the partial case
+        # uses above, trimmed to just this one row.
+        payment_strip = f"""
+    <div class="payment-strip">
+      {paid_via_row}
     </div>
 """
 
